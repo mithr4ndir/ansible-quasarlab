@@ -1,0 +1,50 @@
+- name: Download Smallstep CLI and CA
+  get_url:
+    url: https://dl.smallstep.com/cli/gh-release/latest/step_linux_0.24.0_amd64.tar.gz
+    dest: /tmp/step.tar.gz
+
+- name: Extract CLI tools
+  unarchive:
+    src: /tmp/step.tar.gz
+    dest: /usr/local/bin/
+    remote_src: yes
+
+- name: Install dependencies
+  apt:
+    name: [jq, curl]
+    state: present
+
+- name: Initialize the CA
+  command: >
+    step ca init --name "Fleet Internal CA" --dns fleetdm.herro.me
+    --address :443 --provisioner admin@herro.me --password-file /etc/step/password.txt
+  args:
+    creates: /etc/step/config/ca.json
+
+- name: Enable step-ca systemd
+  copy:
+    dest: /etc/systemd/system/step-ca.service
+    content: |
+      [Unit]
+      Description=Smallstep CA
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/local/bin/step-ca /etc/step/config/ca.json --password-file /etc/step/password.txt
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Start and enable step-ca
+  systemd:
+    name: step-ca
+    daemon_reload: yes
+    enabled: yes
+    state: started
+
+- name: Deploy FleetDM client auto-enroll script
+  template:
+    src: fleetdm-client.sh.j2
+    dest: /usr/local/bin/fleetdm-client-enroll.sh
+    mode: '0755'

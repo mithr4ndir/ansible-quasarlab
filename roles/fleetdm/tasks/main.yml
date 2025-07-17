@@ -1,0 +1,27 @@
+- name: Install dependencies
+  apt:
+    name: [curl, unzip, mysql-client, redis-server]
+    state: present
+
+- name: Download and extract Fleet
+  get_url:
+    url: https://github.com/fleetdm/fleet/releases/download/fleet-v4.48.1/fleet.tar.gz
+    dest: /tmp/fleet.tar.gz
+
+- name: Extract Fleet
+  unarchive:
+    src: /tmp/fleet.tar.gz
+    dest: /opt/
+    remote_src: yes
+
+- name: Create Fleet systemd service
+  template:
+    src: fleet.service.j2
+    dest: /etc/systemd/system/fleet.service
+
+- name: Start and enable FleetDM
+  systemd:
+    name: fleet
+    daemon_reload: yes
+    enabled: yes
+    state: started

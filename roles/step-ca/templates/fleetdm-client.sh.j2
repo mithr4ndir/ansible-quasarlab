@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+STEP_CA_URL="https://{{ hostvars['step-ca-1'].ansible_host }}:443"
+STEP_PROV_NAME="admin@herro.me"
+
+step ca certificate "{{ inventory_hostname }}" \
+  /etc/fleet/tls/{{ inventory_hostname }}.crt \
+  /etc/fleet/tls/{{ inventory_hostname }}.key \
+  --ca-url "$STEP_CA_URL" \
+  --provisioner "$STEP_PROV_NAME" \
+  --provisioner-password-file /etc/step/password.txt
