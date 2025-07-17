@@ -1,0 +1,13 @@
+- name: Provision MySQL Galera Cluster
+  hosts: mysql_cluster
+  become: yes
+  roles:
+    - mysql-galera
+
+- name: Setup FleetDM Backend
+  hosts: fleet_servers
+  become: yes
+  roles:
+    - certbot
+    - nginx-reverse-proxy
+    - fleetdm
