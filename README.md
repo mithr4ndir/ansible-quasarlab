@@ -15,6 +15,7 @@ An opinionated, minimal Ansible repo to stand up a 3‑node on‑prem Kubernetes
 ---
 
 ## Directory Layout
+```bash
 ansible-quasarlab/
 ├── inventory.ini         # Host list & group definitions
 ├── group_vars/
@@ -34,7 +35,7 @@ ansible-quasarlab/
     │   └── argocd/       # Install Argo CD and bootstrap apps
     └── lb/               # External load‑balancer roles
         └── nginx_lb/     # Install & configure NGINX as L4 proxy
-
+```
 ---
 
 ## Quickstart
