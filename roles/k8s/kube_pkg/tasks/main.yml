@@ -1,0 +1,21 @@
+- name: Add Kubernetes apt repo
+  ansible.builtin.apt_repository:
+    repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+
+- name: Install kubeadm, kubelet, kubectl
+  ansible.builtin.apt:
+    name:
+      - kubelet={{ kube_version }}
+      - kubeadm={{ kube_version }}
+      - kubectl={{ kube_version }}
+    state: present
+    update_cache: yes
+
+- name: Hold Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    mark: hold
