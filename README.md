@@ -36,6 +36,7 @@ ansible-quasarlab/
     └── lb/               # External load‑balancer roles
         └── nginx_lb/     # Install & configure NGINX as L4 proxy
 ```
+
 ---
 
 ## Quickstart
@@ -56,6 +57,7 @@ ansible-quasarlab/
    ```
 5. 🎉 **Done!** Argo CD will watch your Git repo and deploy MetalLB (and any other apps).
 
+---
 
 ## Tips & Tricks
 
