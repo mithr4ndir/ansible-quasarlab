@@ -1,0 +1,11 @@
+- name: Fetch join script from node1
+  ansible.builtin.fetch:
+    src: /tmp/join.sh
+    dest: /tmp/join.sh
+    flat: yes
+  delegate_to: "{{ groups['k8s'][0] }}"
+
+- name: Run join as control‑plane+worker
+  ansible.builtin.shell: bash /tmp/join.sh --control-plane --certificate-key {{ lookup('file', '/etc/kubernetes/pki/ca.crt') }}
+  args:
+    creates: /etc/kubernetes/kubelet.conf

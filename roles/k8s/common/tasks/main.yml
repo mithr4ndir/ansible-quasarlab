@@ -1,0 +1,26 @@
+- name: Disable swap
+  ansible.builtin.command: swapoff -a
+
+- name: Mask swap in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '(^.*swap.*$)'
+    replace: '# \1'
+
+- name: Enable bridged traffic for iptables
+  ansible.builtin.sysctl:
+    name: net.bridge.bridge-nf-call-iptables
+    value: 1
+    reload: yes
+
+- name: Install chrony
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+    update_cache: yes
+
+- name: Ensure chrony is running
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: yes

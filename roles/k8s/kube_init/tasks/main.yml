@@ -1,0 +1,20 @@
+- name: Initialize control‑plane
+  ansible.builtin.command: >
+    kubeadm init
+      --control-plane-endpoint={{ groups['k8s'][0] }}:6443
+      --upload-certs
+      --pod-network-cidr={{ pod_network_cidr }}
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+- name: Copy admin kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/{{ ansible_user }}/.kube/config
+    owner: "{{ ansible_user }}"
+    mode: 0600
+
+- name: Save join command
+  ansible.builtin.shell: kubeadm token create --print-join-command > /tmp/join.sh
+  args:
+    creates: /tmp/join.sh
