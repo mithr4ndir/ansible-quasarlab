@@ -1,7 +1,8 @@
 - name: Dump default containerd config (once only)
-  ansible.builtin.command: containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+  ansible.builtin.shell: containerd config default | tee /etc/containerd/config.toml > /dev/null
   args:
     creates: /etc/containerd/config.toml
+  become: true
 
 - name: Enable SystemdCgroup in containerd (only if file is present)
   ansible.builtin.replace:
