@@ -2,4 +2,4 @@
   hosts: lb
   become: yes
   roles:
-    - lb/nginx_lb
+    - lb/haproxy
