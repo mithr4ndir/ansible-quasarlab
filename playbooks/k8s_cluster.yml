@@ -4,6 +4,7 @@
   roles:
     - k8s/common
     - k8s/containerd
+    - k8s/docker
     - k8s/kube_pkg
 
 - name: Initialize first control‑plane node
