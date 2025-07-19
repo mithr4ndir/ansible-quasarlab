@@ -18,6 +18,7 @@
     filename: kubernetes
     state: present
     update_cache: yes
+    register: repo_added
 
 - name: Install kubelet, kubeadm, kubectl
   ansible.builtin.apt:
@@ -27,6 +28,7 @@
       - kubectl={{ kube_version }}
     state: present
     update_cache: no
+    when: repo_added.changed
 
 - name: Hold Kubernetes packages at this version
   ansible.builtin.apt:

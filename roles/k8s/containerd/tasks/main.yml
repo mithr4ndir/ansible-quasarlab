@@ -1,21 +1,25 @@
-- name: Create containerd config directory
-  ansible.builtin.file:
-    path: /etc/containerd
-    state: directory
+- name: Check if Containerd config exists
+  ansible.builtin.stat:
+    path: /etc/containerd/config.toml
+  register: containerd_cfg
 
-- name: Dump default containerd config
+- name: Dump default containerd config (once only)
   ansible.builtin.command: containerd config default > /etc/containerd/config.toml
   args:
     creates: /etc/containerd/config.toml
+  when: not containerd_cfg.stat.exists
 
-- name: Enable SystemdCgroup in containerd
+- name: Enable SystemdCgroup in containerd (only if file is present)
   ansible.builtin.replace:
     path: /etc/containerd/config.toml
     regexp: 'SystemdCgroup = false'
     replace: 'SystemdCgroup = true'
+    backup: yes
+  when: containerd_cfg.stat.exists
 
-- name: Restart containerd
+- name: Restart containerd if config changed
   ansible.builtin.service:
     name: containerd
     state: restarted
-    enabled: yes
+  when: containerd_cfg.stat.exists and
+        "'SystemdCgroup = true' not in containerd_cfg.stat.checksum"
