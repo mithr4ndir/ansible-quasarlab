@@ -41,15 +41,17 @@
       - "kubectl={{ kube_version }}"
     state: present
     update_cache: no
-  when: repo_added.changed
   become: true
 
-- name: Hold Kubernetes packages at this version
-  ansible.builtin.apt:
-    name:
-      - kubelet
-      - kubeadm
-      - kubectl
-    state: present
-    mark: hold
+- name: Check if packages are already held
+  ansible.builtin.command: apt-mark showhold
+  register: held_pkgs
+  changed_when: false
+
+- name: Hold Kubernetes packages (if not already held)
+  ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
+  when: >
+    ('kubelet' not in held_pkgs.stdout) or
+    ('kubeadm' not in held_pkgs.stdout) or
+    ('kubectl' not in held_pkgs.stdout)
   become: true
