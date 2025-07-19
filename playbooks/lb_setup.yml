@@ -1,2 +1,5 @@
-- hosts: lb
-  roles: [nginx_lb]
+- name: Configure external NGINX load balancers
+  hosts: lb
+  become: yes
+  roles:
+    - lb/nginx_lb

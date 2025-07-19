@@ -4,5 +4,11 @@ ansible_user: ladino
 kube_version: "1.33"
 pod_network_cidr: "10.244.0.0/16"
 
-# MetalLB IP pool
-metallb_address_pool: "192.168.1.30-192.168.1.49"
+# Argo CD
+argocd_version: "v2.10.8"
+argocd_namespace: "argocd"
+argocd_server_service_type: "LoadBalancer"
+
+# NGINX LB cert paths
+nginx_lb_cert: "/etc/nginx/certs/tls.crt"
+nginx_lb_key:  "/etc/nginx/certs/tls.key"
