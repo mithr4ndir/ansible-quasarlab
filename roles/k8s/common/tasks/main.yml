@@ -1,21 +1,18 @@
-- name: Ensure /etc/hosts entries for all nodes  # Step 1
+- name: Ensure /etc/hosts has entries for all k8s nodes
   ansible.builtin.lineinfile:
     path: /etc/hosts
+    insertafter: EOF
     line: "{{ item.ip }} {{ item.name }}"
-    state: present
+    regexp: "^{{ item.ip }}[[:space:]]+{{ item.name }}$"
   loop:
     - { ip: "192.168.1.90", name: "k8cluster1" }
     - { ip: "192.168.1.89", name: "k8cluster2" }
     - { ip: "192.168.1.91", name: "k8cluster3" }
 
-- name: Disable swap
-  ansible.builtin.command: swapoff -a
-
-- name: Mask swap in fstab
-  ansible.builtin.replace:
-    path: /etc/fstab
-    regexp: '(^.*swap.*$)'
-    replace: '# \1'
+- name: Ensure swap is fully disabled
+  ansible.builtin.mount:
+    fstype: swap
+    state: absent
 
 - name: Load Containerd kernel modules
   ansible.builtin.modprobe:
