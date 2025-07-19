@@ -1,3 +1,13 @@
+- name: Ensure /etc/hosts entries for all nodes  # Step 1
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ip }} {{ item.name }}"
+    state: present
+  loop:
+    - { ip: "192.168.1.90", name: "k8cluster1" }
+    - { ip: "192.168.1.89", name: "k8cluster2" }
+    - { ip: "192.168.1.91", name: "k8cluster3" }
+
 - name: Disable swap
   ansible.builtin.command: swapoff -a
 
@@ -7,11 +17,35 @@
     regexp: '(^.*swap.*$)'
     replace: '# \1'
 
-- name: Enable bridged traffic for iptables
+- name: Load Containerd kernel modules
+  ansible.builtin.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Persist Containerd kernel modules on reboot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Apply Kubernetes networking sysctls
   ansible.builtin.sysctl:
-    name: net.bridge.bridge-nf-call-iptables
-    value: 1
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
     reload: yes
+  loop:
+    - { name: net.bridge.bridge-nf-call-iptables,   value: "1" }
+    - { name: net.bridge.bridge-nf-call-ip6tables,  value: "1" }
+    - { name: net.ipv4.ip_forward,                  value: "1" }
+    - { name: net.ipv4.conf.all.forwarding,         value: "1" }
 
 - name: Install chrony
   ansible.builtin.apt:

@@ -1,17 +1,34 @@
-- name: Add Kubernetes apt repo
-  ansible.builtin.apt_repository:
-    repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+- name: Ensure /etc/apt/keyrings exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
 
-- name: Install kubeadm, kubelet, kubectl
+- name: Download Kubernetes APT signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    mode: '0644'
+
+- name: Add the Kubernetes APT repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
+      https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+    filename: kubernetes
+    state: present
+    update_cache: yes
+
+- name: Install kubelet, kubeadm, kubectl
   ansible.builtin.apt:
     name:
       - kubelet={{ kube_version }}
       - kubeadm={{ kube_version }}
       - kubectl={{ kube_version }}
     state: present
-    update_cache: yes
+    update_cache: no
 
-- name: Hold Kubernetes packages
+- name: Hold Kubernetes packages at this version
   ansible.builtin.apt:
     name:
       - kubelet
