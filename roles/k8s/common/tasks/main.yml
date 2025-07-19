@@ -9,10 +9,13 @@
     - { ip: "192.168.1.89", name: "k8cluster2" }
     - { ip: "192.168.1.91", name: "k8cluster3" }
 
-- name: Ensure swap is fully disabled
-  ansible.builtin.mount:
-    fstype: swap
-    state: absent
+- name: Turn off swap now
+  ansible.builtin.command: swapoff -a
+  args:
+    warn: false
+  register: swapoff_result
+  changed_when: swapoff_result.rc == 0
+  failed_when: false  # so it never errors if swap is already off
 
 - name: Load Containerd kernel modules
   ansible.builtin.modprobe:
