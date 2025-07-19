@@ -11,11 +11,16 @@
 
 - name: Turn off swap now
   ansible.builtin.command: swapoff -a
-  args:
-    warn: false
   register: swapoff_result
+  ignore_errors: true  # optional, in case swapoff fails on a node
   changed_when: swapoff_result.rc == 0
-  failed_when: false  # so it never errors if swap is already off
+
+- name: Remove swap entry from fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^\s*([^#]\S+)\s+\S+\s+swap\s+.*$'
+    replace: '# \1 swap disabled by Ansible'
+
 
 - name: Load Containerd kernel modules
   ansible.builtin.modprobe:
