@@ -1,0 +1,23 @@
+global
+    log /dev/log    local0
+    maxconn 2048
+    daemon
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    timeout connect 10s
+    timeout client 1m
+    timeout server 1m
+
+frontend k8s-api
+    bind *:6443
+    default_backend k8s-api-backend
+
+backend k8s-api-backend
+    balance roundrobin
+    option tcp-check
+{% for node in k8s_control_plane_nodes %}
+    server {{ node.name }} {{ node.ip }}:6443 check
+{% endfor %}
