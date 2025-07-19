@@ -1,0 +1,42 @@
+- name: Install Argo CD HA manifests
+  kubernetes.core.k8s:
+    state: present
+    src: https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/ha/install.yaml
+    kubeconfig: /etc/kubernetes/admin.conf
+
+- name: Patch Argo CD Server Service to LoadBalancer
+  kubernetes.core.k8s:
+    state: patched
+    kind: Service
+    api_version: v1
+    name: argocd-server
+    namespace: "{{ argocd_namespace }}"
+    merge_type: strategic-merge
+    definition:
+      spec:
+        type: "{{ argocd_server_service_type }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+
+- name: Wait for Argo CD HA pods to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ argocd_namespace }}"
+    name: argocd-server
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: argo_deploy
+  until: argo_deploy.resources[0].status.availableReplicas | default(0) >= 2
+  retries: 15
+  delay: 10
+
+- name: Show Argo CD initial admin password
+  command: >
+    kubectl -n {{ argocd_namespace }}
+      get secret argocd-initial-admin-secret
+      -o jsonpath="{.data.password}" | base64 -d
+  register: argo_password
+  changed_when: false
+
+- name: Display Argo CD admin password
+  ansible.builtin.debug:
+    msg: "🎉 Argo CD admin password = {{ argo_password.stdout }}"
