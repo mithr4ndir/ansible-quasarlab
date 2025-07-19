@@ -10,6 +10,19 @@
     dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
     mode: '0644'
 
+- name: Check if key is ASCII-armored
+  ansible.builtin.shell: grep -q "BEGIN PGP PUBLIC KEY BLOCK" /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  register: key_format_check
+  failed_when: false
+  changed_when: false
+
+- name: Convert to binary if ASCII-armored
+  ansible.builtin.shell: |
+    gpg --dearmor < /etc/apt/keyrings/kubernetes-apt-keyring.gpg > /etc/apt/keyrings/kubernetes-apt-keyring.gpg.tmp
+    mv /etc/apt/keyrings/kubernetes-apt-keyring.gpg.tmp /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  when: key_format_check.rc == 0
+  become: true
+
 - name: Add the Kubernetes APT repository
   ansible.builtin.apt_repository:
     repo: >-
