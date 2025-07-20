@@ -1,68 +1,49 @@
-- name: Configure Load Balancers for Kubernetes HA
-  hosts: lb
-  become: true
+- name: Ensure required packages are installed
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - keepalived
+    state: present
+    update_cache: true
 
-  vars:
-    haproxy_cfg_path: /etc/haproxy/haproxy.cfg
+- name: Ensure required sysctl settings for Keepalived VIP are present
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: 'net.ipv4.ip_nonlocal_bind', value: '1' }
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.ipv4.conf.all.arp_ignore', value: '1' }
+    - { key: 'net.ipv4.conf.all.arp_announce', value: '2' }
 
-  tasks:
-    - name: Ensure required packages are installed
-      ansible.builtin.apt:
-        name:
-          - haproxy
-          - keepalived
-        state: present
-        update_cache: true
+- name: Deploy HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ haproxy_cfg_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart HAProxy
 
-    - name: Ensure required sysctl settings for Keepalived VIP are present
-      ansible.posix.sysctl:
-        name: "{{ item.key }}"
-        value: "{{ item.value }}"
-        state: present
-        reload: yes
-      loop:
-        - { key: 'net.ipv4.ip_nonlocal_bind', value: '1' }
-        - { key: 'net.ipv4.ip_forward', value: '1' }
-        - { key: 'net.ipv4.conf.all.arp_ignore', value: '1' }
-        - { key: 'net.ipv4.conf.all.arp_announce', value: '2' }
+- name: Deploy Keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart Keepalived
 
-    - name: Deploy HAProxy configuration
-      ansible.builtin.template:
-        src: haproxy.cfg.j2
-        dest: "{{ haproxy_cfg_path }}"
-        owner: root
-        group: root
-        mode: '0644'
-      notify: Restart HAProxy
+- name: Ensure HAProxy is enabled and running
+  ansible.builtin.service:
+    name: haproxy
+    enabled: true
+    state: started
 
-    - name: Deploy Keepalived configuration
-      ansible.builtin.template:
-        src: keepalived.conf.j2
-        dest: /etc/keepalived/keepalived.conf
-        owner: root
-        group: root
-        mode: '0644'
-      notify: Restart Keepalived
-
-    - name: Ensure HAProxy is enabled and running
-      ansible.builtin.service:
-        name: haproxy
-        enabled: true
-        state: started
-
-    - name: Ensure Keepalived is enabled and running
-      ansible.builtin.service:
-        name: keepalived
-        enabled: true
-        state: started
-
-  handlers:
-    - name: Restart HAProxy
-      ansible.builtin.service:
-        name: haproxy
-        state: restarted
-
-    - name: Restart Keepalived
-      ansible.builtin.service:
-        name: keepalived
-        state: restarted
+- name: Ensure Keepalived is enabled and running
+  ansible.builtin.service:
+    name: keepalived
+    enabled: true
+    state: started
