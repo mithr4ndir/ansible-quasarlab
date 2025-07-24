@@ -1,39 +1,35 @@
-- name: Initialize first control-plane node
-  hosts: k8s[0]
-  become: true
-  tasks:
-    - name: Initialize Kubernetes control-plane
-      ansible.builtin.command: >
-        kubeadm init
-          --control-plane-endpoint={{ k8s_api_vip }}:6443
-          --upload-certs
-          --pod-network-cidr={{ pod_network_cidr }}
-      args:
-        creates: /etc/kubernetes/admin.conf
+- name: Initialize Kubernetes control-plane
+  ansible.builtin.command: >
+    kubeadm init
+      --control-plane-endpoint={{ k8s_api_vip }}:6443
+      --upload-certs
+      --pod-network-cidr={{ pod_network_cidr }}
+  args:
+    creates: /etc/kubernetes/admin.conf
 
-    - name: Set up admin kubeconfig
-      ansible.builtin.file:
-        path: /home/{{ ansible_user }}/.kube
-        state: directory
-        mode: '0755'
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
+- name: Set up admin kubeconfig
+  ansible.builtin.file:
+    path: /home/{{ ansible_user }}/.kube
+    state: directory
+    mode: '0755'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
 
-    - name: Copy kubeconfig to user
-      ansible.builtin.copy:
-        src: /etc/kubernetes/admin.conf
-        dest: /home/{{ ansible_user }}/.kube/config
-        mode: 0600
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
+- name: Copy kubeconfig to user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/{{ ansible_user }}/.kube/config
+    mode: 0600
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
 
-    - name: Generate cert key and control-plane join command
-      ansible.builtin.shell: |
-        CERT_KEY=$(kubeadm init phase upload-certs --upload-certs | tail -n1)
-        kubeadm token create --print-join-command | \
-          sed "s/$/ --control-plane --certificate-key ${CERT_KEY}/" > /tmp/join.sh
-      args:
-        creates: /tmp/join.sh
-      delegate_to: "{{ groups['k8s'][0] }}"
-      run_once: true
+- name: Generate cert key and control-plane join command
+  ansible.builtin.shell: |
+    CERT_KEY=$(kubeadm init phase upload-certs --upload-certs | tail -n1)
+    kubeadm token create --print-join-command | \
+      sed "s/$/ --control-plane --certificate-key ${CERT_KEY}/" > /tmp/join.sh
+  args:
+    creates: /tmp/join.sh
+  delegate_to: "{{ groups['k8s'][0] }}"
+  run_once: true
 
