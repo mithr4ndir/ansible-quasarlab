@@ -8,13 +8,13 @@
     - k8s/kube_pkg
 
 - name: Initialize first control‑plane node
-  hosts: node1
+  hosts: k8cluster1
   become: yes
   roles:
     - k8s/kube_init
 
 - name: Join additional control‑plane + workers
-  hosts: node2:node3
+  hosts: k8cluster2:k8cluster3
   become: yes
   roles:
     - k8s/kube_join
