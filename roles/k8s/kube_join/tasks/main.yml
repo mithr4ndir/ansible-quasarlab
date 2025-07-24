@@ -1,16 +1,11 @@
-- name: Join additional control-plane nodes
-  hosts: "{{ groups['k8s'][1:] }}"
-  become: true
-  tasks:
-    - name: Fetch join.sh from first control-plane node
-      ansible.builtin.fetch:
-        src: /tmp/join.sh
-        dest: /tmp/join.sh
-        flat: yes
-      delegate_to: "{{ groups['k8s'][0] }}"
-      run_once: true
+- name: Fetch join.sh from first control-plane node
+  ansible.builtin.fetch:
+    src: /tmp/join.sh
+    dest: /tmp/join.sh
+    flat: yes
+  run_once: true
 
-    - name: Run kubeadm join using fetched script
-      ansible.builtin.shell: bash /tmp/join.sh
-      args:
-        creates: /etc/kubernetes/kubelet.conf
+- name: Run kubeadm join using fetched script
+  ansible.builtin.shell: bash /tmp/join.sh
+  args:
+    creates: /etc/kubernetes/kubelet.conf
