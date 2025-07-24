@@ -1,7 +1,7 @@
 - name: Initialize Kubernetes control-plane
   ansible.builtin.command: >
     kubeadm init
-      --control-plane-endpoint={{ k8s_api_vip }}:6443
+      --control-plane-endpoint={{ vip_address }}:6443
       --upload-certs
       --pod-network-cidr={{ pod_network_cidr }}
   args:
