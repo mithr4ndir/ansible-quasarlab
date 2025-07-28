@@ -33,11 +33,10 @@
     update_cache: yes
   register: repo_added
 
-- name: Install kubelet, kubeadm
+- name: Install kubectl
   ansible.builtin.apt:
     name:
-      - "kubelet={{ kube_version }}"
-      - "kubeadm={{ kube_version }}"
+      - "kubectl={{ kube_version }}"
     state: present
     update_cache: no
   become: true
@@ -50,6 +49,5 @@
 - name: Hold Kubernetes packages (if not already held)
   ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
   when: >
-    ('kubelet' not in held_pkgs.stdout) or
-    ('kubeadm' not in held_pkgs.stdout)
+    ('kubectl' not in held_pkgs.stdout)
   become: true
