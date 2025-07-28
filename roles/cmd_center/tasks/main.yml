@@ -1,3 +1,8 @@
+- name: Include common kubectl logic from shared role
+  import_role:
+    name: common
+  tasks_from: apps/kubectl.yml
+
 - name: Ensure pip and base tools are installed
   apt:
     name:
