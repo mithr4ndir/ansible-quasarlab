@@ -1,0 +1,5 @@
+- name: Configure command center for k8s mgmt ansible modules
+  hosts: cmd_center
+  become: yes
+  roles:
+    - cmd_center/k8smgmt
