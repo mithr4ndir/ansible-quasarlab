@@ -1,0 +1,64 @@
+- name: Ensure pip and base tools are installed
+  apt:
+    name:
+      - python3-pip
+      - curl
+      - "kubectl={{ kube_version }}"
+    state: present
+    update_cache: true
+  become: yes
+
+- name: Install required Python packages
+  pip:
+    name:
+      - kubernetes
+      - openshift
+      - pyyaml
+    executable: pip3
+  become: yes
+
+- name: Add kubectl alias to bashrc
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    line: 'alias k=kubectl'
+    create: yes
+  become: false
+
+- name: Source bashrc for kubectl alias (optional)
+  ansible.builtin.shell: source /home/{{ ansible_user }}/.bashrc
+  args:
+    executable: /bin/bash
+  when: ansible_user_shell == "/bin/bash"
+  become: false
+
+
+- name: Ensure .kube directory exists
+  file:
+    path: /home/{{ ansible_user }}/.kube
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+
+- name: Wait for kubeconfig to exist on first control plane node
+  wait_for:
+    path: /etc/kubernetes/admin.conf
+    timeout: 60
+  delegate_to: "{{ groups['k8s'][0] }}"
+  run_once: true
+
+- name: Fetch kubeconfig from first control plane node
+  fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: /tmp/admin.conf
+    flat: yes
+  delegate_to: "{{ groups['k8s'][0] }}"
+  run_once: true
+
+- name: Copy kubeconfig to command center
+  copy:
+    src: /tmp/admin.conf
+    dest: /home/{{ ansible_user }}/.kube/config
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
