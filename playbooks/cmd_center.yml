@@ -2,5 +2,5 @@
   hosts: cmd_center
   become: yes
   roles:
-    - cmd_center
     - common/apps/kubectl
+    - cmd_center
