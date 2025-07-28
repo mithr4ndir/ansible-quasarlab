@@ -1,6 +1,6 @@
 - name: Set short version for URL
   set_fact:
-    kubectl_short_version: "{{ kubectl_version.split('.')[0] }}.{{ kubectl_version.split('.')[1] }}"
+    kubectl_short_version: "{{ kube_version.split('.')[0] }}.{{ kube_version.split('.')[1] }}"
 
 - name: Ensure /etc/apt/keyrings exists
   ansible.builtin.file:
