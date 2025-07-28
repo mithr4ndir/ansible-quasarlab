@@ -1,3 +1,11 @@
+- name: Ensure ArgoCD namespace exists
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ argocd_namespace }}"
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+
 - name: Install Argo CD HA manifests
   kubernetes.core.k8s:
     state: present
