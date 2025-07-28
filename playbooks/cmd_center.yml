@@ -2,4 +2,5 @@
   hosts: cmd_center
   become: yes
   roles:
-    - cmd_center/k8smgmt
+    - common/apps/kubectl
+    - cmd_center

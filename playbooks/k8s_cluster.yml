@@ -6,6 +6,7 @@
     - k8s/containerd
     - k8s/docker
     - k8s/kube_pkg
+    - common/apps/kubectl
 
 - name: Initialize first control‑plane node
   hosts: k8cluster1
