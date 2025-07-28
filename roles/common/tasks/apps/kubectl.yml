@@ -1,3 +1,7 @@
+- name: Set short version for URL
+  set_fact:
+    kubectl_short_version: "{{ kubectl_version.split('.')[0] }}.{{ kubectl_version.split('.')[1] }}"
+
 - name: Ensure /etc/apt/keyrings exists
   ansible.builtin.file:
     path: /etc/apt/keyrings
@@ -6,7 +10,7 @@
 
 - name: Download Kubernetes APT signing key
   ansible.builtin.get_url:
-    url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
+    url: https://pkgs.k8s.io/core:/stable:/v{{ kubectl_short_version }}/deb/Release.key
     dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
     mode: '0644'
 
@@ -27,7 +31,7 @@
   ansible.builtin.apt_repository:
     repo: >-
       deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
-      https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+      https://pkgs.k8s.io/core:/stable:/v{{ kubectl_short_version }}/deb/ /
     filename: kubernetes
     state: present
     update_cache: yes
