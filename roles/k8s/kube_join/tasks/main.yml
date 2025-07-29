@@ -11,10 +11,18 @@
   copy:
     src: /tmp/join.sh
     dest: /tmp/join.sh
-    mode: 'preserve'
+    mode: '0755'
     remote_src: false
 
 - name: Run kubeadm join using copied script
   shell: bash /tmp/join.sh
   args:
     creates: /etc/kubernetes/kubelet.conf
+
+- name: Add kubectl alias to bashrc
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    line: 'alias k=kubectl'
+    create: yes
+  become: false
+  run_once: true

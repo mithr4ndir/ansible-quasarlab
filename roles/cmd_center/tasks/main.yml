@@ -7,6 +7,12 @@
     update_cache: true
   become: yes
 
+- name: Ensure kubernetes.core collection is installed
+  ansible.builtin.command: ansible-galaxy collection install kubernetes.core --force
+  args:
+    creates: /root/.ansible/collections/ansible_collections/kubernetes/core
+  become: true
+
 - name: Install Python packages via apt
   apt:
     name:
@@ -22,6 +28,7 @@
     line: 'alias k=kubectl'
     create: yes
   become: false
+  run_once: true
 
 - name: Source bashrc for kubectl alias (optional)
   ansible.builtin.shell: source /home/{{ ansible_user }}/.bashrc
@@ -29,7 +36,6 @@
     executable: /bin/bash
   when: ansible_user_shell == "/bin/bash"
   become: false
-
 
 - name: Ensure .kube directory exists
   file:
