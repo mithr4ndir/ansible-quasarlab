@@ -14,15 +14,3 @@
   roles:
     - k8s/kube_init
 
-- name: Join additional control‑plane + workers
-  hosts: k8cluster2:k8cluster3
-  become: yes
-  roles:
-    - k8s/kube_join
-
-- name: Deploy CNI & Argo CD
-  hosts: k8s
-  become: yes
-  roles:
-    - k8s/cni
-    - k8s/argocd
