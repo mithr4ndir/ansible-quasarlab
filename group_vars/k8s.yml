@@ -1,7 +1,5 @@
 # Argo CD configuration
 argocd_git_repo: "https://github.com/mithr4ndir/k8s-argocd.git"
-argocd_git_path: "cluster-addons/calico"
-argocd_app_name: "calico"
 argocd_version: "v3.0.12"
 argocd_namespace: "argocd"
 argocd_server_service_type: "LoadBalancer"
