@@ -11,7 +11,7 @@
   copy:
     src: /tmp/join.sh
     dest: /tmp/join.sh
-    mode: '0755'
+    mode: 'preserve'
     remote_src: false
 
 - name: Run kubeadm join using copied script
