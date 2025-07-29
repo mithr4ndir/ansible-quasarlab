@@ -5,7 +5,7 @@
     - k8s/kube_join
 
 - name: Deploy CNI & Argo CD
-  hosts: k8scluster1
+  hosts: k8cluster1
   become: yes
   roles:
     - k8s/cni
