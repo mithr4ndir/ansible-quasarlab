@@ -1,5 +1,5 @@
 - name: Set short version for URL
-  set_fact:
+  ansible.builtin.set_fact:
     kubectl_short_version: "{{ kube_version.split('.')[0] }}.{{ kube_version.split('.')[1] }}"
 
 - name: Ensure /etc/apt/keyrings exists
@@ -57,7 +57,7 @@
   run_once: true
 
 - name: Hold kubectl package (if not already held)
-  community.general.dpkg_selections:
+  ansible.builtin.dpkg_selections:
     name: kubectl
     selection: hold
   become: true
