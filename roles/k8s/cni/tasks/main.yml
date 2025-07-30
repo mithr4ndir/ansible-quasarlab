@@ -2,7 +2,6 @@
   get_url:
     url: https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/calico.yaml
     dest: /tmp/calico.yaml
-  delegate_to: "{{ groups['k8s'][0] }}"
   run_once: true
 
 - name: Apply Calico manifests declaratively
@@ -10,6 +9,4 @@
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     src: /tmp/calico.yaml
-  delegate_to: "{{ groups['k8s'][0] }}"
   run_once: true
-
