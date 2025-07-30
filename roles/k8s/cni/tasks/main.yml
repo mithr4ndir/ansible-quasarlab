@@ -5,7 +5,11 @@
   delegate_to: "{{ groups['k8s'][0] }}"
   run_once: true
 
-- name: Apply Calico manifest using kubectl
-  command: kubectl apply -f /tmp/calico.yaml --kubeconfig /etc/kubernetes/admin.conf
+- name: Apply Calico manifests declaratively
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    src: /tmp/calico.yaml
   delegate_to: "{{ groups['k8s'][0] }}"
   run_once: true
+

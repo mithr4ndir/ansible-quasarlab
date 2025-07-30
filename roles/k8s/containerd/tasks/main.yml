@@ -10,8 +10,12 @@
     regexp: 'SystemdCgroup = false'
     replace: 'SystemdCgroup = true'
     backup: yes
+  register: cgroup_replaced
+  become: true
 
-- name: Restart containerd
+- name: Restart containerd only if config was changed
   ansible.builtin.service:
     name: containerd
     state: restarted
+  when: cgroup_replaced is changed
+  become: true

@@ -9,11 +9,17 @@
     - { ip: "192.168.1.89", name: "k8cluster2" }
     - { ip: "192.168.1.91", name: "k8cluster3" }
 
-- name: Turn off swap now
+- name: Check if swap is active
+  ansible.builtin.command: swapon --summary
+  register: swap_status
+  changed_when: false
+  failed_when: false
+
+- name: Turn off swap only if active
   ansible.builtin.command: swapoff -a
+  when: swap_status.stdout != ""
   register: swapoff_result
-  ignore_errors: true  # optional, in case swapoff fails on a node
-  changed_when: swapoff_result.rc == 0
+  changed_when: true  # swap was active and is now off
 
 - name: Remove swap entry from fstab
   ansible.builtin.replace:
