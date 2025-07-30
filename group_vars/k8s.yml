@@ -1,8 +1,2 @@
-# Argo CD configuration
-argocd_git_repo: "https://github.com/mithr4ndir/k8s-argocd.git"
-argocd_version: "v3.0.12"
-argocd_namespace: "argocd"
-argocd_server_service_type: "LoadBalancer"
-
 # K8s
 pod_network_cidr: "10.244.0.0/16"

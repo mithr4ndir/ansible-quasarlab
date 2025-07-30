@@ -14,9 +14,8 @@
   roles:
     - k8s/kube_init
 
-- name: Deploy CNI & Argo CD
+- name: Deploy CNI
   hosts: k8cluster1
   become: yes
   roles:
     - k8s/cni
-    - k8s/argocd
