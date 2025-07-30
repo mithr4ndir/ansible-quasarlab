@@ -4,13 +4,13 @@
     kind: Namespace
     name: "{{ argocd_namespace }}"
     state: present
-    kubeconfig: /etc/kubernetes/admin.conf
+    kubeconfig: "{{ kubeconfig_path }}"
 
 - name: Install Argo CD HA manifests
   kubernetes.core.k8s:
     state: present
     src: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/ha/install.yaml"
-    kubeconfig: /etc/kubernetes/admin.conf
+    kubeconfig: "{{ kubeconfig_path }}"
 
 - name: Patch Argo CD Server service to LoadBalancer
   kubernetes.core.k8s:
@@ -23,7 +23,7 @@
     definition:
       spec:
         type: "{{ argocd_server_service_type }}"
-    kubeconfig: /etc/kubernetes/admin.conf
+    kubeconfig: "{{ kubeconfig_path }}"
 
 - name: Wait for Argo CD server deployment to be ready
   kubernetes.core.k8s_info:
@@ -31,7 +31,7 @@
     kind: Deployment
     name: argocd-server
     namespace: "{{ argocd_namespace }}"
-    kubeconfig: /etc/kubernetes/admin.conf
+    kubeconfig: "{{ kubeconfig_path }}"
   register: argo_deploy
   until: argo_deploy.resources[0].status.availableReplicas | default(0) >= 1
   retries: 15
@@ -53,4 +53,4 @@
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('file', 'files/argocd-applicationset.yaml') | from_yaml }}"
-    kubeconfig: /etc/kubernetes/admin.conf
+    kubeconfig: "{{ kubeconfig_path }}"

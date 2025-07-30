@@ -15,3 +15,5 @@ argocd_git_repo: "https://github.com/mithr4ndir/k8s-argocd.git"
 argocd_version: "v3.0.12"
 argocd_namespace: "argocd"
 argocd_server_service_type: "LoadBalancer"
+
+kubeconfig_path: "/home/{{ ansible_user }}/.kube/config"
