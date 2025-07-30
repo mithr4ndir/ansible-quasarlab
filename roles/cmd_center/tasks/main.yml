@@ -1,12 +1,3 @@
-- name: Ensure pip and base tools are installed
-  apt:
-    name:
-      - python3-pip
-      - curl
-    state: present
-    update_cache: true
-  become: yes
-
 - name: Ensure kubernetes.core collection is installed
   ansible.builtin.command: ansible-galaxy collection install kubernetes.core --force
   args:
@@ -16,6 +7,8 @@
 - name: Install Python packages via apt
   apt:
     name:
+      - curl
+      - python3-pip
       - python3-kubernetes
       - python3-openshift
       - python3-yaml
@@ -41,7 +34,7 @@
   fetch:
     src: /etc/kubernetes/admin.conf
     dest: /tmp/admin.conf
-    flat: yes
+    flat: true
   delegate_to: "{{ groups['k8s'][0] }}"
   run_once: true
 

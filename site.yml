@@ -1,2 +1,4 @@
-- import_playbook: playbooks/k8s_cluster.yml
+- import_playbook: playbooks/cmd_center.yml
 - import_playbook: playbooks/lb_setup.yml
+- import_playbook: playbooks/k8s_init.yml
+- import_playbook: playbooks/k8s_final.yml
