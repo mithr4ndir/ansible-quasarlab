@@ -53,13 +53,6 @@
   become: false
   run_once: true
 
-- name: Source bashrc for kubectl alias (optional)
-  ansible.builtin.shell: source /home/{{ ansible_user }}/.bashrc
-  args:
-    executable: /bin/bash
-  when: ansible_user_shell == "/bin/bash"
-  become: false
-
 - name: Check if packages are already held
   ansible.builtin.command: apt-mark showhold
   register: held_pkgs
