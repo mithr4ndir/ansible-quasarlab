@@ -1,0 +1,7 @@
+warn_list:
+  - all  # show everything unless skipped
+
+skip_list:
+  - no-changed-when
+  - command-instead-of-shell
+  - fqdn[action-core]

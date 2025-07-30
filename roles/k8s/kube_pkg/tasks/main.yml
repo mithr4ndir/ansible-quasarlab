@@ -30,7 +30,7 @@
       https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
     filename: kubernetes
     state: present
-    update_cache: yes
+    update_cache: true
   register: repo_added
 
 - name: Install kubelet, kubeadm
@@ -39,17 +39,14 @@
       - "kubelet={{ kube_version }}"
       - "kubeadm={{ kube_version }}"
     state: present
-    update_cache: no
+    update_cache: false
   become: true
 
-- name: Check if packages are already held
-  ansible.builtin.command: apt-mark showhold
-  register: held_pkgs
-  changed_when: false
-
 - name: Hold Kubernetes packages (if not already held)
-  ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
-  when: >
-    ('kubelet' not in held_pkgs.stdout) or
-    ('kubeadm' not in held_pkgs.stdout)
+  community.general.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
   become: true
