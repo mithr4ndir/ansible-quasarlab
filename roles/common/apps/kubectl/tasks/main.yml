@@ -34,7 +34,7 @@
       https://pkgs.k8s.io/core:/stable:/v{{ kubectl_short_version }}/deb/ /
     filename: kubernetes
     state: present
-    update_cache: yes
+    update_cache: true
   register: repo_added
 
 - name: Install kubectl
@@ -42,24 +42,22 @@
     name:
       - "kubectl={{ kube_version }}"
     state: present
-    update_cache: no
+    update_cache: false
   become: true
 
 - name: Add kubectl alias to bashrc
   ansible.builtin.lineinfile:
     path: "/home/{{ ansible_user }}/.bashrc"
     line: 'alias k=kubectl'
-    create: yes
+    create: true
+    mode: '0644'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
   become: false
   run_once: true
 
-- name: Check if packages are already held
-  ansible.builtin.command: apt-mark showhold
-  register: held_pkgs
-  changed_when: false
-
-- name: Hold Kubernetes packages (if not already held)
-  ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
-  when: >
-    ('kubectl' not in held_pkgs.stdout)
+- name: Hold kubectl package (if not already held)
+  community.general.dpkg_selections:
+    name: kubectl
+    selection: hold
   become: true
