@@ -10,6 +10,7 @@
   kubernetes.core.k8s:
     state: present
     src: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/ha/install.yaml"
+    namespace: "{{ argocd_namespace }}"
     kubeconfig: "{{ kubeconfig_path }}"
 
 - name: Patch Argo CD Server service to LoadBalancer
