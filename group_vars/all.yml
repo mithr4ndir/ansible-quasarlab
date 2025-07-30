@@ -9,3 +9,9 @@ nginx_lb_key:  "/etc/nginx/certs/tls.key"
 
 # k8s versions
 kube_version: "1.33.3-1.1"
+
+# Argo CD configuration
+argocd_git_repo: "https://github.com/mithr4ndir/k8s-argocd.git"
+argocd_version: "v3.0.12"
+argocd_namespace: "argocd"
+argocd_server_service_type: "LoadBalancer"
