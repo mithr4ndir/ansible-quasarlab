@@ -4,3 +4,4 @@
   roles:
     - common/apps/kubectl
     - cmd_center
+    - k8s/argocd
