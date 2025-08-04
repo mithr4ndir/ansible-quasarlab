@@ -38,18 +38,6 @@
   retries: 15
   delay: 10
 
-- name: Show Argo CD initial admin password
-  command: >
-    kubectl -n {{ argocd_namespace }}
-      get secret argocd-initial-admin-secret
-      -o jsonpath="{.data.password}" | base64 -d
-  register: argo_password
-  changed_when: false
-
-- name: Display Argo CD admin password
-  ansible.builtin.debug:
-    msg: "🎉 Argo CD admin password = {{ argo_password.stdout }}"
-
 - name: Bootstrap ApplicationSet for environment discovery
   kubernetes.core.k8s:
     state: present
