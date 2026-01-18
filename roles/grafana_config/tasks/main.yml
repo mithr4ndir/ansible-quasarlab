@@ -1,0 +1,74 @@
+---
+- name: Create dashboard directories
+  ansible.builtin.file:
+    path: "{{ grafana_dashboards_dir }}/{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: '0755'
+  loop:
+    - kubernetes
+    - proxmox
+    - vms
+
+- name: Create alerting directory
+  ansible.builtin.file:
+    path: "{{ grafana_alerting_dir }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: '0755'
+
+- name: Copy datasource configuration
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/provisioning/datasources/"
+    dest: "{{ grafana_provisioning_dir }}/datasources/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy dashboard provisioning config
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/provisioning/dashboards/"
+    dest: "{{ grafana_provisioning_dir }}/dashboards/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy Kubernetes dashboards
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/dashboards/kubernetes/"
+    dest: "{{ grafana_dashboards_dir }}/kubernetes/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy Proxmox dashboards
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/dashboards/proxmox/"
+    dest: "{{ grafana_dashboards_dir }}/proxmox/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy VM dashboards
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/dashboards/vms/"
+    dest: "{{ grafana_dashboards_dir }}/vms/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy alerting rules
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/alerting/rules/"
+    dest: "{{ grafana_alerting_dir }}/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana

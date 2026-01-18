@@ -1,0 +1,5 @@
+---
+grafana_provisioning_dir: /etc/grafana/provisioning
+grafana_dashboards_dir: /var/lib/grafana/dashboards
+grafana_alerting_dir: /etc/grafana/provisioning/alerting
+observability_repo_path: /home/ladino/code/observability-quasarlab

@@ -1,2 +1,4 @@
 .vscode/
 .venv/
+.vault_pass
+group_vars/vault.yml

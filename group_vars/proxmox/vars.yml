@@ -1,0 +1,6 @@
+---
+# PVE Exporter Configuration
+pve_exporter_port: 9221
+pve_api_user: "prometheus@pve"
+pve_api_token_name: "monitoring"
+pve_api_token_value: "{{ vault_pve_api_token_value }}"

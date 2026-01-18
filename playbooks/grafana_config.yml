@@ -1,0 +1,6 @@
+---
+- name: Deploy Grafana configuration
+  hosts: grafana
+  become: true
+  roles:
+    - grafana_config
