@@ -2,3 +2,5 @@
 - import_playbook: playbooks/lb_setup.yml
 - import_playbook: playbooks/k8s_init.yml
 - import_playbook: playbooks/k8s_final.yml
+- import_playbook: playbooks/monitoring.yml
+  tags: [monitoring]

@@ -1,0 +1,41 @@
+---
+- name: Install pipx
+  ansible.builtin.apt:
+    name: pipx
+    state: present
+    update_cache: true
+
+- name: Install prometheus-pve-exporter via pipx
+  ansible.builtin.command:
+    cmd: pipx install prometheus-pve-exporter
+    creates: /usr/local/bin/pve_exporter
+  environment:
+    PIPX_HOME: /opt/pipx
+    PIPX_BIN_DIR: /usr/local/bin
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: /etc/pve_exporter
+    state: directory
+    mode: '0700'
+
+- name: Create PVE exporter config
+  ansible.builtin.template:
+    src: pve.yml.j2
+    dest: /etc/pve_exporter/pve.yml
+    mode: '0600'
+  notify: Restart pve_exporter
+
+- name: Create systemd service
+  ansible.builtin.template:
+    src: pve_exporter.service.j2
+    dest: /etc/systemd/system/pve_exporter.service
+    mode: '0644'
+  notify: Restart pve_exporter
+
+- name: Enable and start pve_exporter
+  ansible.builtin.systemd:
+    name: pve_exporter
+    enabled: true
+    state: started
+    daemon_reload: true

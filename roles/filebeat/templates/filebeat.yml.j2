@@ -1,0 +1,61 @@
+filebeat.config.modules:
+  path: ${path.config}/modules.d/*.yml
+  reload.enabled: false
+
+filebeat.inputs:
+  - type: filestream
+    id: syslog
+    enabled: true
+    paths:
+      - /var/log/syslog
+      - /var/log/auth.log
+    fields:
+      host: "{{ inventory_hostname }}"
+      type: syslog
+    fields_under_root: true
+
+  - type: filestream
+    id: app-logs
+    enabled: true
+    paths:
+      - /var/log/*.log
+    exclude_files:
+      - '\.gz$'
+    fields:
+      host: "{{ inventory_hostname }}"
+      type: application
+    fields_under_root: true
+
+filebeat.modules:
+  - module: system
+    syslog:
+      enabled: true
+    auth:
+      enabled: true
+
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_fields:
+      target: ''
+      fields:
+        environment: quasarlab
+        plane: hypervisor
+
+output.elasticsearch:
+  hosts: ["https://{{ elasticsearch_host }}"]
+  username: "{{ elasticsearch_username }}"
+  password: "{{ elasticsearch_password }}"
+  ssl.verification_mode: none
+  index: "vm-logs-%{+yyyy.MM.dd}"
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0640

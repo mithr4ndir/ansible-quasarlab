@@ -1,0 +1,9 @@
+---
+- name: Deploy monitoring agents to all Linux VMs
+  hosts: linux
+  become: true
+  vars_files:
+    - ../group_vars/vault.yml
+  roles:
+    - node_exporter
+    - filebeat

@@ -17,3 +17,8 @@ argocd_namespace: "argocd"
 argocd_server_service_type: "LoadBalancer"
 
 kubeconfig_path: "/home/{{ ansible_user }}/.kube/config"
+
+# Elasticsearch configuration for Filebeat
+elasticsearch_host: "192.168.1.167:9200"
+elasticsearch_username: "elastic"
+elasticsearch_password: "{{ vault_elasticsearch_password }}"
