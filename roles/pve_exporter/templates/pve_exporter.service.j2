@@ -1,0 +1,12 @@
+[Unit]
+Description=Prometheus PVE Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pve_exporter --config.file /etc/pve_exporter/pve.yml --web.listen-address=:{{ pve_exporter_port }}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+---
+- name: Deploy PVE exporter to Proxmox hosts
+  hosts: proxmox
+  become: true
+  roles:
+    - pve_exporter
