@@ -1,0 +1,20 @@
+---
+# KSATechnologies freenas-proxmox package
+freenas_proxmox_version: "2.2.0-1"
+freenas_proxmox_repo: "deb [signed-by=/usr/share/keyrings/ksatechnologies-truenas-proxmox-keyring.gpg] https://dl.cloudsmith.io/public/ksatechnologies/truenas-proxmox/deb/debian any-version main"
+freenas_proxmox_keyring_url: "https://dl.cloudsmith.io/public/ksatechnologies/truenas-proxmox/gpg.A43FE7D559F44CDC.key"
+
+# Git repo for patches (cloned by the package postinst)
+freenas_git_repo: "https://github.com/TheGrandWazoo/freenas-proxmox.git"
+freenas_git_local_path: "/usr/local/src/freenas-proxmox"
+freenas_git_branch: "2.0"
+
+# Files that get patched
+freenas_patched_files:
+  - /usr/share/perl5/PVE/Storage/ZFSPlugin.pm
+  - /usr/share/pve-manager/js/pvemanagerlib.js
+  - /usr/share/pve-docs/api-viewer/apidoc.js
+
+# FreeNAS.pm module (copied, not patched)
+freenas_module_src: "/usr/local/src/freenas-proxmox/perl5/PVE/Storage/LunCmd/FreeNAS.pm"
+freenas_module_dest: "/usr/share/perl5/PVE/Storage/LunCmd/FreeNAS.pm"

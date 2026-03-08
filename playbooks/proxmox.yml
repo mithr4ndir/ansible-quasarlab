@@ -1,0 +1,15 @@
+---
+- name: Configure Proxmox VE hosts
+  hosts: proxmox
+  become: true
+  roles:
+    - pve/common
+    - pve/freenas_iscsi
+    - pve/networking
+
+- name: Configure GPU passthrough on pve2
+  hosts: pve2
+  become: true
+  roles:
+    - role: pve/gpu_passthrough
+      when: pve_gpu_passthrough | default(false)

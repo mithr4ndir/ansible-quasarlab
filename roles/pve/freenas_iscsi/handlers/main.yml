@@ -1,0 +1,7 @@
+---
+- name: Restart PVE services
+  ansible.builtin.shell: |
+    pvedaemon restart
+    pveproxy restart
+    pvestatd restart
+    systemctl restart pvescheduler.service

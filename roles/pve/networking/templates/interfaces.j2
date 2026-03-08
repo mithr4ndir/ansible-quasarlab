@@ -1,0 +1,49 @@
+auto lo
+iface lo inet loopback
+
+{% if pve_mgmt_iface_manual | default(false) %}
+iface {{ pve_mgmt_interface }} inet manual
+
+{% endif %}
+auto vmbr0
+iface vmbr0 inet static
+	address {{ pve_mgmt_address }}
+	gateway {{ pve_mgmt_gateway }}
+{% if pve_dns_nameservers is defined %}
+        dns-nameservers {{ pve_dns_nameservers }}
+{% endif %}
+	bridge-ports {{ pve_mgmt_interface }}
+	bridge-stp off
+	bridge-fd 0
+{% if pve_offload_interface is defined %}
+	post-up /usr/sbin/ethtool -K {{ pve_offload_interface }} gso off gro off tso off rx off tx off
+{% endif %}
+{% if pve_storage_interface is defined %}
+auto {{ pve_storage_interface }}
+iface {{ pve_storage_interface }} inet manual
+	mtu {{ pve_storage_mtu | default(9000) }}
+
+auto vmbr1
+iface vmbr1 inet static
+{% for addr in pve_vmbr1_addresses %}
+	address {{ addr }}
+{% endfor %}
+	mtu {{ pve_storage_mtu | default(9000) }}
+	bridge-ports {{ pve_storage_interface }}
+	bridge-stp off
+	bridge-fd 0
+{% endif %}
+{% if pve_wireless_interface is defined %}
+
+iface {{ pve_wireless_interface }} inet manual
+
+{% endif %}
+{% if pve_extra_source is defined %}
+
+source /etc/network/interfaces.d/*
+{% endif %}
+{% if pve_static_routes is defined %}
+{% for route in pve_static_routes %}
+up ip route add {{ route }}
+{% endfor %}
+{% endif %}

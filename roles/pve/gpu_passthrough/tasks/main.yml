@@ -1,0 +1,34 @@
+---
+- name: Configure GRUB for IOMMU
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+    line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ pve_grub_cmdline }}"'
+  notify: Update GRUB
+
+- name: Configure VFIO PCI IDs
+  ansible.builtin.template:
+    src: vfio.conf.j2
+    dest: /etc/modprobe.d/vfio.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Update initramfs
+
+- name: Blacklist GPU drivers
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-gpu.conf
+    content: |
+      {% for driver in pve_gpu_blacklist %}
+      blacklist {{ driver }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Update initramfs
+
+- name: Load VFIO kernel modules
+  ansible.builtin.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ pve_vfio_modules }}"

@@ -1,0 +1,14 @@
+# /etc/modules: kernel modules to load at boot time.
+#
+# This file contains the names of kernel modules that should be loaded
+# at boot time, one per line. Lines beginning with "#" are ignored.
+{% if pve_gpu_passthrough | default(false) %}
+# Parameters can be specified after the module name.
+
+{% for mod in pve_vfio_modules | default([]) %}
+{{ mod }}
+{% endfor %}
+{% endif %}
+{% for mod in pve_kernel_modules %}
+{{ mod }}
+{% endfor %}

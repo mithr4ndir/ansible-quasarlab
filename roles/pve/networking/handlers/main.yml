@@ -1,0 +1,6 @@
+---
+- name: Warn about network restart
+  ansible.builtin.debug:
+    msg: >
+      Network configuration changed. A reboot or manual `ifreload -a` is required
+      to apply changes. This is NOT done automatically to avoid losing connectivity.

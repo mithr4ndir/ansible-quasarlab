@@ -1,0 +1,22 @@
+---
+# GPU passthrough configuration (pve2 only)
+pve_gpu_passthrough: false
+
+# VFIO PCI device IDs (RTX 2080 Ti: VGA, Audio, USB, Serial bus)
+pve_vfio_pci_ids: "10de:1e07,10de:10f7,10de:1ad6,10de:1ad7"
+
+# Kernel modules for VFIO
+pve_vfio_modules:
+  - vfio
+  - vfio_iommu_type1
+  - vfio_pci
+
+# Drivers to blacklist (prevent host from claiming GPU)
+pve_gpu_blacklist:
+  - nouveau
+  - nvidia
+  - nvidiafb
+
+# IOMMU settings
+pve_iommu_type: "amd"  # amd or intel
+pve_grub_cmdline: "quiet {{ pve_iommu_type }}_iommu=on iommu=pt"

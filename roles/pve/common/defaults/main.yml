@@ -1,0 +1,26 @@
+---
+# APT repositories
+pve_apt_no_subscription: true
+pve_apt_ceph_repo: "ceph-reef"
+
+# iSCSI tuning
+pve_iscsi_startup: "/bin/systemctl start iscsid.socket"
+pve_iscsi_node_startup: "automatic"
+pve_iscsi_leading_login: "Yes"
+pve_iscsi_replacement_timeout: 260
+pve_iscsi_cmds_max: 128
+pve_iscsi_queue_depth: 32
+pve_iscsi_first_burst_length: 262144
+pve_iscsi_max_burst_length: 1048576
+pve_iscsi_max_recv_data_segment: 1048576
+pve_iscsi_max_xmit_data_segment: 1048576
+
+# Kernel modules to load on all PVE nodes
+pve_kernel_modules:
+  - vhost_net
+
+# Services to enable
+pve_iscsi_services:
+  - iscsid
+  - open-iscsi
+  - multipathd
