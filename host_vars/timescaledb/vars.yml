@@ -1,0 +1,5 @@
+---
+# Systemd service monitoring (TimescaleDB runs in Docker)
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - docker.service

@@ -3,3 +3,7 @@ node_exporter_version: "1.7.0"
 node_exporter_port: 9100
 node_exporter_install_dir: /usr/local/bin
 node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
+
+# Systemd service monitoring (disabled by default)
+node_exporter_systemd_enabled: false
+node_exporter_systemd_units: []
