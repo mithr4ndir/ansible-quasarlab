@@ -24,9 +24,10 @@ pending=$(apt list --upgradable 2>/dev/null | grep -c "\-security" || true)
 last_success=1
 last_timestamp=$(date +%s)
 if [[ -f "$LOG" ]]; then
-    # Check for actual failures in the last run
-    # Only match real errors, not informational warnings like "distro-info-data outdated"
-    if tail -50 "$LOG" | grep -qiE "ERROR|dpkg.*error|failed to|could not install|upgrade.*failed"; then
+    # Check for actual upgrade failures in the last run
+    # Avoid false positives from informational warnings (distro-info-data outdated,
+    # Failed to fetch mirrors, etc.)
+    if tail -100 "$LOG" | grep -qP '(?i)(dpkg: error processing|Unattended-upgrade result: .?False|could not install|upgrade .*failed|E: Sub-process .* returned an error)'; then
         last_success=0
     fi
     # Get timestamp of last log entry
