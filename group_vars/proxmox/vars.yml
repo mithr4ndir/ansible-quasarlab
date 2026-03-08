@@ -4,3 +4,12 @@ pve_exporter_port: 9221
 pve_api_user: "prometheus@pve"
 pve_api_token_name: "monitoring"
 pve_api_token_value: "{{ vault_pve_api_token_value }}"
+
+# Unattended upgrades — block kernel and PVE packages
+unattended_upgrades_blacklist:
+  - pve-*
+  - proxmox-*
+  - linux-image-*
+  - linux-headers-*
+  - pve-kernel-*
+  - pve-firmware
