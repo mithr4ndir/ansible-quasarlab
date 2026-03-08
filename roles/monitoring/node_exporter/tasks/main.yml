@@ -41,6 +41,14 @@
     remote_src: true
   when: not node_exporter_bin.stat.exists
 
+- name: Create textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: node_exporter
+    group: node_exporter
+    mode: '0755'
+
 - name: Create systemd service
   ansible.builtin.template:
     src: node_exporter.service.j2

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Managed by Ansible — do not edit manually
+# Writes Prometheus metrics for unattended-upgrades status.
+# Called via apt post-invoke hook after every apt operation.
+set -euo pipefail
+
+TEXTFILE_DIR="{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}"
+PROM_FILE="${TEXTFILE_DIR}/unattended_upgrades.prom"
+LOG="/var/log/unattended-upgrades/unattended-upgrades.log"
+
+mkdir -p "$TEXTFILE_DIR"
+
+# Reboot required
+if [[ -f /var/run/reboot-required ]]; then
+    reboot_required=1
+else
+    reboot_required=0
+fi
+
+# Pending security updates
+pending=$(apt list --upgradable 2>/dev/null | grep -c "\-security" || true)
+
+# Last unattended-upgrades result (parse most recent run from log)
+last_success=1
+last_timestamp=$(date +%s)
+if [[ -f "$LOG" ]]; then
+    # Check for errors in the last run
+    if tail -50 "$LOG" | grep -qiE "ERROR|WARNING.*dpkg|failed|could not"; then
+        last_success=0
+    fi
+    # Get timestamp of last log entry
+    last_line_date=$(tail -1 "$LOG" 2>/dev/null | grep -oP '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' || true)
+    if [[ -n "$last_line_date" ]]; then
+        last_timestamp=$(date -d "$last_line_date" +%s 2>/dev/null || echo "$last_timestamp")
+    fi
+fi
+
+# Count packages upgraded in last run
+packages_upgraded=0
+if [[ -f "$LOG" ]]; then
+    packages_upgraded=$(tail -100 "$LOG" | grep -c "^Packages that will be upgraded:" || true)
+fi
+
+# Write metrics atomically
+cat > "${PROM_FILE}.tmp" <<METRICS
+# HELP node_reboot_required Whether a reboot is required after updates.
+# TYPE node_reboot_required gauge
+node_reboot_required ${reboot_required}
+# HELP unattended_upgrades_success Whether the last unattended-upgrades run succeeded.
+# TYPE unattended_upgrades_success gauge
+unattended_upgrades_success ${last_success}
+# HELP unattended_upgrades_pending_security Number of pending security updates.
+# TYPE unattended_upgrades_pending_security gauge
+unattended_upgrades_pending_security ${pending}
+# HELP unattended_upgrades_last_run_timestamp_seconds Unix timestamp of last unattended-upgrades run.
+# TYPE unattended_upgrades_last_run_timestamp_seconds gauge
+unattended_upgrades_last_run_timestamp_seconds ${last_timestamp}
+METRICS
+
+mv "${PROM_FILE}.tmp" "$PROM_FILE"
+chmod 644 "$PROM_FILE"
