@@ -1,0 +1,98 @@
+---
+- name: Check if op CLI is installed
+  ansible.builtin.stat:
+    path: /usr/bin/op
+  register: op_bin
+
+- name: Get installed op version
+  ansible.builtin.command: op --version
+  register: op_installed_version
+  changed_when: false
+  when: op_bin.stat.exists
+
+- name: Add 1Password GPG key
+  ansible.builtin.apt_key:
+    url: https://downloads.1password.com/linux/keys/1password.asc
+    keyring: /usr/share/keyrings/1password-archive-keyring.gpg
+    state: present
+
+- name: Add 1Password APT repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main"
+    filename: 1password
+    state: present
+
+- name: Add debsig-verify policy directory
+  ansible.builtin.file:
+    path: /etc/debsig/policies/AC2D62742012EA22
+    state: directory
+    mode: '0755'
+
+- name: Install debsig-verify policy
+  ansible.builtin.get_url:
+    url: https://downloads.1password.com/linux/debian/debsig/1password.pol
+    dest: /etc/debsig/policies/AC2D62742012EA22/1password.pol
+    mode: '0644'
+
+- name: Add debsig-verify keyring directory
+  ansible.builtin.file:
+    path: /usr/share/debsig/keyrings/AC2D62742012EA22
+    state: directory
+    mode: '0755'
+
+- name: Install debsig-verify keyring
+  ansible.builtin.shell: |
+    curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+      gpg --dearmor --output /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg
+  args:
+    creates: /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg
+
+- name: Install 1password-cli
+  ansible.builtin.apt:
+    name: 1password-cli
+    state: present
+    update_cache: true
+
+- name: Ensure op config directory exists
+  ansible.builtin.file:
+    path: "{{ op_config_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+
+- name: Check if service account token exists
+  ansible.builtin.stat:
+    path: "{{ op_token_file }}"
+  register: op_token
+
+- name: Warn if service account token is missing
+  ansible.builtin.debug:
+    msg: >
+      1Password service account token not found at {{ op_token_file }}.
+      Place it manually: grab token from 1Password web UI, then
+      echo '<TOKEN>' > {{ op_token_file }} && chmod 600 {{ op_token_file }}
+  when: not op_token.stat.exists
+
+- name: Ensure token file permissions
+  ansible.builtin.file:
+    path: "{{ op_token_file }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+  when: op_token.stat.exists
+
+- name: Verify op CLI works with service account
+  ansible.builtin.command: op vault list
+  environment:
+    OP_SERVICE_ACCOUNT_TOKEN: "{{ lookup('file', op_token_file) }}"
+  register: op_verify
+  changed_when: false
+  failed_when: false
+  become: false
+  when: op_token.stat.exists
+
+- name: Report op CLI status
+  ansible.builtin.debug:
+    msg: "op CLI {{ 'connected to 1Password' if op_verify.rc == 0 else 'installed but token verification failed' }}"
+  when: op_token.stat.exists
