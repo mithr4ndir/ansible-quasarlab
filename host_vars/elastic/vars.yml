@@ -1,0 +1,5 @@
+---
+# Unattended upgrades — block Elasticsearch packages (managed deployment)
+unattended_upgrades_blacklist:
+  - elasticsearch
+  - elasticsearch-oss

@@ -1,0 +1,6 @@
+---
+# Unattended upgrades — block kubectl (managed via k8s upgrade cycle)
+# 1password-cli is intentionally NOT blacklisted — let it auto-update
+unattended_upgrades_blacklist:
+  - kubectl
+  - kubernetes-cni

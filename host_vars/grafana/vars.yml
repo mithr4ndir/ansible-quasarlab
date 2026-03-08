@@ -1,0 +1,5 @@
+---
+# Unattended upgrades — block Grafana packages (managed deployment)
+unattended_upgrades_blacklist:
+  - grafana
+  - grafana-enterprise
