@@ -2,6 +2,7 @@
 set -uo pipefail
 
 REPO_DIR="/home/ladino/code/ansible-quasarlab"
+OBSERVABILITY_REPO_DIR="/home/ladino/code/observability-quasarlab"
 LOG_DIR="/var/log/ansible-quasarlab"
 LOGFILE="${LOG_DIR}/ansible-$(date +%Y%m%d-%H%M%S).log"
 TEXTFILE_DIR="/var/lib/node_exporter/textfiles"
@@ -9,17 +10,21 @@ PROM_FILE="${TEXTFILE_DIR}/ansible_run.prom"
 
 mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 
+# Pull latest from both repos
 cd "$REPO_DIR"
-
-# Pull latest
 git pull --ff-only origin main >> "$LOGFILE" 2>&1
+
+cd "$OBSERVABILITY_REPO_DIR"
+git pull --ff-only origin master >> "$LOGFILE" 2>&1
+
+cd "$REPO_DIR"
 
 start_time=$(date +%s)
 exit_code=0
 failed_playbooks=""
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
-for playbook in proxmox.yml monitoring.yml; do
+for playbook in proxmox.yml monitoring.yml grafana_config.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     ansible-playbook "playbooks/${playbook}" --diff >> "$LOGFILE" 2>&1
     rc=$?
