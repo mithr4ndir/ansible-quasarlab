@@ -87,6 +87,7 @@
     src: "{{ op_token_file }}"
   register: op_token_content
   become: false
+  no_log: true
   when: op_token.stat.exists
 
 - name: Verify op CLI works with service account
@@ -97,6 +98,7 @@
   changed_when: false
   failed_when: false
   become: false
+  no_log: true
   when: op_token.stat.exists
 
 - name: Report op CLI status
