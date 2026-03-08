@@ -1,0 +1,3 @@
+---
+# Stagger reboot after nginx1 to maintain HA
+unattended_upgrades_reboot_time: "04:00"

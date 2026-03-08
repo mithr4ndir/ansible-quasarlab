@@ -14,6 +14,9 @@ Unattended-Upgrade::Package-Blacklist {
 Unattended-Upgrade::AutoFixInterruptedDpkg "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "{{ unattended_upgrades_autoremove | lower }}";
 Unattended-Upgrade::Automatic-Reboot "{{ unattended_upgrades_auto_reboot | lower }}";
+{% if unattended_upgrades_auto_reboot %}
+Unattended-Upgrade::Automatic-Reboot-Time "{{ unattended_upgrades_reboot_time }}";
+{% endif %}
 {% if unattended_upgrades_mail %}
 Unattended-Upgrade::Mail "{{ unattended_upgrades_mail }}";
 {% endif %}

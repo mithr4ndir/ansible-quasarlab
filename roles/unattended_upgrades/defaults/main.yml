@@ -12,8 +12,9 @@ unattended_upgrades_blacklist: []
 # Auto-remove unused dependencies after update
 unattended_upgrades_autoremove: true
 
-# Don't auto-reboot (we handle reboots manually during maintenance)
-unattended_upgrades_auto_reboot: false
+# Auto-reboot when required after updates
+unattended_upgrades_auto_reboot: true
+unattended_upgrades_reboot_time: "03:00"
 
 # Email notifications (disabled by default)
 unattended_upgrades_mail: ""
