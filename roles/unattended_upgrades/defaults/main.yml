@@ -1,6 +1,9 @@
 ---
-# Only apply security updates by default
+# Apply all package updates (security + regular)
+# Service-specific packages are protected via per-host/group blacklists
 unattended_upgrades_origins:
+  - "${distro_id}:${distro_codename}"
+  - "${distro_id}:${distro_codename}-updates"
   - "${distro_id}:${distro_codename}-security"
 
 # Packages to never auto-update (extended per host via host_vars/group_vars)
