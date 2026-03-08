@@ -1,6 +1,12 @@
 # K8s
 pod_network_cidr: "10.244.0.0/16"
 
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - kubelet.service
+  - containerd.service
+
 # Unattended upgrades — block packages that can break the cluster
 unattended_upgrades_blacklist:
   - kubelet

@@ -12,3 +12,8 @@ unattended_upgrades_blacklist:
   - haproxy
   - keepalived
 
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - haproxy.service
+  - keepalived.service

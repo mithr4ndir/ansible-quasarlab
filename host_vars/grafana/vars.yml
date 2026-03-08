@@ -3,3 +3,8 @@
 unattended_upgrades_blacklist:
   - grafana
   - grafana-enterprise
+
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - grafana-server.service

@@ -3,3 +3,8 @@
 unattended_upgrades_blacklist:
   - elasticsearch
   - elasticsearch-oss
+
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - elasticsearch.service
