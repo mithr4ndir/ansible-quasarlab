@@ -7,7 +7,9 @@ After=network-online.target
 User=node_exporter
 Group=node_exporter
 Type=simple
-ExecStart={{ node_exporter_install_dir }}/node_exporter --web.listen-address=:{{ node_exporter_port }}
+ExecStart={{ node_exporter_install_dir }}/node_exporter \
+    --web.listen-address=:{{ node_exporter_port }} \
+    --collector.textfile.directory={{ node_exporter_textfile_dir }}
 
 [Install]
 WantedBy=multi-user.target

@@ -24,6 +24,22 @@
     enabled: true
     state: started
 
+- name: Deploy update metrics script
+  ansible.builtin.template:
+    src: update-metrics.sh.j2
+    dest: /usr/local/bin/update-metrics.sh
+    mode: '0755'
+
+- name: Configure apt post-invoke hook for metrics
+  ansible.builtin.copy:
+    content: 'DPkg::Post-Invoke { "/usr/local/bin/update-metrics.sh || true"; };'
+    dest: /etc/apt/apt.conf.d/99update-metrics
+    mode: '0644'
+
+- name: Run metrics script to seed initial data
+  ansible.builtin.command: /usr/local/bin/update-metrics.sh
+  changed_when: false
+
 - name: Verify unattended-upgrades is active
   ansible.builtin.command: apt-config dump APT::Periodic::Unattended-Upgrade
   register: apt_config
