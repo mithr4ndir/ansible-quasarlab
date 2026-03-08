@@ -7,3 +7,8 @@ k8s_control_plane_nodes:
 
 vip_interface: eth0
 
+# Unattended upgrades — block load balancer packages (managed deployment)
+unattended_upgrades_blacklist:
+  - haproxy
+  - keepalived
+
