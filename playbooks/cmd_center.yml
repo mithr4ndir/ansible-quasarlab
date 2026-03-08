@@ -4,5 +4,6 @@
   roles:
     - common/apps/kubectl
     - cmd_center
+    - onepassword_cli
     - k8s/cni
     - k8s/argocd
