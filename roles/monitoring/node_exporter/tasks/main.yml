@@ -6,17 +6,24 @@
     system: true
     create_home: false
 
+- name: Check if node_exporter binary exists
+  ansible.builtin.stat:
+    path: "{{ node_exporter_install_dir }}/node_exporter"
+  register: node_exporter_bin
+
 - name: Download node_exporter
   ansible.builtin.get_url:
     url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
     dest: /tmp/node_exporter.tar.gz
     mode: '0644'
+  when: not node_exporter_bin.stat.exists
 
 - name: Extract node_exporter
   ansible.builtin.unarchive:
     src: /tmp/node_exporter.tar.gz
     dest: /tmp
     remote_src: true
+  when: not node_exporter_bin.stat.exists
 
 - name: Ensure install directory exists
   ansible.builtin.file:
@@ -32,6 +39,7 @@
     owner: root
     group: root
     remote_src: true
+  when: not node_exporter_bin.stat.exists
 
 - name: Create systemd service
   ansible.builtin.template:
