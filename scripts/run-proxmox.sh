@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 REPO_DIR="/home/ladino/code/ansible-quasarlab"
 LOG_DIR="/var/log/ansible-quasarlab"
@@ -12,7 +12,7 @@ cd "$REPO_DIR"
 # Pull latest
 git pull --ff-only origin main >> "$LOGFILE" 2>&1
 
-# Run the playbook
+# Run the playbook (don't exit on failure — we still need to rotate logs)
 ansible-playbook playbooks/proxmox.yml --diff >> "$LOGFILE" 2>&1
 exit_code=$?
 
