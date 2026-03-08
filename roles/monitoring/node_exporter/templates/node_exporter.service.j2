@@ -9,7 +9,9 @@ Group=node_exporter
 Type=simple
 ExecStart={{ node_exporter_install_dir }}/node_exporter \
     --web.listen-address=:{{ node_exporter_port }} \
-    --collector.textfile.directory={{ node_exporter_textfile_dir }}
+    --collector.textfile.directory={{ node_exporter_textfile_dir }}{% if node_exporter_systemd_enabled | default(false) %} \
+    --collector.systemd \
+    --collector.systemd.unit-include="{{ node_exporter_systemd_units | join('|') }}"{% endif %}
 
 [Install]
 WantedBy=multi-user.target
