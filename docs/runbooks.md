@@ -152,6 +152,17 @@ The role skips download/extract/install if the binary already exists at the conf
 - GRUB: `amd_iommu=on iommu=pt`
 - VFIO IDs: `10de:1e07,10de:10f7,10de:1ad6,10de:1ad7`
 - nvidia is blacklisted on the host — GPU is exclusively for VM passthrough
+- VM 109 config: `machine: q35`, `hostpci0: 0000:0a:00.0,pcie=1,x-vga=0`
+
+**GPU stability fixes applied:**
+- **Driver**: 570.211.01 inside k8cluster2 (upgraded from 535 to fix RmInitAdapter failures)
+- **GSP disabled**: `options nvidia NVreg_EnableGpuFirmware=0` in VM's `/etc/modprobe.d/nvidia.conf`
+- **Hookscript**: `/var/lib/vz/snippets/gpu-reset.sh` — PCI remove/rescan before VM start
+  - Attached: `qm set 109 --hookscript local:snippets/gpu-reset.sh`
+  - Only triggers on `qm stop`/`qm start`, NOT on `sudo reboot` from inside VM
+  - Logs: `/var/log/gpu-reset.log` on pve2
+
+**Root cause**: NVIDIA GPUs retain internal state after faults (Xid 45 errors from ffmpeg/CUDA). Without a PCI bus reset, the GPU enters a dirty state where `RmInitAdapter` fails on the next driver load. The hookscript ensures a clean PCI reset on every VM start cycle.
 
 ### VM Inventory
 **pve2 (192.168.1.11):**
