@@ -1,0 +1,109 @@
+---
+# This role manages the freenas-proxmox package which patches Proxmox
+# to support ZFS-over-iSCSI with TrueNAS. The patches break on every
+# PVE upgrade because the patched files get replaced by new versions.
+#
+# The package uses dpkg triggers to auto-repatch, but sometimes the
+# triggers fail (patch doesn't apply cleanly to new version).
+# This role ensures the package and repo are properly configured,
+# and can re-apply patches when needed.
+
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name:
+      - git
+      - patch
+    state: present
+
+- name: Add KSATechnologies GPG key
+  ansible.builtin.shell: |
+    curl -fsSL {{ freenas_proxmox_keyring_url }} | gpg --dearmor -o /usr/share/keyrings/ksatechnologies-truenas-proxmox-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/ksatechnologies-truenas-proxmox-keyring.gpg
+
+- name: Configure KSATechnologies APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/ksatechnologies-repo.list
+    content: |
+      # Source: KSATechnologies
+      # Site: https://cloudsmith.io
+      # Repository: KSATechnologies / truenas-proxmox
+      # Description: TrueNAS plugin for Proxmox VE - Production
+      {{ freenas_proxmox_repo }}
+    owner: root
+    group: root
+    mode: '0644'
+  register: repo_changed
+
+- name: Update APT cache after repo change
+  ansible.builtin.apt:
+    update_cache: true
+  when: repo_changed.changed
+
+- name: Install freenas-proxmox package
+  ansible.builtin.apt:
+    name: "freenas-proxmox={{ freenas_proxmox_version }}"
+    state: present
+    update_cache: true
+
+- name: Ensure freenas-proxmox git repo exists
+  ansible.builtin.git:
+    repo: "{{ freenas_git_repo }}"
+    dest: "{{ freenas_git_local_path }}"
+    version: "{{ freenas_git_branch }}"
+    force: true
+
+- name: Check if ZFSPlugin.pm is patched (contains 'freenas')
+  ansible.builtin.shell: grep -c "freenas" /usr/share/perl5/PVE/Storage/ZFSPlugin.pm
+  register: zfsplugin_patched
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check if pvemanagerlib.js is patched (contains 'freenas')
+  ansible.builtin.shell: grep -c "freenas" /usr/share/pve-manager/js/pvemanagerlib.js
+  register: pvemanager_patched
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check if apidoc.js is patched (contains 'freenas')
+  ansible.builtin.shell: grep -c "freenas" /usr/share/pve-docs/api-viewer/apidoc.js
+  register: apidoc_patched
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Patch ZFSPlugin.pm
+  ansible.builtin.shell: >
+    patch -s -b --ignore-whitespace
+    /usr/share/perl5/PVE/Storage/ZFSPlugin.pm
+    < {{ freenas_git_local_path }}/perl5/PVE/Storage/ZFSPlugin.pm.patch
+  when: zfsplugin_patched.stdout | default("0") == "0"
+  notify: Restart PVE services
+
+- name: Patch pvemanagerlib.js
+  ansible.builtin.shell: >
+    patch -s -b --ignore-whitespace
+    /usr/share/pve-manager/js/pvemanagerlib.js
+    < {{ freenas_git_local_path }}/pve-manager/js/pvemanagerlib.js.patch
+  when: pvemanager_patched.stdout | default("0") == "0"
+  notify: Restart PVE services
+
+- name: Patch apidoc.js
+  ansible.builtin.shell: >
+    patch -s -b --ignore-whitespace
+    /usr/share/pve-docs/api-viewer/apidoc.js
+    < {{ freenas_git_local_path }}/pve-docs/api-viewer/apidoc.js.patch
+  when: apidoc_patched.stdout | default("0") == "0"
+  notify: Restart PVE services
+
+- name: Install FreeNAS.pm LunCmd module
+  ansible.builtin.copy:
+    src: "{{ freenas_module_src }}"
+    dest: "{{ freenas_module_dest }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart PVE services

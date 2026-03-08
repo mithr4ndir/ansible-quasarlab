@@ -3,4 +3,4 @@
   hosts: proxmox
   become: true
   roles:
-    - pve_exporter
+    - monitoring/pve_exporter

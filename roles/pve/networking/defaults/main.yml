@@ -1,0 +1,13 @@
+---
+# Network configuration - set per host in host_vars
+# pve_mgmt_interface: "enp0s25"
+# pve_mgmt_address: "192.168.1.10/24"
+# pve_mgmt_gateway: "192.168.1.1"
+# pve_storage_interface: "enp11s0"
+# pve_storage_mtu: 9000
+# pve_vmbr1_addresses:
+#   - "10.10.10.1/24"
+#   - "10.10.12.3/24"
+# pve_static_routes:
+#   - "10.10.11.0/24 via 10.10.10.2 dev vmbr1"
+# pve_offload_interface: "enp0s25"  # interface to disable offloading on
