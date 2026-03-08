@@ -82,10 +82,17 @@
     mode: '0600'
   when: op_token.stat.exists
 
+- name: Read service account token from remote host
+  ansible.builtin.slurp:
+    src: "{{ op_token_file }}"
+  register: op_token_content
+  become: false
+  when: op_token.stat.exists
+
 - name: Verify op CLI works with service account
   ansible.builtin.command: op vault list
   environment:
-    OP_SERVICE_ACCOUNT_TOKEN: "{{ lookup('file', op_token_file) }}"
+    OP_SERVICE_ACCOUNT_TOKEN: "{{ op_token_content.content | b64decode | trim }}"
   register: op_verify
   changed_when: false
   failed_when: false
