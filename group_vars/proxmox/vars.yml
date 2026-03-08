@@ -5,6 +5,13 @@ pve_api_user: "prometheus@pve"
 pve_api_token_name: "monitoring"
 pve_api_token_value: "{{ vault_pve_api_token_value }}"
 
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - pvedaemon.service
+  - pveproxy.service
+  - pve-cluster.service
+
 # Unattended upgrades — block kernel and PVE packages
 unattended_upgrades_blacklist:
   - pve-*

@@ -1,3 +1,9 @@
 ---
 # TrueNAS SCALE has a read-only /usr (ZFS boot pool)
 node_exporter_install_dir: /var/lib/node_exporter
+
+# Systemd service monitoring
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - docker.service
+  - nginx.service
