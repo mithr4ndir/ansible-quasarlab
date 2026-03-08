@@ -1,0 +1,3 @@
+---
+# TrueNAS SCALE has a read-only /usr (ZFS boot pool)
+node_exporter_install_dir: /var/lib/node_exporter
