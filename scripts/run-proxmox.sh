@@ -21,16 +21,16 @@ cd "$REPO_DIR"
 
 start_time=$(date +%s)
 exit_code=0
-failed_playbooks=""
+declare -A playbook_results
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
 for playbook in proxmox.yml monitoring.yml grafana_config.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     ansible-playbook "playbooks/${playbook}" --diff >> "$LOGFILE" 2>&1
     rc=$?
+    playbook_results["${playbook}"]=$rc
     if [[ $rc -ne 0 ]]; then
         exit_code=$rc
-        failed_playbooks="${failed_playbooks} ${playbook}"
     fi
 done
 
@@ -44,7 +44,8 @@ else
     success=0
 fi
 
-cat > "${PROM_FILE}.tmp" <<METRICS
+{
+cat <<METRICS
 # HELP ansible_run_success Whether the last ansible timer run succeeded (1=success, 0=failure).
 # TYPE ansible_run_success gauge
 ansible_run_success ${success}
@@ -54,7 +55,20 @@ ansible_run_timestamp_seconds ${end_time}
 # HELP ansible_run_duration_seconds Duration of the last ansible timer run in seconds.
 # TYPE ansible_run_duration_seconds gauge
 ansible_run_duration_seconds ${duration}
+# HELP ansible_playbook_success Whether the last run of each playbook succeeded (1=success, 0=failure).
+# TYPE ansible_playbook_success gauge
 METRICS
+
+for playbook in "${!playbook_results[@]}"; do
+    rc=${playbook_results[$playbook]}
+    if [[ $rc -eq 0 ]]; then
+        pb_success=1
+    else
+        pb_success=0
+    fi
+    echo "ansible_playbook_success{playbook=\"${playbook}\"} ${pb_success}"
+done
+} > "${PROM_FILE}.tmp"
 
 mv "${PROM_FILE}.tmp" "$PROM_FILE"
 chmod 644 "$PROM_FILE"
