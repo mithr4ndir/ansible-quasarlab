@@ -45,9 +45,9 @@
   ansible.builtin.file:
     path: "{{ node_exporter_textfile_dir }}"
     state: directory
-    owner: node_exporter
-    group: node_exporter
-    mode: '0755'
+    owner: root
+    group: root
+    mode: '1777'
 
 - name: Create systemd service
   ansible.builtin.template:
