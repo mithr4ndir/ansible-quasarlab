@@ -1,2 +1,15 @@
 # K8s
 pod_network_cidr: "10.244.0.0/16"
+
+# Unattended upgrades — block packages that can break the cluster
+unattended_upgrades_blacklist:
+  - kubelet
+  - kubeadm
+  - kubectl
+  - kubernetes-cni
+  - cri-tools
+  - containerd.io
+  - nvidia-*
+  - libnvidia-*
+  - linux-image-*
+  - linux-headers-*

@@ -1,0 +1,20 @@
+---
+# Only apply security updates by default
+unattended_upgrades_origins:
+  - "${distro_id}:${distro_codename}-security"
+
+# Packages to never auto-update (extended per host via host_vars/group_vars)
+unattended_upgrades_blacklist: []
+
+# Auto-remove unused dependencies after update
+unattended_upgrades_autoremove: true
+
+# Don't auto-reboot (we handle reboots manually during maintenance)
+unattended_upgrades_auto_reboot: false
+
+# Email notifications (disabled by default)
+unattended_upgrades_mail: ""
+
+# How often to run (daily via apt systemd timer, default)
+unattended_upgrades_update_interval: 1
+unattended_upgrades_download_interval: 1
