@@ -1,7 +1,7 @@
 ---
-jellyfin_version: "10.10.6"
-jellyfin_config_dir: /opt/jellyfin/config
-jellyfin_cache_dir: /opt/jellyfin/cache
+jellyfin_config_dir: /etc/jellyfin
+jellyfin_data_dir: /var/lib/jellyfin
+jellyfin_cache_dir: /var/cache/jellyfin
 jellyfin_nfs_server: "192.168.1.15"
 jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"

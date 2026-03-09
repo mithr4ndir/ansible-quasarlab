@@ -5,7 +5,6 @@ set -euo pipefail
 
 INTERVAL=30
 SMI_TIMEOUT=10
-COMPOSE_DIR="{{ jellyfin_config_dir }}"
 LOG_TAG="gpu-watchdog"
 FAIL_COUNT=0
 MAX_SOFT_RETRIES=2
@@ -56,8 +55,10 @@ while true; do
     write_metrics
 
     # Stop Jellyfin to release GPU references
-    log "Stopping Jellyfin container..."
-    docker compose -f "$COMPOSE_DIR/docker-compose.yml" down --timeout 30 2>/dev/null || true
+    log "Stopping Jellyfin..."
+    systemctl stop jellyfin 2>/dev/null || true
+    # Kill any lingering ffmpeg processes
+    killall -9 ffmpeg 2>/dev/null || true
     sleep 5
 
     # Try to unload and reload NVIDIA modules
@@ -75,7 +76,7 @@ while true; do
             soft_recoveries_total=$((soft_recoveries_total + 1))
             log "GPU recovered successfully (soft) — restarting Jellyfin"
             write_metrics
-            docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d
+            systemctl start jellyfin
             FAIL_COUNT=0
             sleep "$INTERVAL"
             continue

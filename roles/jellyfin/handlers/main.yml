@@ -2,23 +2,16 @@
 - name: Reload NVIDIA driver
   ansible.builtin.shell:
     cmd: |
-      docker compose -f {{ jellyfin_config_dir }}/docker-compose.yml down
+      systemctl stop jellyfin
       rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
       modprobe nvidia
-      docker compose -f {{ jellyfin_config_dir }}/docker-compose.yml up -d
+      systemctl start jellyfin
   notify: Verify GPU
 
-- name: Restart Docker
-  ansible.builtin.systemd:
-    name: docker
-    state: restarted
-    daemon_reload: true
-
 - name: Restart Jellyfin
-  community.docker.docker_compose_v2:
-    project_src: "{{ jellyfin_config_dir }}"
-    state: present
-    pull: missing
+  ansible.builtin.systemd:
+    name: jellyfin
+    state: restarted
 
 - name: Verify GPU
   ansible.builtin.command:
