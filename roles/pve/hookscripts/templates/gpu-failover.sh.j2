@@ -1,0 +1,67 @@
+#!/bin/bash
+# GPU failover hookscript for Proxmox VMs
+# Managed by Ansible — do not edit manually
+#
+# Swaps PCI passthrough config based on which node the VM starts on.
+# This allows GPU VMs to migrate between nodes with different GPUs.
+#
+# Edits the config file directly because qm set cannot acquire the
+# config lock during a hookscript (qm start already holds it).
+
+set -euo pipefail
+
+VMID="$1"
+PHASE="$2"
+NODE=$(hostname -s)
+CONF="/etc/pve/qemu-server/${VMID}.conf"
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [gpu-failover] VM ${VMID} ${PHASE}: $*" | tee -a /var/log/gpu-failover.log
+}
+
+if [[ "$PHASE" != "pre-start" ]]; then
+    exit 0
+fi
+
+log "Running on node ${NODE}"
+
+if [[ ! -f "$CONF" ]]; then
+    log "ERROR: Config file ${CONF} not found"
+    exit 1
+fi
+
+# GPU PCI addresses per node per VM
+declare -A GPU_CONFIG
+{% for vmid, nodes in pve_gpu_vms.items() %}
+{% for node, pci_addrs in nodes.items() %}
+GPU_CONFIG[{{ vmid }}_{{ node }}_count]={{ pci_addrs | length }}
+{% for addr in pci_addrs %}
+GPU_CONFIG[{{ vmid }}_{{ node }}_{{ loop.index0 }}]="{{ addr }}"
+{% endfor %}
+{% endfor %}
+GPU_CONFIG[{{ vmid }}_max_pci]={% set max_count = [] %}{% for node, pci_addrs in nodes.items() %}{% if pci_addrs | length > (max_count | length) %}{% set _ = max_count.extend(range(pci_addrs | length - max_count | length)) %}{% endif %}{% endfor %}{{ max_count | length }}
+{% endfor %}
+
+count_key="${VMID}_${NODE}_count"
+if [[ -z "${GPU_CONFIG[$count_key]+x}" ]]; then
+    log "WARNING: No GPU config for VM ${VMID} on node ${NODE}, removing all hostpci devices"
+    sed -i '/^hostpci[0-9]*:/d' "$CONF"
+    exit 0
+fi
+
+pci_count=${GPU_CONFIG[$count_key]}
+max_pci=${GPU_CONFIG[${VMID}_max_pci]}
+
+log "Configuring ${pci_count} PCI devices (max across nodes: ${max_pci})"
+
+# Remove all existing hostpci lines
+sed -i '/^hostpci[0-9]*:/d' "$CONF"
+
+# Add PCI devices for this node
+for i in $(seq 0 $((pci_count - 1))); do
+    addr=${GPU_CONFIG[${VMID}_${NODE}_${i}]}
+    log "Setting hostpci${i}: ${addr}"
+    echo "hostpci${i}: ${addr}" >> "$CONF"
+done
+
+log "GPU config applied successfully"
