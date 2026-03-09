@@ -1,0 +1,11 @@
+# Managed by Ansible — do not edit manually
+[Unit]
+Description=Collect NVIDIA GPU metrics every 30s
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

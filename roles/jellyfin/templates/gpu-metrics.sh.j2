@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# GPU metrics collector for Prometheus node_exporter textfile collector
+# Managed by Ansible — do not edit manually
+set -euo pipefail
+
+PROM_FILE="{{ node_exporter_textfile_dir }}/gpu_metrics.prom"
+TMPFILE="${PROM_FILE}.tmp"
+
+# Query nvidia-smi for all GPU metrics in one call
+gpu_data=$(nvidia-smi --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used,memory.total,temperature.gpu,fan.speed,power.draw,power.limit,name --format=csv,noheader,nounits 2>/dev/null) || {
+    echo "# nvidia-smi failed" > "$TMPFILE"
+    mv "$TMPFILE" "$PROM_FILE"
+    exit 0
+}
+
+# Parse CSV — name field is last and may contain spaces
+gpu_name=$(echo "$gpu_data" | awk -F', ' '{print $NF}')
+IFS=', ' read -r gpu_util enc_util dec_util mem_used mem_total temp fan power_draw power_limit _ <<< "$gpu_data"
+
+# Count active ffmpeg processes (transcoding sessions)
+transcode_count=$(pgrep -c ffmpeg 2>/dev/null || echo 0)
+
+cat > "$TMPFILE" <<METRICS
+# HELP nvidia_gpu_utilization_percent GPU core utilization percentage.
+# TYPE nvidia_gpu_utilization_percent gauge
+nvidia_gpu_utilization_percent{gpu="${gpu_name}"} ${gpu_util}
+# HELP nvidia_gpu_encoder_utilization_percent Hardware encoder (NVENC) utilization percentage.
+# TYPE nvidia_gpu_encoder_utilization_percent gauge
+nvidia_gpu_encoder_utilization_percent{gpu="${gpu_name}"} ${enc_util}
+# HELP nvidia_gpu_decoder_utilization_percent Hardware decoder (NVDEC) utilization percentage.
+# TYPE nvidia_gpu_decoder_utilization_percent gauge
+nvidia_gpu_decoder_utilization_percent{gpu="${gpu_name}"} ${dec_util}
+# HELP nvidia_gpu_memory_used_mib GPU memory currently in use (MiB).
+# TYPE nvidia_gpu_memory_used_mib gauge
+nvidia_gpu_memory_used_mib{gpu="${gpu_name}"} ${mem_used}
+# HELP nvidia_gpu_memory_total_mib Total GPU memory (MiB).
+# TYPE nvidia_gpu_memory_total_mib gauge
+nvidia_gpu_memory_total_mib{gpu="${gpu_name}"} ${mem_total}
+# HELP nvidia_gpu_temperature_celsius GPU temperature in degrees Celsius.
+# TYPE nvidia_gpu_temperature_celsius gauge
+nvidia_gpu_temperature_celsius{gpu="${gpu_name}"} ${temp}
+# HELP nvidia_gpu_fan_speed_percent GPU fan speed percentage.
+# TYPE nvidia_gpu_fan_speed_percent gauge
+nvidia_gpu_fan_speed_percent{gpu="${gpu_name}"} ${fan}
+# HELP nvidia_gpu_power_draw_watts Current GPU power draw in watts.
+# TYPE nvidia_gpu_power_draw_watts gauge
+nvidia_gpu_power_draw_watts{gpu="${gpu_name}"} ${power_draw}
+# HELP nvidia_gpu_power_limit_watts GPU power limit in watts.
+# TYPE nvidia_gpu_power_limit_watts gauge
+nvidia_gpu_power_limit_watts{gpu="${gpu_name}"} ${power_limit}
+# HELP jellyfin_transcode_processes Number of active ffmpeg transcode processes.
+# TYPE jellyfin_transcode_processes gauge
+jellyfin_transcode_processes ${transcode_count}
+METRICS
+
+mv "$TMPFILE" "$PROM_FILE"
+chmod 644 "$PROM_FILE"

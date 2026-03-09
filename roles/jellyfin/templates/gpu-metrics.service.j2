@@ -1,0 +1,7 @@
+# Managed by Ansible — do not edit manually
+[Unit]
+Description=Collect NVIDIA GPU metrics for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-metrics.sh

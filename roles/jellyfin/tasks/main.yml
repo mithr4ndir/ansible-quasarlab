@@ -136,12 +136,62 @@
     owner: root
     group: root
     mode: "0644"
-  notify: Restart Jellyfin
+  register: compose_file
 
 # --- Start Jellyfin ---
-- name: Start Jellyfin via Docker Compose
-  ansible.builtin.shell:
-    cmd: docker compose up -d
-    chdir: "{{ jellyfin_config_dir }}"
-  register: compose_result
-  changed_when: "'Started' in compose_result.stderr or 'Created' in compose_result.stderr"
+- name: Deploy Jellyfin via Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ jellyfin_config_dir }}"
+    state: present
+    pull: "{{ 'always' if compose_file.changed else 'missing' }}"
+  register: jellyfin_compose
+
+# --- Monitoring ---
+- name: Deploy Jellyfin monitoring API key
+  ansible.builtin.copy:
+    content: "{{ jellyfin_monitoring_api_key }}"
+    dest: "{{ jellyfin_config_dir }}/monitoring-api-key"
+    owner: root
+    group: root
+    mode: "0600"
+  when: jellyfin_monitoring_api_key | length > 0
+
+- name: Deploy GPU metrics collector
+  ansible.builtin.template:
+    src: gpu-metrics.sh.j2
+    dest: /usr/local/bin/gpu-metrics.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy Jellyfin metrics collector
+  ansible.builtin.template:
+    src: jellyfin-metrics.sh.j2
+    dest: /usr/local/bin/jellyfin-metrics.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy metrics systemd services
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item | replace('.j2', '') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - gpu-metrics.service.j2
+    - gpu-metrics.timer.j2
+    - jellyfin-metrics.service.j2
+    - jellyfin-metrics.timer.j2
+  notify: Reload systemd
+
+- name: Enable metrics timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - gpu-metrics.timer
+    - jellyfin-metrics.timer
