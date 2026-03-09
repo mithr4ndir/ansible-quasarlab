@@ -1,0 +1,6 @@
+---
+- name: Configure Jellyfin media server
+  hosts: media
+  become: true
+  roles:
+    - jellyfin

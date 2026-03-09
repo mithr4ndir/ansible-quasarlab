@@ -24,7 +24,7 @@ exit_code=0
 declare -A playbook_results
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
-for playbook in proxmox.yml monitoring.yml grafana_config.yml; do
+for playbook in proxmox.yml monitoring.yml grafana_config.yml jellyfin.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     ansible-playbook "playbooks/${playbook}" --diff >> "$LOGFILE" 2>&1
     rc=$?
