@@ -1,0 +1,16 @@
+---
+# VMs with GPU failover hookscripts
+# Each entry maps a VMID to its GPU PCI addresses per node
+pve_gpu_vms:
+  115:  # jellyfin
+    pve2:
+      - "0000:0a:00.0,pcie=1,x-vga=0"
+      - "0000:0a:00.1,pcie=1"
+      - "0000:0a:00.2,pcie=1"
+      - "0000:0a:00.3,pcie=1"
+    pve:
+      - "0000:03:00.0,pcie=1,x-vga=0"
+      - "0000:03:00.1,pcie=1"
+
+# Snippets storage location
+pve_snippets_dir: "/var/lib/vz/snippets"

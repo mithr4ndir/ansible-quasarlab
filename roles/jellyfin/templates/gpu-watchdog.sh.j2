@@ -87,10 +87,14 @@ while true; do
 
     if [[ "$FAIL_COUNT" -ge "$MAX_SOFT_RETRIES" ]]; then
         hard_recoveries_total=$((hard_recoveries_total + 1))
-        log "Exhausted ${MAX_SOFT_RETRIES} soft recovery attempts — rebooting VM"
+        log "Exhausted ${MAX_SOFT_RETRIES} soft recovery attempts — waiting for host PCI reset"
         write_metrics
-        reboot
-        exit 0
+        # Don't reboot — the Proxmox host monitor will detect the failure,
+        # stop the VM, reset the GPU PCI device, and restart the VM.
+        # Keep checking in case the host recovers us.
+        sleep 60
+        FAIL_COUNT=0
+        continue
     fi
 
     # Retry after a longer wait before giving up
