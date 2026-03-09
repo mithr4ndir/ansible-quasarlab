@@ -13,3 +13,9 @@
   roles:
     - role: pve/gpu_passthrough
       when: pve_gpu_passthrough | default(false)
+
+- name: Configure GPU hookscripts and monitoring
+  hosts: proxmox
+  become: true
+  roles:
+    - pve/hookscripts
