@@ -146,6 +146,34 @@
     pull: "{{ 'always' if compose_file.changed else 'missing' }}"
   register: jellyfin_compose
 
+# --- GPU Watchdog ---
+- name: Deploy GPU watchdog script
+  ansible.builtin.template:
+    src: gpu-watchdog.sh.j2
+    dest: /usr/local/bin/gpu-watchdog.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart GPU watchdog
+
+- name: Deploy GPU watchdog service
+  ansible.builtin.template:
+    src: gpu-watchdog.service.j2
+    dest: /etc/systemd/system/gpu-watchdog.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart GPU watchdog
+
+- name: Enable GPU watchdog service
+  ansible.builtin.systemd:
+    name: gpu-watchdog.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
 # --- Monitoring ---
 - name: Deploy Jellyfin monitoring API key
   ansible.builtin.copy:
