@@ -1,0 +1,124 @@
+#!/bin/bash
+# GPU VM monitor — detects GPU failure and recovers via PCI reset
+# Managed by Ansible — do not edit manually
+#
+# Runs on Proxmox host. Checks GPU health inside VMs via guest agent.
+# When GPU failure is detected, stops VM, resets PCI devices, restarts VM.
+
+set -euo pipefail
+
+LOG_TAG="gpu-vm-monitor"
+FAIL_DIR="/run/gpu-monitor"
+PROM_FILE="{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/gpu_vm_monitor.prom"
+TMPFILE="${PROM_FILE}.tmp"
+MAX_FAILURES=3
+CHECK_TIMEOUT=10
+
+mkdir -p "$FAIL_DIR"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" | tee -a /var/log/gpu-vm-monitor.log; }
+
+# Load persisted recovery counter
+pci_resets_total=0
+if [[ -f "$FAIL_DIR/pci_resets_total" ]]; then
+    pci_resets_total=$(cat "$FAIL_DIR/pci_resets_total")
+fi
+
+write_metrics() {
+    local vmid="$1" gpu_healthy="$2" consecutive_fails="$3"
+    cat > "$TMPFILE" <<METRICS
+# HELP gpu_vm_monitor_healthy Whether the GPU inside the VM is healthy (1=yes, 0=no).
+# TYPE gpu_vm_monitor_healthy gauge
+gpu_vm_monitor_healthy{vmid="${vmid}"} ${gpu_healthy}
+# HELP gpu_vm_monitor_consecutive_failures Current consecutive GPU check failures.
+# TYPE gpu_vm_monitor_consecutive_failures gauge
+gpu_vm_monitor_consecutive_failures{vmid="${vmid}"} ${consecutive_fails}
+# HELP gpu_vm_monitor_pci_resets_total Total PCI reset recoveries performed by host monitor.
+# TYPE gpu_vm_monitor_pci_resets_total counter
+gpu_vm_monitor_pci_resets_total ${pci_resets_total}
+METRICS
+    mv "$TMPFILE" "$PROM_FILE"
+    chmod 644 "$PROM_FILE"
+}
+
+NODE=$(hostname -s)
+
+{% for vmid, nodes in pve_gpu_vms.items() %}
+check_vm_{{ vmid }}() {
+    local VMID={{ vmid }}
+
+    # Skip if VM is not running on this node
+    if ! qm status "$VMID" 2>/dev/null | grep -q "running"; then
+        rm -f "$FAIL_DIR/${VMID}.failures"
+        return 0
+    fi
+
+    # Check if this node owns the VM
+    local vm_node
+    vm_node=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | \
+        python3 -c "import json,sys; vms=json.load(sys.stdin); [print(v['node']) for v in vms if v.get('vmid')==${VMID}]" 2>/dev/null || echo "")
+    if [[ "$vm_node" != "$NODE" ]]; then
+        return 0
+    fi
+
+    # Check GPU health via guest agent
+    local gpu_ok=false result
+    result=$(timeout "$CHECK_TIMEOUT" qm guest exec "$VMID" -- timeout 5 nvidia-smi --query-gpu=name --format=csv,noheader 2>&1) || true
+    if echo "$result" | grep -qi "nvidia\|geforce\|tesla\|quadro\|rtx"; then
+        gpu_ok=true
+    fi
+
+    if $gpu_ok; then
+        rm -f "$FAIL_DIR/${VMID}.failures"
+        write_metrics "$VMID" 1 0
+        return 0
+    fi
+
+    # Increment failure counter
+    local fail_count=0
+    if [[ -f "$FAIL_DIR/${VMID}.failures" ]]; then
+        fail_count=$(cat "$FAIL_DIR/${VMID}.failures")
+    fi
+    fail_count=$((fail_count + 1))
+    echo "$fail_count" > "$FAIL_DIR/${VMID}.failures"
+
+    log "VM ${VMID}: GPU check failed (${fail_count}/${MAX_FAILURES})"
+    write_metrics "$VMID" 0 "$fail_count"
+
+    if [[ "$fail_count" -lt "$MAX_FAILURES" ]]; then
+        return 0
+    fi
+
+    # Recovery: stop VM, reset PCI devices, start VM
+    log "VM ${VMID}: GPU failure confirmed — starting PCI reset recovery"
+
+    log "VM ${VMID}: Stopping VM..."
+    qm stop "$VMID" --timeout 30 2>/dev/null || qm stop "$VMID" --skiplock --timeout 30 2>/dev/null || true
+    sleep 5
+
+    # Reset all PCI devices for this VM on this node
+{% for node, pci_addrs in nodes.items() %}
+{% if node == inventory_hostname %}
+{% for addr in pci_addrs %}
+{% set pci_slot = addr.split(',')[0] %}
+    if [[ -e "/sys/bus/pci/devices/{{ pci_slot }}/reset" ]]; then
+        log "VM ${VMID}: Resetting PCI device {{ pci_slot }}"
+        echo 1 > "/sys/bus/pci/devices/{{ pci_slot }}/reset" 2>/dev/null || true
+    fi
+{% endfor %}
+{% endif %}
+{% endfor %}
+    sleep 3
+
+    log "VM ${VMID}: Starting VM..."
+    qm start "$VMID" 2>&1 | tee -a /var/log/gpu-vm-monitor.log || true
+
+    pci_resets_total=$((pci_resets_total + 1))
+    echo "$pci_resets_total" > "$FAIL_DIR/pci_resets_total"
+    rm -f "$FAIL_DIR/${VMID}.failures"
+    write_metrics "$VMID" 0 0
+    log "VM ${VMID}: Recovery complete (total PCI resets: ${pci_resets_total})"
+}
+check_vm_{{ vmid }}
+
+{% endfor %}

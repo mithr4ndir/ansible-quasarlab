@@ -1,0 +1,53 @@
+---
+- name: Create snippets directory
+  ansible.builtin.file:
+    path: "{{ pve_snippets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy GPU failover hookscript
+  ansible.builtin.template:
+    src: gpu-failover.sh.j2
+    dest: "{{ pve_snippets_dir }}/gpu-failover.sh"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Attach hookscript to GPU VMs
+  ansible.builtin.command:
+    cmd: "qm set {{ item.key }} -hookscript local:snippets/gpu-failover.sh"
+  loop: "{{ pve_gpu_vms | dict2items }}"
+  register: hookscript_result
+  changed_when: "'update' in hookscript_result.stderr or 'update' in hookscript_result.stdout"
+  failed_when: hookscript_result.rc != 0
+  when: inventory_hostname == 'pve2'
+
+# --- GPU VM Health Monitor ---
+- name: Deploy GPU VM monitor script
+  ansible.builtin.template:
+    src: gpu-vm-monitor.sh.j2
+    dest: /usr/local/bin/gpu-vm-monitor.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy GPU VM monitor systemd units
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item | replace('.j2', '') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - gpu-vm-monitor.service.j2
+    - gpu-vm-monitor.timer.j2
+  notify: Reload systemd
+
+- name: Enable GPU VM monitor timer
+  ansible.builtin.systemd:
+    name: gpu-vm-monitor.timer
+    enabled: true
+    state: started
+    daemon_reload: true

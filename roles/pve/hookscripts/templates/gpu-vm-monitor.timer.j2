@@ -1,0 +1,9 @@
+[Unit]
+Description=GPU VM Monitor timer — checks GPU health every 30s
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=30
+
+[Install]
+WantedBy=timers.target
