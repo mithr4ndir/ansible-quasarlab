@@ -8,8 +8,39 @@ COMPOSE_DIR="{{ jellyfin_config_dir }}"
 LOG_TAG="gpu-watchdog"
 FAIL_COUNT=0
 MAX_SOFT_RETRIES=2
+PROM_FILE="{{ node_exporter_textfile_dir }}/gpu_watchdog.prom"
+TMPFILE="${PROM_FILE}.tmp"
+
+# Load persisted counters from existing prom file
+failures_total=0
+soft_recoveries_total=0
+hard_recoveries_total=0
+if [[ -f "$PROM_FILE" ]]; then
+    failures_total=$(grep -oP 'nvidia_gpu_failures_total \K[0-9]+' "$PROM_FILE" 2>/dev/null || echo 0)
+    soft_recoveries_total=$(grep -oP 'nvidia_gpu_soft_recoveries_total \K[0-9]+' "$PROM_FILE" 2>/dev/null || echo 0)
+    hard_recoveries_total=$(grep -oP 'nvidia_gpu_hard_recoveries_total \K[0-9]+' "$PROM_FILE" 2>/dev/null || echo 0)
+fi
 
 log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
+
+write_metrics() {
+    cat > "$TMPFILE" <<METRICS
+# HELP nvidia_gpu_failures_total Total number of GPU failures detected by watchdog.
+# TYPE nvidia_gpu_failures_total counter
+nvidia_gpu_failures_total ${failures_total}
+# HELP nvidia_gpu_soft_recoveries_total Total number of successful soft recoveries (module reload).
+# TYPE nvidia_gpu_soft_recoveries_total counter
+nvidia_gpu_soft_recoveries_total ${soft_recoveries_total}
+# HELP nvidia_gpu_hard_recoveries_total Total number of hard recoveries (VM reboot).
+# TYPE nvidia_gpu_hard_recoveries_total counter
+nvidia_gpu_hard_recoveries_total ${hard_recoveries_total}
+METRICS
+    mv "$TMPFILE" "$PROM_FILE"
+    chmod 644 "$PROM_FILE"
+}
+
+# Write initial metrics
+write_metrics
 
 while true; do
     if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
@@ -18,8 +49,10 @@ while true; do
         continue
     fi
 
+    failures_total=$((failures_total + 1))
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    log "GPU failure detected (attempt ${FAIL_COUNT}/${MAX_SOFT_RETRIES})"
+    log "GPU failure detected (attempt ${FAIL_COUNT}/${MAX_SOFT_RETRIES}) — total failures: ${failures_total}"
+    write_metrics
 
     # Stop Jellyfin to release GPU references
     log "Stopping Jellyfin container..."
@@ -38,7 +71,9 @@ while true; do
     if modprobe nvidia && modprobe nvidia_uvm; then
         sleep 2
         if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
-            log "GPU recovered successfully — restarting Jellyfin"
+            soft_recoveries_total=$((soft_recoveries_total + 1))
+            log "GPU recovered successfully (soft) — restarting Jellyfin"
+            write_metrics
             docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d
             FAIL_COUNT=0
             sleep "$INTERVAL"
@@ -49,7 +84,9 @@ while true; do
     log "Soft recovery failed"
 
     if [[ "$FAIL_COUNT" -ge "$MAX_SOFT_RETRIES" ]]; then
+        hard_recoveries_total=$((hard_recoveries_total + 1))
         log "Exhausted ${MAX_SOFT_RETRIES} soft recovery attempts — rebooting VM"
+        write_metrics
         reboot
         exit 0
     fi
