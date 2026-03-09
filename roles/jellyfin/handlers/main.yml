@@ -15,9 +15,10 @@
     daemon_reload: true
 
 - name: Restart Jellyfin
-  ansible.builtin.shell:
-    cmd: docker compose up -d
-    chdir: "{{ jellyfin_config_dir }}"
+  community.docker.docker_compose_v2:
+    project_src: "{{ jellyfin_config_dir }}"
+    state: present
+    pull: missing
 
 - name: Verify GPU
   ansible.builtin.command:
@@ -25,3 +26,7 @@
   register: gpu_check
   failed_when: gpu_check.rc != 0
   changed_when: false
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

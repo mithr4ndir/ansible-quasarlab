@@ -1,0 +1,11 @@
+# Managed by Ansible — do not edit manually
+[Unit]
+Description=Collect Jellyfin application metrics every 60s
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
