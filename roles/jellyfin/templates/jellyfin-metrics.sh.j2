@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Jellyfin application metrics collector for Prometheus node_exporter textfile collector
+# Managed by Ansible — do not edit manually
+set -euo pipefail
+
+PROM_FILE="{{ node_exporter_textfile_dir }}/jellyfin_metrics.prom"
+TMPFILE="${PROM_FILE}.tmp"
+JELLYFIN_URL="http://localhost:{{ jellyfin_http_port }}"
+API_KEY_FILE="{{ jellyfin_config_dir }}/monitoring-api-key"
+
+if [[ ! -f "$API_KEY_FILE" ]]; then
+    echo "# API key file not found" > "$TMPFILE"
+    mv "$TMPFILE" "$PROM_FILE"
+    exit 0
+fi
+
+API_KEY=$(cat "$API_KEY_FILE")
+AUTH_HEADER="Authorization: MediaBrowser Token=${API_KEY}"
+
+# --- Library Counts ---
+counts=$(curl -sf -H "$AUTH_HEADER" "${JELLYFIN_URL}/Items/Counts" 2>/dev/null) || {
+    echo "# Jellyfin API unreachable" > "$TMPFILE"
+    mv "$TMPFILE" "$PROM_FILE"
+    exit 0
+}
+
+movie_count=$(echo "$counts" | python3 -c "import json,sys; print(json.load(sys.stdin).get('MovieCount',0))")
+series_count=$(echo "$counts" | python3 -c "import json,sys; print(json.load(sys.stdin).get('SeriesCount',0))")
+episode_count=$(echo "$counts" | python3 -c "import json,sys; print(json.load(sys.stdin).get('EpisodeCount',0))")
+
+# --- Active Sessions ---
+sessions=$(curl -sf -H "$AUTH_HEADER" "${JELLYFIN_URL}/Sessions" 2>/dev/null) || sessions="[]"
+
+active_streams=$(echo "$sessions" | python3 -c "
+import json, sys
+sessions = json.load(sys.stdin)
+playing = [s for s in sessions if s.get('NowPlayingItem')]
+transcoding = [s for s in playing if s.get('TranscodingInfo')]
+direct = len(playing) - len(transcoding)
+print(f'{len(playing)} {len(transcoding)} {direct}')
+" 2>/dev/null) || active_streams="0 0 0"
+
+read -r total_streams transcode_streams direct_streams <<< "$active_streams"
+
+# --- Transcode bitrate ---
+transcode_bitrate=$(echo "$sessions" | python3 -c "
+import json, sys
+sessions = json.load(sys.stdin)
+total_bitrate = 0
+for s in sessions:
+    ti = s.get('TranscodingInfo', {})
+    if ti:
+        total_bitrate += ti.get('Bitrate', 0)
+print(total_bitrate)
+" 2>/dev/null) || transcode_bitrate=0
+
+cat > "$TMPFILE" <<METRICS
+# HELP jellyfin_library_movies_total Total number of movies in the library.
+# TYPE jellyfin_library_movies_total gauge
+jellyfin_library_movies_total ${movie_count}
+# HELP jellyfin_library_series_total Total number of TV series in the library.
+# TYPE jellyfin_library_series_total gauge
+jellyfin_library_series_total ${series_count}
+# HELP jellyfin_library_episodes_total Total number of TV episodes in the library.
+# TYPE jellyfin_library_episodes_total gauge
+jellyfin_library_episodes_total ${episode_count}
+# HELP jellyfin_active_streams Number of currently active playback streams.
+# TYPE jellyfin_active_streams gauge
+jellyfin_active_streams ${total_streams}
+# HELP jellyfin_transcode_streams Number of streams being transcoded.
+# TYPE jellyfin_transcode_streams gauge
+jellyfin_transcode_streams ${transcode_streams}
+# HELP jellyfin_direct_play_streams Number of streams in direct play/stream mode.
+# TYPE jellyfin_direct_play_streams gauge
+jellyfin_direct_play_streams ${direct_streams}
+# HELP jellyfin_transcode_bitrate_bps Total transcode bitrate in bits per second.
+# TYPE jellyfin_transcode_bitrate_bps gauge
+jellyfin_transcode_bitrate_bps ${transcode_bitrate}
+METRICS
+
+mv "$TMPFILE" "$PROM_FILE"
+chmod 644 "$PROM_FILE"

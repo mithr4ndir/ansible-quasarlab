@@ -7,3 +7,7 @@ jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"
 jellyfin_http_port: 8096
 nvidia_driver_version: "570"
+
+# Monitoring
+node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
+jellyfin_monitoring_api_key: ""

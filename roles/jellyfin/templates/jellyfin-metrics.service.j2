@@ -1,0 +1,7 @@
+# Managed by Ansible — do not edit manually
+[Unit]
+Description=Collect Jellyfin application metrics for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/jellyfin-metrics.sh
