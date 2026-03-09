@@ -2,6 +2,7 @@
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:
   - docker.service
+  - gpu-watchdog.service
   - gpu-metrics.timer
   - jellyfin-metrics.timer
 
