@@ -1,7 +1,6 @@
 [Unit]
 Description=GPU Watchdog — auto-recovers from GPU failures
-After=docker.service
-Requires=docker.service
+After=jellyfin.service
 
 [Service]
 Type=simple
