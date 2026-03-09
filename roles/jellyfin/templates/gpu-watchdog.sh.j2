@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# GPU watchdog — detects GPU failure and auto-recovers
+# Managed by Ansible — do not edit manually
+set -euo pipefail
+
+INTERVAL=30
+COMPOSE_DIR="{{ jellyfin_config_dir }}"
+LOG_TAG="gpu-watchdog"
+FAIL_COUNT=0
+MAX_SOFT_RETRIES=2
+
+log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
+
+while true; do
+    if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+        FAIL_COUNT=0
+        sleep "$INTERVAL"
+        continue
+    fi
+
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    log "GPU failure detected (attempt ${FAIL_COUNT}/${MAX_SOFT_RETRIES})"
+
+    # Stop Jellyfin to release GPU references
+    log "Stopping Jellyfin container..."
+    docker compose -f "$COMPOSE_DIR/docker-compose.yml" down --timeout 30 2>/dev/null || true
+    sleep 5
+
+    # Try to unload and reload NVIDIA modules
+    log "Unloading NVIDIA modules..."
+    rmmod nvidia_uvm 2>/dev/null || true
+    rmmod nvidia_drm 2>/dev/null || true
+    rmmod nvidia_modeset 2>/dev/null || true
+    rmmod nvidia 2>/dev/null || true
+    sleep 2
+
+    log "Reloading NVIDIA modules..."
+    if modprobe nvidia && modprobe nvidia_uvm; then
+        sleep 2
+        if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+            log "GPU recovered successfully — restarting Jellyfin"
+            docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d
+            FAIL_COUNT=0
+            sleep "$INTERVAL"
+            continue
+        fi
+    fi
+
+    log "Soft recovery failed"
+
+    if [[ "$FAIL_COUNT" -ge "$MAX_SOFT_RETRIES" ]]; then
+        log "Exhausted ${MAX_SOFT_RETRIES} soft recovery attempts — rebooting VM"
+        reboot
+        exit 0
+    fi
+
+    # Retry after a longer wait before giving up
+    sleep 10
+done

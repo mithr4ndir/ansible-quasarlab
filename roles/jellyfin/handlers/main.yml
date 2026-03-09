@@ -27,6 +27,12 @@
   failed_when: gpu_check.rc != 0
   changed_when: false
 
+- name: Restart GPU watchdog
+  ansible.builtin.systemd:
+    name: gpu-watchdog.service
+    state: restarted
+    daemon_reload: true
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true

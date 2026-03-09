@@ -1,0 +1,13 @@
+[Unit]
+Description=GPU Watchdog — auto-recovers from GPU failures
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
