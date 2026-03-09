@@ -68,7 +68,6 @@
   ansible.builtin.shell:
     cmd: |
       cp -a /opt/jellyfin/config/config/system.xml {{ jellyfin_config_dir }}/system.xml 2>/dev/null || true
-      cp -a /opt/jellyfin/config/config/migrations.xml {{ jellyfin_config_dir }}/migrations.xml 2>/dev/null || true
       cp -a /opt/jellyfin/config/config/logging.default.json {{ jellyfin_config_dir }}/logging.default.json 2>/dev/null || true
       cp -rn /opt/jellyfin/config/config/ScheduledTasks {{ jellyfin_config_dir }}/ 2>/dev/null || true
       chown -R jellyfin:adm {{ jellyfin_config_dir }}/
@@ -78,12 +77,12 @@
 - name: Migrate data directory from Docker layout
   ansible.builtin.shell:
     cmd: |
-      cp -rn /opt/jellyfin/config/data/ {{ jellyfin_data_dir }}/data/
-      cp -rn /opt/jellyfin/config/metadata/ {{ jellyfin_data_dir }}/metadata/ 2>/dev/null || true
-      cp -rn /opt/jellyfin/config/plugins/ {{ jellyfin_data_dir }}/plugins/ 2>/dev/null || true
-      cp -rn /opt/jellyfin/config/root/ {{ jellyfin_data_dir }}/root/ 2>/dev/null || true
+      cp -a /opt/jellyfin/config/data/* {{ jellyfin_data_dir }}/data/
+      cp -a /opt/jellyfin/config/metadata/* {{ jellyfin_data_dir }}/metadata/ 2>/dev/null || true
+      cp -a /opt/jellyfin/config/plugins/* {{ jellyfin_data_dir }}/plugins/ 2>/dev/null || true
+      cp -a /opt/jellyfin/config/root/* {{ jellyfin_data_dir }}/root/ 2>/dev/null || true
       chown -R jellyfin:jellyfin {{ jellyfin_data_dir }}/
-    creates: "{{ jellyfin_data_dir }}/data/jellyfin.db"
+    creates: "{{ jellyfin_data_dir }}/.paths_migrated"
   when: docker_data.stat.exists
 
 - name: Fix paths in library database (container → native)
