@@ -4,6 +4,7 @@
 set -euo pipefail
 
 INTERVAL=30
+SMI_TIMEOUT=10
 COMPOSE_DIR="{{ jellyfin_config_dir }}"
 LOG_TAG="gpu-watchdog"
 FAIL_COUNT=0
@@ -43,7 +44,7 @@ METRICS
 write_metrics
 
 while true; do
-    if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+    if timeout "$SMI_TIMEOUT" nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
         FAIL_COUNT=0
         sleep "$INTERVAL"
         continue
@@ -70,7 +71,7 @@ while true; do
     log "Reloading NVIDIA modules..."
     if modprobe nvidia && modprobe nvidia_uvm; then
         sleep 2
-        if nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+        if timeout "$SMI_TIMEOUT" nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
             soft_recoveries_total=$((soft_recoveries_total + 1))
             log "GPU recovered successfully (soft) — restarting Jellyfin"
             write_metrics
