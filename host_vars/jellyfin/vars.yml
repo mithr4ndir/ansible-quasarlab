@@ -1,0 +1,11 @@
+---
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - docker.service
+
+unattended_upgrades_blacklist:
+  - nvidia-*
+  - libnvidia-*
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
