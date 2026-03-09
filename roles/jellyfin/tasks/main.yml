@@ -41,6 +41,7 @@
       - jellyfin
       - libnvidia-decode-{{ nvidia_driver_version }}-server
       - libnvidia-encode-{{ nvidia_driver_version }}-server
+      - sqlite3
     state: present
     update_cache: true
 
@@ -50,6 +51,64 @@
     groups: render,video
     append: true
   notify: Restart Jellyfin
+
+# --- Migrate Docker data to native paths ---
+- name: Check if Docker data exists for migration
+  ansible.builtin.stat:
+    path: /opt/jellyfin/config/data/jellyfin.db
+  register: docker_data
+
+- name: Stop Jellyfin before migration
+  ansible.builtin.systemd:
+    name: jellyfin
+    state: stopped
+  when: docker_data.stat.exists
+
+- name: Migrate config files from Docker layout
+  ansible.builtin.shell:
+    cmd: |
+      cp -a /opt/jellyfin/config/config/system.xml {{ jellyfin_config_dir }}/system.xml 2>/dev/null || true
+      cp -a /opt/jellyfin/config/config/migrations.xml {{ jellyfin_config_dir }}/migrations.xml 2>/dev/null || true
+      cp -a /opt/jellyfin/config/config/logging.default.json {{ jellyfin_config_dir }}/logging.default.json 2>/dev/null || true
+      cp -rn /opt/jellyfin/config/config/ScheduledTasks {{ jellyfin_config_dir }}/ 2>/dev/null || true
+      chown -R jellyfin:adm {{ jellyfin_config_dir }}/
+    creates: "{{ jellyfin_config_dir }}/system.xml"
+  when: docker_data.stat.exists
+
+- name: Migrate data directory from Docker layout
+  ansible.builtin.shell:
+    cmd: |
+      cp -rn /opt/jellyfin/config/data/ {{ jellyfin_data_dir }}/data/
+      cp -rn /opt/jellyfin/config/metadata/ {{ jellyfin_data_dir }}/metadata/ 2>/dev/null || true
+      cp -rn /opt/jellyfin/config/plugins/ {{ jellyfin_data_dir }}/plugins/ 2>/dev/null || true
+      cp -rn /opt/jellyfin/config/root/ {{ jellyfin_data_dir }}/root/ 2>/dev/null || true
+      chown -R jellyfin:jellyfin {{ jellyfin_data_dir }}/
+    creates: "{{ jellyfin_data_dir }}/data/jellyfin.db"
+  when: docker_data.stat.exists
+
+- name: Fix paths in library database (container → native)
+  ansible.builtin.shell:
+    cmd: |
+      sqlite3 {{ jellyfin_data_dir }}/data/library.db "UPDATE TypedBaseItems SET Path = REPLACE(Path, '/media/', '{{ jellyfin_media_mount }}/') WHERE Path LIKE '/media/%';"
+      sqlite3 {{ jellyfin_data_dir }}/data/library.db "UPDATE TypedBaseItems SET Path = REPLACE(Path, '/config/root/', '{{ jellyfin_data_dir }}/root/') WHERE Path LIKE '/config/root/%';"
+    creates: "{{ jellyfin_data_dir }}/.paths_migrated"
+  when: docker_data.stat.exists
+  register: paths_fix
+
+- name: Mark paths as migrated
+  ansible.builtin.file:
+    path: "{{ jellyfin_data_dir }}/.paths_migrated"
+    state: touch
+    owner: jellyfin
+    group: jellyfin
+    mode: "0644"
+  when: paths_fix.changed | default(false)
+
+- name: Rename Docker data directory to prevent re-migration
+  ansible.builtin.command:
+    cmd: mv /opt/jellyfin/config /opt/jellyfin/config.migrated
+    removes: /opt/jellyfin/config/data/jellyfin.db
+  when: docker_data.stat.exists
 
 # --- NFS Mount ---
 - name: Install NFS client utilities
