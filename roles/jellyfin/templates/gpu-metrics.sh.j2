@@ -18,7 +18,10 @@ gpu_name=$(echo "$gpu_data" | awk -F', ' '{print $NF}')
 IFS=', ' read -r gpu_util enc_util dec_util mem_used mem_total temp fan power_draw power_limit _ <<< "$gpu_data"
 
 # Count active ffmpeg processes (transcoding sessions)
-transcode_count=$(pgrep -c ffmpeg 2>/dev/null || echo 0)
+transcode_count=0
+if pgrep -c ffmpeg >/dev/null 2>&1; then
+    transcode_count=$(pgrep -c ffmpeg)
+fi
 
 cat > "$TMPFILE" <<METRICS
 # HELP nvidia_gpu_utilization_percent GPU core utilization percentage.
