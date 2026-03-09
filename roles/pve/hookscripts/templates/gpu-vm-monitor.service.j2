@@ -1,0 +1,6 @@
+[Unit]
+Description=GPU VM Monitor — detects and recovers from GPU failures via PCI reset
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-vm-monitor.sh
