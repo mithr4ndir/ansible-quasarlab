@@ -6,6 +6,15 @@
     state: present
     update_cache: true
 
+- name: Disable GSP firmware for PCI passthrough
+  ansible.builtin.copy:
+    content: "options nvidia NVreg_EnableGpuFirmware=0\n"
+    dest: /etc/modprobe.d/nvidia-gsp.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NVIDIA driver
+
 # --- Docker CE ---
 - name: Install prerequisites for Docker repo
   ansible.builtin.apt:
