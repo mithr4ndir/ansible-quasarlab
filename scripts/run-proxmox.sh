@@ -22,13 +22,28 @@ cd "$REPO_DIR"
 start_time=$(date +%s)
 exit_code=0
 declare -A playbook_results
+declare -A playbook_failed_hosts
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
 for playbook in proxmox.yml monitoring.yml grafana_config.yml jellyfin.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
-    ansible-playbook "playbooks/${playbook}" --diff >> "$LOGFILE" 2>&1
+    tmpfile=$(mktemp)
+    ansible-playbook "playbooks/${playbook}" --diff > "$tmpfile" 2>&1
     rc=$?
+    cat "$tmpfile" >> "$LOGFILE"
     playbook_results["${playbook}"]=$rc
+
+    # Parse PLAY RECAP for failed/unreachable hosts
+    failed_hosts=""
+    if [[ $rc -ne 0 ]]; then
+        failed_hosts=$(grep -E '(failed=[1-9]|unreachable=[1-9])' "$tmpfile" \
+            | awk '{print $1}' \
+            | sort -u \
+            | paste -sd ',' -)
+    fi
+    playbook_failed_hosts["${playbook}"]="${failed_hosts:-unknown}"
+    rm -f "$tmpfile"
+
     if [[ $rc -ne 0 ]]; then
         exit_code=$rc
     fi
@@ -63,10 +78,12 @@ for playbook in "${!playbook_results[@]}"; do
     rc=${playbook_results[$playbook]}
     if [[ $rc -eq 0 ]]; then
         pb_success=1
+        hosts="none"
     else
         pb_success=0
+        hosts=${playbook_failed_hosts[$playbook]}
     fi
-    echo "ansible_playbook_success{playbook=\"${playbook}\"} ${pb_success}"
+    echo "ansible_playbook_success{playbook=\"${playbook}\",failed_hosts=\"${hosts}\"} ${pb_success}"
 done
 } > "${PROM_FILE}.tmp"
 
