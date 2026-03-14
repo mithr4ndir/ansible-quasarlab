@@ -6,6 +6,7 @@ jellyfin_nfs_server: "192.168.1.15"
 jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"
 jellyfin_http_port: 8096
+jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
 nvidia_driver_version: "570"
 
 # Monitoring
