@@ -7,6 +7,7 @@
     group: grafana
     mode: '0755'
   loop:
+    - ansible
     - kubernetes
     - proxmox
     - vms
@@ -32,6 +33,15 @@
   ansible.builtin.copy:
     src: "{{ observability_repo_path }}/grafana/provisioning/dashboards/"
     dest: "{{ grafana_provisioning_dir }}/dashboards/"
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: Restart grafana
+
+- name: Copy Ansible dashboards
+  ansible.builtin.copy:
+    src: "{{ observability_repo_path }}/grafana/dashboards/ansible/"
+    dest: "{{ grafana_dashboards_dir }}/ansible/"
     owner: grafana
     group: grafana
     mode: '0644'
