@@ -96,16 +96,26 @@ check_vm_{{ vmid }}() {
     qm stop "$VMID" --timeout 30 2>/dev/null || qm stop "$VMID" --skiplock --timeout 30 2>/dev/null || true
     sleep 5
 
-    # Reset all PCI devices for this VM on this node
+    # Try soft PCI reset first, then fall back to remove/rescan if needed
 {% for node, pci_addrs in nodes.items() %}
 {% if node == inventory_hostname %}
+{% set pci_slot = pci_addrs[0].split(',')[0] %}
+    log "VM ${VMID}: Soft-resetting PCI device {{ pci_slot }}"
+    echo 1 > "/sys/bus/pci/devices/{{ pci_slot }}/reset" 2>/dev/null || true
+    sleep 2
+
+    # Verify GPU is responsive on the host after soft reset
+    if ! lspci -s {{ pci_slot }} -v 2>/dev/null | grep -q "NVIDIA"; then
+        log "VM ${VMID}: Soft reset failed — performing PCI remove/rescan"
 {% for addr in pci_addrs %}
-{% set pci_slot = addr.split(',')[0] %}
-    if [[ -e "/sys/bus/pci/devices/{{ pci_slot }}/reset" ]]; then
-        log "VM ${VMID}: Resetting PCI device {{ pci_slot }}"
-        echo 1 > "/sys/bus/pci/devices/{{ pci_slot }}/reset" 2>/dev/null || true
-    fi
+{% set slot = addr.split(',')[0] %}
+        echo 1 > "/sys/bus/pci/devices/{{ slot }}/remove" 2>/dev/null || true
 {% endfor %}
+        sleep 2
+        echo 1 > /sys/bus/pci/rescan
+        sleep 3
+        log "VM ${VMID}: PCI bus rescanned"
+    fi
 {% endif %}
 {% endfor %}
     sleep 3
