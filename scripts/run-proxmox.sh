@@ -23,6 +23,8 @@ start_time=$(date +%s)
 exit_code=0
 declare -A playbook_results
 declare -A playbook_failed_hosts
+declare -A playbook_changed_hosts
+declare -A playbook_total_changed
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
 for playbook in proxmox.yml monitoring.yml grafana_config.yml jellyfin.yml; do
@@ -42,6 +44,18 @@ for playbook in proxmox.yml monitoring.yml grafana_config.yml jellyfin.yml; do
             | paste -sd ',' -)
     fi
     playbook_failed_hosts["${playbook}"]="${failed_hosts:-unknown}"
+
+    # Parse PLAY RECAP for changed hosts
+    changed_hosts=$(grep -E 'changed=[1-9]' "$tmpfile" \
+        | awk '{print $1}' \
+        | sort -u \
+        | paste -sd ',' -)
+    total_changed=$(grep -E 'changed=[0-9]+' "$tmpfile" \
+        | grep -oP 'changed=\K[0-9]+' \
+        | awk '{sum+=$1} END {print sum+0}')
+    playbook_changed_hosts["${playbook}"]="${changed_hosts:-none}"
+    playbook_total_changed["${playbook}"]="${total_changed:-0}"
+
     rm -f "$tmpfile"
 
     if [[ $rc -ne 0 ]]; then
@@ -84,6 +98,17 @@ for playbook in "${!playbook_results[@]}"; do
         hosts=${playbook_failed_hosts[$playbook]}
     fi
     echo "ansible_playbook_success{playbook=\"${playbook}\",failed_hosts=\"${hosts}\"} ${pb_success}"
+done
+
+cat <<'CHANGED_METRICS'
+# HELP ansible_playbook_changed_tasks Total changed tasks in the last run of each playbook.
+# TYPE ansible_playbook_changed_tasks gauge
+CHANGED_METRICS
+
+for playbook in "${!playbook_total_changed[@]}"; do
+    hosts=${playbook_changed_hosts[$playbook]}
+    total=${playbook_total_changed[$playbook]}
+    echo "ansible_playbook_changed_tasks{playbook=\"${playbook}\",changed_hosts=\"${hosts}\"} ${total}"
 done
 } > "${PROM_FILE}.tmp"
 
