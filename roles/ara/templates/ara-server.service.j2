@@ -6,8 +6,7 @@ After=network.target
 Type=simple
 User={{ ara_user }}
 Group={{ ara_user }}
-Environment=ARA_DATABASE_NAME={{ ara_database_dir }}/ansible.sqlite
-Environment=ARA_ALLOWED_HOSTS=*
+Environment=ARA_SETTINGS={{ ara_database_dir }}/settings.yaml
 ExecStart={{ ara_venv_path }}/bin/ara-manage runserver {{ ara_server_host }}:{{ ara_server_port }}
 Restart=on-failure
 RestartSec=5
