@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# ffmpeg wrapper — falls back to CPU decode for 4K HDR to prevent GPU crashes
+# ffmpeg wrapper — full CPU fallback for 4K HDR to prevent GPU crashes
 # Managed by Ansible — do not edit manually
 #
 # When Jellyfin requests a 4K HDR transcode with GPU decode (hevc_cuvid),
-# this wrapper swaps to software decode while keeping NVENC for encoding.
-# This avoids CUDA OOM / Xid faults on the RTX 2080 Ti's 11GB VRAM.
+# this wrapper rewrites the entire command to use software decode AND encode.
+# NVENC encoding 4K HDR content can also crash the GPU (Xid faults, CUDA OOM),
+# so the only safe path is full CPU for these edge cases.
+# Normal non-4K/non-HDR transcodes pass through to GPU unchanged.
 
 REAL_FFMPEG="{{ jellyfin_ffmpeg_path }}"
 LOG_TAG="ffmpeg-wrapper"
@@ -16,10 +18,7 @@ args_str="${args[*]}"
 # Jellyfin passes -c:v hevc_cuvid or h264_cuvid for GPU decode
 if echo "$args_str" | grep -qE '(hevc_cuvid|h264_cuvid)'; then
     # Check if this is a 4K source by looking for scale output >= 3840 or 2160
-    # Jellyfin includes resolution in scale filters or the input probe data
     is_4k=false
-
-    # Check for 4K scale targets in filter args
     if echo "$args_str" | grep -qE 'scale_cuda=w=3840|scale_cuda=w=2560|w=3840|2160p'; then
         is_4k=true
     fi
@@ -31,9 +30,9 @@ if echo "$args_str" | grep -qE '(hevc_cuvid|h264_cuvid)'; then
     fi
 
     if $is_4k || $is_hdr; then
-        logger -t "$LOG_TAG" "4K/HDR transcode detected — falling back to CPU decode"
+        logger -t "$LOG_TAG" "4K/HDR transcode detected — full CPU fallback (no GPU)"
 
-        # Replace GPU decoder with software decoder
+        # Rewrite args: full CPU decode + scale + encode
         new_args=()
         skip_next=false
         for i in "${!args[@]}"; do
@@ -43,7 +42,7 @@ if echo "$args_str" | grep -qE '(hevc_cuvid|h264_cuvid)'; then
             fi
 
             case "${args[$i]}" in
-                # Remove CUDA init and hwaccel flags
+                # Remove all CUDA/GPU flags
                 -init_hw_device|-hwaccel|-hwaccel_output_format|-filter_hw_device)
                     skip_next=true
                     continue
@@ -55,13 +54,38 @@ if echo "$args_str" | grep -qE '(hevc_cuvid|h264_cuvid)'; then
                 h264_cuvid)
                     new_args+=("h264")
                     ;;
+                # Replace GPU encoder with software encoder
+                hevc_nvenc)
+                    new_args+=("libx265")
+                    ;;
+                h264_nvenc)
+                    new_args+=("libx264")
+                    ;;
                 *)
                     val="${args[$i]}"
-                    # Replace CUDA scale filter with software scale
-                    val="${val//scale_cuda=/scale=}"
-                    # Replace cuda pixel format with software equivalent
-                    val="${val//format=p010le/format=yuv420p10le}"
-                    new_args+=("$val")
+                    # Rewrite scale_cuda to software scale + format
+                    # scale_cuda=w=W:h=H:format=FMT → scale=w=W:h=H,format=FMT
+                    if [[ "$val" == *scale_cuda=* ]]; then
+                        val=$(echo "$val" | sed -E '
+                            s/scale_cuda=w=([0-9]+):h=([0-9]+):format=([a-z0-9]+)/scale=w=\1:h=\2,format=\3/g
+                            s/scale_cuda=w=([0-9]+):h=([0-9]+)/scale=w=\1:h=\2/g
+                        ')
+                    fi
+                    # Handle NVENC-specific options that libx265 doesn't understand
+                    case "$val" in
+                        -tag:v:0)
+                            # hvc1 tag is NVENC-specific, skip it and its value
+                            skip_next=true
+                            continue
+                            ;;
+                        p[1-7])
+                            # NVENC preset p1-p7 → libx265 ultrafast
+                            new_args+=("ultrafast")
+                            ;;
+                        *)
+                            new_args+=("$val")
+                            ;;
+                    esac
                     ;;
             esac
         done
