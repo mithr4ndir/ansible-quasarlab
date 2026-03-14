@@ -1,0 +1,5 @@
+- name: Deploy ARA Records Ansible on command center
+  hosts: cmd_center
+  become: yes
+  roles:
+    - ara

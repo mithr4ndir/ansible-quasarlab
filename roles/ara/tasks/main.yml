@@ -1,0 +1,56 @@
+---
+- name: Install system dependencies
+  ansible.builtin.apt:
+    name:
+      - python3-venv
+      - python3-pip
+    state: present
+    update_cache: true
+
+- name: Create ARA directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ara_user }}"
+    group: "{{ ara_user }}"
+    mode: '0755'
+  loop:
+    - "{{ ara_database_dir }}"
+    - "{{ ara_log_dir }}"
+
+- name: Create ARA virtualenv and install ara[server]
+  ansible.builtin.pip:
+    name: "ara[server]=={{ ara_version }}"
+    virtualenv: "{{ ara_venv_path }}"
+    virtualenv_command: python3 -m venv
+  become: true
+  become_user: "{{ ara_user }}"
+
+- name: Run ARA database migrations
+  ansible.builtin.command:
+    cmd: "{{ ara_venv_path }}/bin/ara-manage migrate"
+  environment:
+    ARA_DATABASE_NAME: "{{ ara_database_dir }}/ansible.sqlite"
+  become: true
+  become_user: "{{ ara_user }}"
+  changed_when: false
+
+- name: Deploy ARA server systemd service
+  ansible.builtin.template:
+    src: ara-server.service.j2
+    dest: /etc/systemd/system/ara-server.service
+    mode: '0644'
+  notify: Restart ara-server
+
+- name: Enable and start ARA server
+  ansible.builtin.systemd:
+    name: ara-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Deploy ARA ansible.cfg snippet
+  ansible.builtin.template:
+    src: ara-ansible-env.sh.j2
+    dest: /etc/profile.d/ara-ansible-env.sh
+    mode: '0644'
