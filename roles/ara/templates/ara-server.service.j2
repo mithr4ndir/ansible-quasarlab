@@ -1,0 +1,16 @@
+[Unit]
+Description=ARA Records Ansible - API Server
+After=network.target
+
+[Service]
+Type=simple
+User={{ ara_user }}
+Group={{ ara_user }}
+Environment=ARA_DATABASE_NAME={{ ara_database_dir }}/ansible.sqlite
+Environment=ARA_ALLOWED_HOSTS=*
+ExecStart={{ ara_venv_path }}/bin/ara-manage runserver {{ ara_server_host }}:{{ ara_server_port }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

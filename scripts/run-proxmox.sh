@@ -10,6 +10,11 @@ PROM_FILE="${TEXTFILE_DIR}/ansible_run.prom"
 
 mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 
+# Source ARA callback plugin environment (records runs to ARA database)
+if [[ -f /etc/profile.d/ara-ansible-env.sh ]]; then
+    source /etc/profile.d/ara-ansible-env.sh
+fi
+
 # Pull latest from both repos
 cd "$REPO_DIR"
 git pull --ff-only origin main >> "$LOGFILE" 2>&1

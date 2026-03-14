@@ -1,0 +1,9 @@
+---
+ara_version: "1.7.2"
+ara_user: ladino
+ara_home: "/home/{{ ara_user }}"
+ara_venv_path: "{{ ara_home }}/.ara/venv"
+ara_server_host: "0.0.0.0"
+ara_server_port: 8000
+ara_database_dir: "{{ ara_home }}/.ara/server"
+ara_log_dir: "/var/log/ara"
