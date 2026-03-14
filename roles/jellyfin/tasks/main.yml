@@ -15,13 +15,6 @@
     mode: "0644"
   notify: Reload NVIDIA driver
 
-# --- Remove Docker-based Jellyfin ---
-- name: Stop and remove Docker Jellyfin container
-  community.docker.docker_compose_v2:
-    project_src: /opt/jellyfin/config
-    state: absent
-  ignore_errors: true
-
 # --- Jellyfin Native Install ---
 - name: Add Jellyfin GPG key
   ansible.builtin.get_url:
@@ -88,8 +81,9 @@
 - name: Fix paths in library database (container → native)
   ansible.builtin.shell:
     cmd: |
-      sqlite3 {{ jellyfin_data_dir }}/data/library.db "UPDATE TypedBaseItems SET Path = REPLACE(Path, '/media/', '{{ jellyfin_media_mount }}/') WHERE Path LIKE '/media/%';"
-      sqlite3 {{ jellyfin_data_dir }}/data/library.db "UPDATE TypedBaseItems SET Path = REPLACE(Path, '/config/root/', '{{ jellyfin_data_dir }}/root/') WHERE Path LIKE '/config/root/%';"
+      sqlite3 {{ jellyfin_data_dir }}/data/jellyfin.db "UPDATE BaseItems SET Path = REPLACE(Path, '/media/', '{{ jellyfin_media_mount }}/') WHERE Path LIKE '/media/%';"
+      sqlite3 {{ jellyfin_data_dir }}/data/jellyfin.db "UPDATE BaseItems SET Path = REPLACE(Path, '/config/root/', '{{ jellyfin_data_dir }}/root/') WHERE Path LIKE '/config/root/%';"
+      sqlite3 {{ jellyfin_data_dir }}/data/jellyfin.db "UPDATE BaseItemImageInfos SET Path = REPLACE(Path, '/media/', '{{ jellyfin_media_mount }}/') WHERE Path LIKE '/media/%';"
     creates: "{{ jellyfin_data_dir }}/.paths_migrated"
   when: docker_data.stat.exists
   register: paths_fix
