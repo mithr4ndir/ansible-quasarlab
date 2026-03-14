@@ -26,11 +26,20 @@
   become: true
   become_user: "{{ ara_user }}"
 
+- name: Deploy ARA settings file
+  ansible.builtin.template:
+    src: ara-settings.yaml.j2
+    dest: "{{ ara_database_dir }}/settings.yaml"
+    owner: "{{ ara_user }}"
+    group: "{{ ara_user }}"
+    mode: '0644'
+  notify: Restart ara-server
+
 - name: Run ARA database migrations
   ansible.builtin.command:
     cmd: "{{ ara_venv_path }}/bin/ara-manage migrate"
   environment:
-    ARA_DATABASE_NAME: "{{ ara_database_dir }}/ansible.sqlite"
+    ARA_SETTINGS: "{{ ara_database_dir }}/settings.yaml"
   become: true
   become_user: "{{ ara_user }}"
   changed_when: false
