@@ -1,0 +1,6 @@
+---
+- name: Restart ara-server
+  ansible.builtin.systemd:
+    name: ara-server
+    state: restarted
+    daemon_reload: true
