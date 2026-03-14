@@ -123,6 +123,23 @@
     opts: "nfsvers=4.1,hard,timeo=600,retrans=2"
     state: mounted
 
+# --- FFmpeg Wrapper (CPU fallback for 4K HDR) ---
+- name: Deploy ffmpeg wrapper script
+  ansible.builtin.template:
+    src: ffmpeg-wrapper.sh.j2
+    dest: /usr/local/bin/ffmpeg-wrapper.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Jellyfin
+
+- name: Point Jellyfin at ffmpeg wrapper
+  ansible.builtin.lineinfile:
+    path: /etc/default/jellyfin
+    regexp: '^JELLYFIN_FFMPEG_OPT='
+    line: 'JELLYFIN_FFMPEG_OPT="--ffmpeg=/usr/local/bin/ffmpeg-wrapper.sh"'
+  notify: Restart Jellyfin
+
 # --- Jellyfin Configuration ---
 - name: Template encoding.xml
   ansible.builtin.template:

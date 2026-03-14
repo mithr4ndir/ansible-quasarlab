@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# ffmpeg wrapper — falls back to CPU decode for 4K HDR to prevent GPU crashes
+# Managed by Ansible — do not edit manually
+#
+# When Jellyfin requests a 4K HDR transcode with GPU decode (hevc_cuvid),
+# this wrapper swaps to software decode while keeping NVENC for encoding.
+# This avoids CUDA OOM / Xid faults on the RTX 2080 Ti's 11GB VRAM.
+
+REAL_FFMPEG="{{ jellyfin_ffmpeg_path }}"
+LOG_TAG="ffmpeg-wrapper"
+
+args=("$@")
+args_str="${args[*]}"
+
+# Detect 4K HDR GPU decode: look for cuvid decoder + high resolution indicators
+# Jellyfin passes -c:v hevc_cuvid or h264_cuvid for GPU decode
+if echo "$args_str" | grep -qE '(hevc_cuvid|h264_cuvid)'; then
+    # Check if this is a 4K source by looking for scale output >= 3840 or 2160
+    # Jellyfin includes resolution in scale filters or the input probe data
+    is_4k=false
+
+    # Check for 4K scale targets in filter args
+    if echo "$args_str" | grep -qE 'scale_cuda=w=3840|scale_cuda=w=2560|w=3840|2160p'; then
+        is_4k=true
+    fi
+
+    # Check for HDR indicators: DV, HDR10, HLG, color transfer
+    is_hdr=false
+    if echo "$args_str" | grep -qE 'setparams=color_primaries=bt709.*color_trc=bt709|tonemap|tonemapx|bt2020'; then
+        is_hdr=true
+    fi
+
+    if $is_4k || $is_hdr; then
+        logger -t "$LOG_TAG" "4K/HDR transcode detected — falling back to CPU decode"
+
+        # Replace GPU decoder with software decoder
+        new_args=()
+        skip_next=false
+        for i in "${!args[@]}"; do
+            if $skip_next; then
+                skip_next=false
+                continue
+            fi
+
+            case "${args[$i]}" in
+                # Remove CUDA init and hwaccel flags
+                -init_hw_device|-hwaccel|-hwaccel_output_format|-filter_hw_device)
+                    skip_next=true
+                    continue
+                    ;;
+                # Replace GPU decoders with software
+                hevc_cuvid)
+                    new_args+=("hevc")
+                    ;;
+                h264_cuvid)
+                    new_args+=("h264")
+                    ;;
+                *)
+                    val="${args[$i]}"
+                    # Replace CUDA scale filter with software scale
+                    val="${val//scale_cuda=/scale=}"
+                    # Replace cuda pixel format with software equivalent
+                    val="${val//format=p010le/format=yuv420p10le}"
+                    new_args+=("$val")
+                    ;;
+            esac
+        done
+
+        exec "$REAL_FFMPEG" "${new_args[@]}"
+    fi
+fi
+
+# Default: pass through to real ffmpeg unchanged
+exec "$REAL_FFMPEG" "$@"
