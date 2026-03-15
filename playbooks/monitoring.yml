@@ -8,5 +8,7 @@
     - monitoring/node_exporter
     - role: monitoring/filebeat
       when: "'nas' not in group_names"
+    - role: monitoring/vector
+      when: "'nas' not in group_names"
     - role: unattended_upgrades
       when: "'nas' not in group_names"

@@ -1,0 +1,16 @@
+---
+wazuh_version: "4.9"
+wazuh_manager_ip: "192.168.1.171"
+
+# Ports
+wazuh_manager_port: 1514
+wazuh_registration_port: 1515
+wazuh_api_port: 55000
+wazuh_indexer_port: 9200
+wazuh_dashboard_port: 5601
+
+# Indexer
+wazuh_indexer_node_name: "wazuh-indexer"
+
+# Dashboard
+wazuh_dashboard_node_name: "wazuh-dashboard"

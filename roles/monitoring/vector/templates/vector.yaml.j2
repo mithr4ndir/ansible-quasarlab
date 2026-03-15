@@ -1,0 +1,72 @@
+data_dir: /var/lib/vector
+
+sources:
+  journald:
+    type: journald
+    include_units:
+      - sshd
+      - systemd-logind
+      - sudo
+      - cron
+      - apt-daily
+      - apt-daily-upgrade
+      - vector
+      - node_exporter
+      - filebeat
+
+  var_log:
+    type: file
+    include:
+      - /var/log/*.log
+      - /var/log/syslog
+      - /var/log/auth.log
+    exclude:
+      - /var/log/filebeat/*.log
+    read_from: end
+
+transforms:
+  journald_remap:
+    type: remap
+    inputs:
+      - journald
+    source: |
+      .job = "varlogs"
+      .host = "{{ inventory_hostname }}"
+      .log_type = "journal"
+      del(.source_type)
+
+  file_remap:
+    type: remap
+    inputs:
+      - var_log
+    source: |
+      .job = "varlogs"
+      .host = "{{ inventory_hostname }}"
+      file_path = to_string!(.file)
+      if contains(file_path, "auth") {
+        .log_type = "auth"
+      } else if contains(file_path, "syslog") {
+        .log_type = "syslog"
+      } else if contains(file_path, "kern") {
+        .log_type = "kernel"
+      } else {
+        .log_type = "application"
+      }
+      del(.source_type)
+      del(.file)
+
+sinks:
+  loki:
+    type: loki
+    inputs:
+      - journald_remap
+      - file_remap
+    endpoint: "{{ loki_endpoint }}"
+    encoding:
+      codec: json
+    labels:
+      job: "{% raw %}{{ job }}{% endraw %}"
+      host: "{% raw %}{{ host }}{% endraw %}"
+      log_type: "{% raw %}{{ log_type }}{% endraw %}"
+    remove_label_fields: true
+    out_of_order_action: accept
