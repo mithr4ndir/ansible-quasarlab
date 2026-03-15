@@ -69,3 +69,36 @@
     name: chrony
     state: started
     enabled: yes
+
+- name: Check if nvidia-cdi-refresh service exists
+  ansible.builtin.command: systemctl list-unit-files nvidia-cdi-refresh.service
+  register: nvidia_cdi_refresh_check
+  changed_when: false
+  failed_when: false
+  when: not (nvidia_gpu_node | default(true))
+
+- name: Disable nvidia-cdi-refresh units (no GPU on this node)
+  when:
+    - not (nvidia_gpu_node | default(true))
+    - nvidia_cdi_refresh_check is defined
+    - "'nvidia-cdi-refresh' in nvidia_cdi_refresh_check.stdout"
+  block:
+    - name: Stop nvidia-cdi-refresh service and path
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - nvidia-cdi-refresh.path
+        - nvidia-cdi-refresh.service
+      failed_when: false
+
+    - name: Mask nvidia-cdi-refresh units
+      ansible.builtin.file:
+        src: /dev/null
+        dest: "/etc/systemd/system/{{ item }}"
+        state: link
+        force: true
+      loop:
+        - nvidia-cdi-refresh.service
+        - nvidia-cdi-refresh.path
+      notify: Reload systemd
