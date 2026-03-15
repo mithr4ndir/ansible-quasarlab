@@ -1,0 +1,11 @@
+---
+- name: Restart crowdsec container
+  community.docker.docker_compose_v2:
+    project_src: "{{ crowdsec_config_dir }}"
+    state: present
+    force_recreate: true
+
+- name: Restart crowdsec bouncer
+  ansible.builtin.systemd:
+    name: crowdsec-firewall-bouncer
+    state: restarted
