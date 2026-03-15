@@ -1,0 +1,18 @@
+---
+crowdsec_image: "crowdsecurity/crowdsec:latest"
+
+crowdsec_config_dir: /opt/crowdsec/config
+crowdsec_data_dir: /opt/crowdsec/data
+
+npm_log_dir: /opt/npm/data/logs
+npm_docker_network: npm_default
+
+crowdsec_collections:
+  - crowdsecurity/nginx-proxy-manager
+  - crowdsecurity/http-cve
+  - crowdsecurity/linux
+  - crowdsecurity/whitelist-good-actors
+
+crowdsec_whitelist_cidrs:
+  - 192.168.1.0/24
+  - 10.244.0.0/16
