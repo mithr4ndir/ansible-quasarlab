@@ -21,7 +21,10 @@ sources:
       - /var/log/auth.log
       - /var/log/kern.log
       - /var/log/apt/**
+      - /var/log/lxc/**
       - /var/log/unattended-upgrades/**
+      - /var/log/crowdsec-firewall-bouncer.log
+      - /var/log/wazuh-passwords-tool.log
     read_from: end
     ignore_older_secs: 86400
 
