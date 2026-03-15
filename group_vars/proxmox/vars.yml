@@ -1,4 +1,7 @@
 ---
+# Wazuh agent group
+wazuh_agent_groups: "linux,proxmox"
+
 # PVE Exporter Configuration
 pve_exporter_port: 9221
 pve_api_user: "prometheus@pve"
