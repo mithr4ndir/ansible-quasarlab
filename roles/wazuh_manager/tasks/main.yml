@@ -20,11 +20,45 @@
     filename: wazuh
     state: present
 
+- name: Download wazuh-certs-tool
+  ansible.builtin.get_url:
+    url: https://packages.wazuh.com/{{ wazuh_version }}/wazuh-certs-tool.sh
+    dest: /tmp/wazuh-certs-tool.sh
+    mode: '0755'
+
+- name: Create certs config
+  ansible.builtin.template:
+    src: certs-config.yml.j2
+    dest: /tmp/config.yml
+    mode: '0644'
+
+- name: Generate Wazuh certificates
+  ansible.builtin.command:
+    cmd: /tmp/wazuh-certs-tool.sh --all
+    chdir: /tmp
+    creates: /tmp/wazuh-certificates.tar
+
 - name: Install Wazuh Indexer
   ansible.builtin.apt:
     name: wazuh-indexer
     state: present
     update_cache: true
+
+- name: Create indexer certs directory
+  ansible.builtin.file:
+    path: /etc/wazuh-indexer/certs
+    state: directory
+    owner: wazuh-indexer
+    group: wazuh-indexer
+    mode: '0500'
+
+- name: Extract indexer certificates
+  ansible.builtin.shell:
+    cmd: |
+      tar -xf /tmp/wazuh-certificates.tar -C /etc/wazuh-indexer/certs/ ./wazuh-indexer.pem ./wazuh-indexer-key.pem ./root-ca.pem ./admin.pem ./admin-key.pem --strip-components=0
+      chown -R wazuh-indexer:wazuh-indexer /etc/wazuh-indexer/certs
+      chmod 400 /etc/wazuh-indexer/certs/*
+    creates: /etc/wazuh-indexer/certs/root-ca.pem
 
 - name: Configure Wazuh Indexer
   ansible.builtin.template:
@@ -90,6 +124,21 @@
     cmd: "curl -s https://packages.wazuh.com/4.x/filebeat/wazuh-filebeat-0.4.tar.gz | tar -xvz -C /usr/share/filebeat/module"
     creates: /usr/share/filebeat/module/wazuh
 
+- name: Create Filebeat certs directory
+  ansible.builtin.file:
+    path: /etc/filebeat/certs
+    state: directory
+    owner: root
+    group: root
+    mode: '0500'
+
+- name: Extract Filebeat certificates
+  ansible.builtin.shell:
+    cmd: |
+      tar -xf /tmp/wazuh-certificates.tar -C /etc/filebeat/certs/ ./wazuh-manager.pem ./wazuh-manager-key.pem ./root-ca.pem --strip-components=0
+      chmod 400 /etc/filebeat/certs/*
+    creates: /etc/filebeat/certs/root-ca.pem
+
 - name: Set Filebeat output to local indexer
   ansible.builtin.lineinfile:
     path: /etc/filebeat/filebeat.yml
@@ -107,6 +156,22 @@
   ansible.builtin.apt:
     name: wazuh-dashboard
     state: present
+
+- name: Create dashboard certs directory
+  ansible.builtin.file:
+    path: /etc/wazuh-dashboard/certs
+    state: directory
+    owner: wazuh-dashboard
+    group: wazuh-dashboard
+    mode: '0500'
+
+- name: Extract dashboard certificates
+  ansible.builtin.shell:
+    cmd: |
+      tar -xf /tmp/wazuh-certificates.tar -C /etc/wazuh-dashboard/certs/ ./wazuh-dashboard.pem ./wazuh-dashboard-key.pem ./root-ca.pem --strip-components=0
+      chown -R wazuh-dashboard:wazuh-dashboard /etc/wazuh-dashboard/certs
+      chmod 400 /etc/wazuh-dashboard/certs/*
+    creates: /etc/wazuh-dashboard/certs/root-ca.pem
 
 - name: Configure Wazuh Dashboard
   ansible.builtin.template:
