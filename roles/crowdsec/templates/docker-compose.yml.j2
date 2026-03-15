@@ -7,6 +7,7 @@ services:
       COLLECTIONS: "{{ crowdsec_collections | join(' ') }}"
     volumes:
       - {{ crowdsec_config_dir }}/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - {{ crowdsec_config_dir }}/whitelist.yaml:/etc/crowdsec/parsers/s02-enrich/whitelist.yaml:ro
       - {{ crowdsec_data_dir }}:/var/lib/crowdsec/data
       - {{ npm_log_dir }}:/var/log/npm:ro
       - /var/log/syslog:/var/log/syslog:ro
