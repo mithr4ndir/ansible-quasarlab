@@ -55,7 +55,7 @@
 - name: Copy indexer certificates
   ansible.builtin.shell:
     cmd: |
-      cp /tmp/wazuh-certificates/{wazuh-indexer.pem,wazuh-indexer-key.pem,root-ca.pem,admin.pem,admin-key.pem} /etc/wazuh-indexer/certs/
+      cp /tmp/wazuh-certificates/wazuh-indexer.pem /tmp/wazuh-certificates/wazuh-indexer-key.pem /tmp/wazuh-certificates/root-ca.pem /tmp/wazuh-certificates/admin.pem /tmp/wazuh-certificates/admin-key.pem /etc/wazuh-indexer/certs/
       chown -R wazuh-indexer:wazuh-indexer /etc/wazuh-indexer/certs
       chmod 400 /etc/wazuh-indexer/certs/*
     creates: /etc/wazuh-indexer/certs/root-ca.pem
@@ -135,7 +135,7 @@
 - name: Copy Filebeat certificates
   ansible.builtin.shell:
     cmd: |
-      cp /tmp/wazuh-certificates/{wazuh-manager.pem,wazuh-manager-key.pem,root-ca.pem} /etc/filebeat/certs/
+      cp /tmp/wazuh-certificates/wazuh-manager.pem /tmp/wazuh-certificates/wazuh-manager-key.pem /tmp/wazuh-certificates/root-ca.pem /etc/filebeat/certs/
       chmod 400 /etc/filebeat/certs/*
     creates: /etc/filebeat/certs/root-ca.pem
 
@@ -168,7 +168,7 @@
 - name: Copy dashboard certificates
   ansible.builtin.shell:
     cmd: |
-      cp /tmp/wazuh-certificates/{wazuh-dashboard.pem,wazuh-dashboard-key.pem,root-ca.pem} /etc/wazuh-dashboard/certs/
+      cp /tmp/wazuh-certificates/wazuh-dashboard.pem /tmp/wazuh-certificates/wazuh-dashboard-key.pem /tmp/wazuh-certificates/root-ca.pem /etc/wazuh-dashboard/certs/
       chown -R wazuh-dashboard:wazuh-dashboard /etc/wazuh-dashboard/certs
       chmod 400 /etc/wazuh-dashboard/certs/*
     creates: /etc/wazuh-dashboard/certs/root-ca.pem
