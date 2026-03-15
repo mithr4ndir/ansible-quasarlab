@@ -32,3 +32,17 @@
     name: "{{ item }}"
     state: present
   loop: "{{ pve_vfio_modules }}"
+
+- name: Check if nvidia-cdi-refresh service exists
+  ansible.builtin.command: systemctl list-unit-files nvidia-cdi-refresh.service
+  register: nvidia_cdi_refresh_check
+  changed_when: false
+  failed_when: false
+
+- name: Disable nvidia-cdi-refresh (GPU passed through to VM)
+  ansible.builtin.systemd:
+    name: nvidia-cdi-refresh
+    state: stopped
+    enabled: false
+    masked: true
+  when: "'nvidia-cdi-refresh' in nvidia_cdi_refresh_check.stdout"

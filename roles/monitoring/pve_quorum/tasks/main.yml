@@ -1,0 +1,25 @@
+---
+- name: Install quorum metrics script
+  ansible.builtin.template:
+    src: pve-quorum-metrics.sh.j2
+    dest: /usr/local/bin/pve-quorum-metrics.sh
+    mode: '0755'
+
+- name: Install quorum metrics systemd service
+  ansible.builtin.template:
+    src: pve-quorum-metrics.service.j2
+    dest: /etc/systemd/system/pve-quorum-metrics.service
+    mode: '0644'
+
+- name: Install quorum metrics systemd timer
+  ansible.builtin.template:
+    src: pve-quorum-metrics.timer.j2
+    dest: /etc/systemd/system/pve-quorum-metrics.timer
+    mode: '0644'
+
+- name: Enable and start quorum metrics timer
+  ansible.builtin.systemd:
+    name: pve-quorum-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -1,0 +1,26 @@
+#!/bin/bash
+# Collect Proxmox cluster quorum metrics for node_exporter textfile collector
+set -euo pipefail
+
+PROM_FILE="{{ node_exporter_textfile_dir }}/pve_quorum.prom"
+TMP_FILE="${PROM_FILE}.tmp"
+
+output=$(pvecm status 2>/dev/null) || { rm -f "$TMP_FILE"; exit 0; }
+
+expected_votes=$(echo "$output" | awk '/^Expected votes:/{print $3}')
+total_votes=$(echo "$output" | awk '/^Total votes:/{print $3}')
+quorate=$(echo "$output" | awk '/^Quorate:/{print ($2 == "Yes") ? 1 : 0}')
+
+cat > "$TMP_FILE" <<EOF
+# HELP pve_cluster_quorum_expected_votes Expected number of votes for quorum
+# TYPE pve_cluster_quorum_expected_votes gauge
+pve_cluster_quorum_expected_votes ${expected_votes:-0}
+# HELP pve_cluster_quorum_total_votes Current total votes in cluster
+# TYPE pve_cluster_quorum_total_votes gauge
+pve_cluster_quorum_total_votes ${total_votes:-0}
+# HELP pve_cluster_quorum_quorate Whether cluster has quorum (1=yes, 0=no)
+# TYPE pve_cluster_quorum_quorate gauge
+pve_cluster_quorum_quorate ${quorate:-0}
+EOF
+
+mv "$TMP_FILE" "$PROM_FILE"
