@@ -24,6 +24,13 @@
     state: present
     update_cache: true
 
+- name: Add vector user to adm group for log access
+  ansible.builtin.user:
+    name: vector
+    groups: adm
+    append: true
+  notify: Restart vector
+
 - name: Configure Vector
   ansible.builtin.template:
     src: vector.yaml.j2
