@@ -1,18 +1,26 @@
 ---
-- name: Add Vector GPG key
+- name: Remove stale Vector GPG keyring (if empty from failed install)
+  ansible.builtin.file:
+    path: /usr/share/keyrings/vector-archive-keyring.gpg
+    state: absent
+  when: ansible_local.vector_keyring_valid is not defined
+
+- name: Install Datadog GPG keys for Vector
   ansible.builtin.shell:
-    cmd: curl -fsSL https://repositories.timber.io/public/vector/gpg.3543DB2D0A2BC4B8.key | gpg --dearmor -o /usr/share/keyrings/vector-archive-keyring.gpg
-    creates: /usr/share/keyrings/vector-archive-keyring.gpg
+    cmd: |
+      curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public | gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
+      curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_F14F620E.public | gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring-f14f620e.gpg
+    creates: /usr/share/keyrings/datadog-archive-keyring.gpg
 
 - name: Add Vector repository
   ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/vector-archive-keyring.gpg] https://repositories.timber.io/public/vector/deb/debian any-version main"
+    repo: "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.vector.dev/ stable vector-0"
     filename: vector
     state: present
 
 - name: Install Vector
   ansible.builtin.apt:
-    name: "vector={{ vector_version }}"
+    name: vector
     state: present
     update_cache: true
 
