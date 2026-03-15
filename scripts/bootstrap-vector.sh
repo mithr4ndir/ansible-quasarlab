@@ -10,8 +10,8 @@ AGGREGATOR_PORT="${VECTOR_AGGREGATOR_PORT:-6000}"
 HOSTNAME="${VECTOR_HOSTNAME:-$(hostname -s)}"
 
 echo "==> Installing Vector..."
-curl -fsSL https://repositories.timber.io/public/vector/gpg.3543DB2D0A2BC4B8.key | gpg --dearmor -o /usr/share/keyrings/vector-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/vector-archive-keyring.gpg] https://repositories.timber.io/public/vector/deb/debian any-version main" > /etc/apt/sources.list.d/vector.list
+curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public | gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.vector.dev/ stable vector-0" > /etc/apt/sources.list.d/vector.list
 apt-get update -qq
 apt-get install -y -qq vector
 
