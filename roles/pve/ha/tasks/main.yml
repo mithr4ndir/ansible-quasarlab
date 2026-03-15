@@ -1,0 +1,49 @@
+---
+# QDevice and HA configuration — run on one Proxmox node only
+- name: Check if QDevice is already configured
+  ansible.builtin.shell:
+    cmd: pvecm qdevice status >/dev/null 2>&1 && echo "configured" || echo "not_configured"
+  register: qdevice_status
+  changed_when: false
+  when: inventory_hostname == 'pve'
+
+- name: Install corosync-qdevice package
+  ansible.builtin.apt:
+    name: corosync-qdevice
+    state: present
+  when: inventory_hostname == 'pve'
+
+- name: Setup QDevice on TrueNAS (one-time)
+  ansible.builtin.command:
+    cmd: pvecm qdevice setup 192.168.1.15 --force
+  when:
+    - inventory_hostname == 'pve'
+    - qdevice_status.stdout == 'not_configured'
+
+- name: Check existing HA groups
+  ansible.builtin.command:
+    cmd: ha-manager grouplist
+  register: ha_groups
+  changed_when: false
+  when: inventory_hostname == 'pve'
+
+- name: Create HA group for GPU VMs (prefer pve2)
+  ansible.builtin.command:
+    cmd: ha-manager groupadd gpu-vms --nodes pve2,pve --nofailback 1
+  when:
+    - inventory_hostname == 'pve'
+    - "'gpu-vms' not in ha_groups.stdout"
+
+- name: Check existing HA resources
+  ansible.builtin.command:
+    cmd: ha-manager status
+  register: ha_status
+  changed_when: false
+  when: inventory_hostname == 'pve'
+
+- name: Add jellyfin VM to HA
+  ansible.builtin.command:
+    cmd: ha-manager add vm:115 --state started --group gpu-vms --max_restart 3 --max_relocate 2
+  when:
+    - inventory_hostname == 'pve'
+    - "'vm:115' not in ha_status.stdout"
