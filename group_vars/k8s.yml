@@ -1,6 +1,9 @@
 # K8s
 pod_network_cidr: "10.244.0.0/16"
 
+# Wazuh agent group
+wazuh_agent_groups: "linux,kubernetes"
+
 # Systemd service monitoring
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:

@@ -1,0 +1,130 @@
+---
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - apt-transport-https
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+
+- name: Add Wazuh GPG key
+  ansible.builtin.shell:
+    cmd: curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
+    creates: /usr/share/keyrings/wazuh.gpg
+
+- name: Add Wazuh repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main"
+    filename: wazuh
+    state: present
+
+- name: Install Wazuh Indexer
+  ansible.builtin.apt:
+    name: wazuh-indexer
+    state: present
+    update_cache: true
+
+- name: Configure Wazuh Indexer
+  ansible.builtin.template:
+    src: indexer-opensearch.yml.j2
+    dest: /etc/wazuh-indexer/opensearch.yml
+    mode: '0660'
+    owner: wazuh-indexer
+    group: wazuh-indexer
+  notify: Restart wazuh-indexer
+
+- name: Enable and start Wazuh Indexer
+  ansible.builtin.systemd:
+    name: wazuh-indexer
+    enabled: true
+    state: started
+
+- name: Wait for Wazuh Indexer to be ready
+  ansible.builtin.wait_for:
+    port: "{{ wazuh_indexer_port }}"
+    delay: 10
+    timeout: 120
+
+- name: Initialize Wazuh Indexer security
+  ansible.builtin.command:
+    cmd: /usr/share/wazuh-indexer/bin/indexer-security-init.sh
+  register: security_init
+  changed_when: security_init.rc == 0
+  failed_when: false
+
+- name: Install Wazuh Manager
+  ansible.builtin.apt:
+    name: wazuh-manager
+    state: present
+
+- name: Configure Wazuh Manager
+  ansible.builtin.template:
+    src: ossec.conf.j2
+    dest: /var/ossec/etc/ossec.conf
+    mode: '0660'
+    owner: root
+    group: wazuh
+  notify: Restart wazuh-manager
+
+- name: Enable and start Wazuh Manager
+  ansible.builtin.systemd:
+    name: wazuh-manager
+    enabled: true
+    state: started
+
+- name: Install Filebeat for Wazuh
+  ansible.builtin.apt:
+    name: filebeat
+    state: present
+
+- name: Download Wazuh Filebeat config
+  ansible.builtin.get_url:
+    url: "https://packages.wazuh.com/{{ wazuh_version }}/tpl/wazuh/filebeat/filebeat.yml"
+    dest: /etc/filebeat/filebeat.yml
+    mode: '0644'
+
+- name: Download Wazuh Filebeat module
+  ansible.builtin.shell:
+    cmd: "curl -s https://packages.wazuh.com/4.x/filebeat/wazuh-filebeat-0.4.tar.gz | tar -xvz -C /usr/share/filebeat/module"
+    creates: /usr/share/filebeat/module/wazuh
+
+- name: Set Filebeat output to local indexer
+  ansible.builtin.lineinfile:
+    path: /etc/filebeat/filebeat.yml
+    regexp: '^  hosts:'
+    line: "  hosts: [\"127.0.0.1:{{ wazuh_indexer_port }}\"]"
+
+- name: Enable and start Filebeat
+  ansible.builtin.systemd:
+    name: filebeat
+    enabled: true
+    state: started
+  notify: Restart filebeat
+
+- name: Install Wazuh Dashboard
+  ansible.builtin.apt:
+    name: wazuh-dashboard
+    state: present
+
+- name: Configure Wazuh Dashboard
+  ansible.builtin.template:
+    src: dashboard-opensearch-dashboards.yml.j2
+    dest: /etc/wazuh-dashboard/opensearch_dashboards.yml
+    mode: '0660'
+    owner: wazuh-dashboard
+    group: wazuh-dashboard
+  notify: Restart wazuh-dashboard
+
+- name: Enable and start Wazuh Dashboard
+  ansible.builtin.systemd:
+    name: wazuh-dashboard
+    enabled: true
+    state: started
+
+- name: Wait for Wazuh Dashboard to be ready
+  ansible.builtin.wait_for:
+    port: "{{ wazuh_dashboard_port }}"
+    delay: 15
+    timeout: 120

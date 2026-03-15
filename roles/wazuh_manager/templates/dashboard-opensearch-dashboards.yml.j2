@@ -1,0 +1,10 @@
+server.host: "0.0.0.0"
+server.port: {{ wazuh_dashboard_port }}
+opensearch.hosts: ["https://127.0.0.1:{{ wazuh_indexer_port }}"]
+opensearch.ssl.verificationMode: none
+opensearch.requestHeadersWhitelist: ["securitytenant", "Authorization"]
+opensearch_security.multitenancy.enabled: false
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+server.ssl.enabled: false
+opensearch.ssl.certificateAuthorities: ["/etc/wazuh-dashboard/certs/root-ca.pem"]
+uiSettings.overrides.defaultRoute: /app/wz-home
