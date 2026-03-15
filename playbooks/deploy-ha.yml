@@ -1,0 +1,7 @@
+---
+- name: Deploy GPU hookscripts and HA configuration
+  hosts: proxmox
+  become: true
+  roles:
+    - pve/hookscripts
+    - pve/ha
