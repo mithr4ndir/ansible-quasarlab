@@ -1,0 +1,6 @@
+[Unit]
+Description=Collect PVE quorum metrics for node_exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pve-quorum-metrics.sh
