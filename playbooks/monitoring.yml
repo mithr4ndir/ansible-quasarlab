@@ -10,3 +10,13 @@
       when: "'nas' not in group_names"
     - role: unattended_upgrades
       when: "'nas' not in group_names"
+
+- name: Sync Prometheus targets from inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Generate and apply Prometheus file_sd targets
+      ansible.builtin.command:
+        cmd: "{{ playbook_dir }}/../scripts/sync-prometheus-targets.sh"
+      changed_when: true
