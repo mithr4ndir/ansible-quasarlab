@@ -128,3 +128,28 @@
     port: "{{ wazuh_dashboard_port }}"
     delay: 15
     timeout: 120
+
+- name: Change indexer admin password
+  ansible.builtin.shell:
+    cmd: >
+      /usr/share/wazuh-indexer/plugins/opensearch-security/tools/wazuh-passwords-tool.sh
+      -u admin -p '{{ wazuh_admin_password }}'
+  no_log: true
+  changed_when: true
+  when: wazuh_admin_password is defined
+
+- name: Change Wazuh API password
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ wazuh_api_port }}/security/users/1"
+    method: PUT
+    user: wazuh
+    password: wazuh
+    body_format: json
+    body:
+      password: "{{ wazuh_api_password }}"
+    validate_certs: false
+    force_basic_auth: true
+    status_code: [200]
+  no_log: true
+  when: wazuh_api_password is defined
+  failed_when: false
