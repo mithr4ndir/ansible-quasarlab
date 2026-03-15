@@ -1,0 +1,4 @@
+---
+# k8cluster2 (192.168.1.89) - K8s node on pve2
+# GPU is passed through from pve2 to Jellyfin VM, not available to this node
+nvidia_gpu_node: false
