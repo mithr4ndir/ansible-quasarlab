@@ -94,6 +94,18 @@
     crowdsec_bouncer_api_key: "{{ bouncer_key.stdout if bouncer_key is changed else (existing_bouncer_key.content | b64decode | trim) }}"
   when: bouncer_key is changed or bouncer_key_file.stat.exists
 
+- name: Add CrowdSec GPG key
+  ansible.builtin.apt_key:
+    url: https://packagecloud.io/crowdsec/crowdsec/gpgkey
+    state: present
+
+- name: Add CrowdSec repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://packagecloud.io/crowdsec/crowdsec/{{ ansible_distribution | lower }}/ {{ ansible_distribution_release }} main"
+    state: present
+    filename: crowdsec
+    update_cache: true
+
 - name: Install CrowdSec firewall bouncer package
   ansible.builtin.apt:
     name: crowdsec-firewall-bouncer-iptables
