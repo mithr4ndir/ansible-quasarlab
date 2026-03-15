@@ -24,7 +24,7 @@ transforms:
     inputs:
       - journald
       - var_log
-    condition: '!contains(to_string(.message) ?? "", "NVRM: No NVIDIA GPU found")'
+    condition: '!contains(string!(.message), "NVRM: No NVIDIA GPU found")'
 
   remap:
     type: remap
@@ -34,23 +34,22 @@ transforms:
       .job = "varlogs"
       .host = "{{ inventory_hostname }}"
       if exists(.file) {
-        file_path = to_string!(.file)
+        file_path = string!(.file)
         if contains(file_path, "kern") {
           .log_type = "kernel"
         } else {
           .log_type = "application"
         }
-        # Extract app name from /var/log/<app>/file.log
-        parts = split(file_path, "/") ?? []
+        parts = split!(file_path, "/")
         if length(parts) > 3 {
-          .app = to_string(get!(parts, [3]))
+          .app = parts[3]
         } else {
           .app = "system"
         }
         del(.file)
       } else {
         .log_type = "journal"
-        .app = to_string(._SYSTEMD_UNIT) ?? to_string(.SYSLOG_IDENTIFIER) ?? "system"
+        .app = string(._SYSTEMD_UNIT) ?? string(.SYSLOG_IDENTIFIER) ?? "system"
       }
       del(.source_type)
 
