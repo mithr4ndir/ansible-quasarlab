@@ -1,6 +1,7 @@
 ---
-- name: Deploy PVE exporter to Proxmox hosts
+- name: Deploy PVE monitoring to Proxmox hosts
   hosts: proxmox
   become: true
   roles:
     - monitoring/pve_exporter
+    - monitoring/pve_quorum
