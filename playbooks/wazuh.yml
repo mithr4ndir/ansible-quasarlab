@@ -4,6 +4,37 @@
   become: true
   vars_files:
     - ../group_vars/vault.yml
+  pre_tasks:
+    - name: Fetch Wazuh credentials from 1Password
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Get Wazuh dashboard admin password
+          ansible.builtin.command:
+            cmd: op read "op://Infrastructure/Wazuh SIEM/password"
+          register: op_wazuh_admin_pass
+          changed_when: false
+          no_log: true
+
+        - name: Get Wazuh API password
+          ansible.builtin.command:
+            cmd: op read "op://Infrastructure/Wazuh SIEM/API Credentials/api_password"
+          register: op_wazuh_api_pass
+          changed_when: false
+          no_log: true
+
+        - name: Get Wazuh indexer admin password
+          ansible.builtin.command:
+            cmd: op read "op://Infrastructure/Wazuh SIEM/Indexer/indexer_admin_password"
+          register: op_wazuh_indexer_pass
+          changed_when: false
+          no_log: true
+
+        - name: Set Wazuh credential facts
+          ansible.builtin.set_fact:
+            wazuh_admin_password: "{{ op_wazuh_admin_pass.stdout }}"
+            wazuh_api_password: "{{ op_wazuh_api_pass.stdout }}"
+            wazuh_indexer_password: "{{ op_wazuh_indexer_pass.stdout }}"
   roles:
     - wazuh_manager
 
