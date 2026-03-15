@@ -1,0 +1,117 @@
+---
+- name: Create CrowdSec directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ crowdsec_config_dir }}"
+    - "{{ crowdsec_data_dir }}"
+
+- name: Template CrowdSec docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ crowdsec_config_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart crowdsec container
+
+- name: Template CrowdSec acquis.yaml
+  ansible.builtin.template:
+    src: acquis.yaml.j2
+    dest: "{{ crowdsec_config_dir }}/acquis.yaml"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart crowdsec container
+
+- name: Template CrowdSec whitelist
+  ansible.builtin.template:
+    src: whitelist.yaml.j2
+    dest: "{{ crowdsec_config_dir }}/whitelist.yaml"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart crowdsec container
+
+- name: Start CrowdSec container
+  community.docker.docker_compose_v2:
+    project_src: "{{ crowdsec_config_dir }}"
+    state: present
+  register: crowdsec_compose
+
+- name: Wait for CrowdSec to be ready
+  ansible.builtin.pause:
+    seconds: 10
+  when: crowdsec_compose.changed
+
+- name: Install CrowdSec collections
+  community.docker.docker_container_exec:
+    container: crowdsec
+    command: "cscli collections install {{ item }}"
+  loop: "{{ crowdsec_collections }}"
+  register: collection_result
+  changed_when: "'overwrite' not in collection_result.stdout"
+
+- name: Copy whitelist to container
+  ansible.builtin.command:
+    cmd: docker cp {{ crowdsec_config_dir }}/whitelist.yaml crowdsec:/etc/crowdsec/parsers/s02-enrich/whitelist.yaml
+  changed_when: false
+
+- name: Check if bouncer API key exists
+  ansible.builtin.command:
+    cmd: docker exec crowdsec cscli bouncers list -o json
+  register: bouncers_list
+  changed_when: false
+
+- name: Register firewall bouncer
+  ansible.builtin.command:
+    cmd: docker exec crowdsec cscli bouncers add firewall-bouncer -o raw
+  register: bouncer_key
+  when: "'firewall-bouncer' not in bouncers_list.stdout"
+  changed_when: true
+
+- name: Save bouncer API key
+  ansible.builtin.copy:
+    content: "{{ bouncer_key.stdout }}"
+    dest: "{{ crowdsec_config_dir }}/.bouncer_key"
+    owner: root
+    group: root
+    mode: '0600'
+  when: bouncer_key is changed
+
+- name: Read existing bouncer API key
+  ansible.builtin.slurp:
+    src: "{{ crowdsec_config_dir }}/.bouncer_key"
+  register: existing_bouncer_key
+  when: bouncer_key is not changed
+
+- name: Set bouncer API key fact
+  ansible.builtin.set_fact:
+    crowdsec_bouncer_api_key: "{{ bouncer_key.stdout if bouncer_key is changed else (existing_bouncer_key.content | b64decode | trim) }}"
+
+- name: Install CrowdSec firewall bouncer package
+  ansible.builtin.apt:
+    name: crowdsec-firewall-bouncer-iptables
+    state: present
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Configure firewall bouncer
+  ansible.builtin.lineinfile:
+    path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+    regexp: "^{{ item.key }}:"
+    line: "{{ item.key }}: {{ item.value }}"
+  loop:
+    - { key: "api_url", value: "http://127.0.0.1:8080/" }
+    - { key: "api_key", value: "{{ crowdsec_bouncer_api_key }}" }
+  notify: Restart crowdsec bouncer
+
+- name: Enable and start firewall bouncer
+  ansible.builtin.systemd:
+    name: crowdsec-firewall-bouncer
+    enabled: true
+    state: started

@@ -1,0 +1,6 @@
+---
+- name: Deploy CrowdSec IPS on NPM host
+  hosts: npm
+  become: true
+  roles:
+    - crowdsec
