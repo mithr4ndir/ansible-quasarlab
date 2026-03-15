@@ -23,40 +23,31 @@ transforms:
       - var_log
     condition: '!contains(to_string(.message) ?? "", "NVRM: No NVIDIA GPU found")'
 
-  journald_remap:
+  remap:
     type: remap
     inputs:
       - noise_filter
-    condition: 'exists(._SYSTEMD_UNIT) || exists(.SYSLOG_IDENTIFIER)'
     source: |
       .job = "varlogs"
       .host = "{{ inventory_hostname }}"
-      .log_type = "journal"
-      del(.source_type)
-
-  file_remap:
-    type: remap
-    inputs:
-      - noise_filter
-    condition: 'exists(.file)'
-    source: |
-      .job = "varlogs"
-      .host = "{{ inventory_hostname }}"
-      file_path = to_string!(.file)
-      if contains(file_path, "kern") {
-        .log_type = "kernel"
+      if exists(.file) {
+        file_path = to_string!(.file)
+        if contains(file_path, "kern") {
+          .log_type = "kernel"
+        } else {
+          .log_type = "application"
+        }
+        del(.file)
       } else {
-        .log_type = "application"
+        .log_type = "journal"
       }
       del(.source_type)
-      del(.file)
 
 sinks:
   loki:
     type: loki
     inputs:
-      - journald_remap
-      - file_remap
+      - remap
     endpoint: "{{ loki_endpoint }}"
     encoding:
       codec: json
