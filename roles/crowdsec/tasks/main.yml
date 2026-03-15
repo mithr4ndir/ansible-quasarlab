@@ -56,11 +56,6 @@
   register: collection_result
   changed_when: "'overwrite' not in collection_result.stdout"
 
-- name: Copy whitelist to container
-  ansible.builtin.command:
-    cmd: docker cp {{ crowdsec_config_dir }}/whitelist.yaml crowdsec:/etc/crowdsec/parsers/s02-enrich/whitelist.yaml
-  changed_when: false
-
 - name: Check if bouncer API key exists
   ansible.builtin.command:
     cmd: docker exec crowdsec cscli bouncers list -o json
@@ -83,15 +78,21 @@
     mode: '0600'
   when: bouncer_key is changed
 
+- name: Check if bouncer key file exists
+  ansible.builtin.stat:
+    path: "{{ crowdsec_config_dir }}/.bouncer_key"
+  register: bouncer_key_file
+
 - name: Read existing bouncer API key
   ansible.builtin.slurp:
     src: "{{ crowdsec_config_dir }}/.bouncer_key"
   register: existing_bouncer_key
-  when: bouncer_key is not changed
+  when: bouncer_key is not changed and bouncer_key_file.stat.exists
 
 - name: Set bouncer API key fact
   ansible.builtin.set_fact:
     crowdsec_bouncer_api_key: "{{ bouncer_key.stdout if bouncer_key is changed else (existing_bouncer_key.content | b64decode | trim) }}"
+  when: bouncer_key is changed or bouncer_key_file.stat.exists
 
 - name: Install CrowdSec firewall bouncer package
   ansible.builtin.apt:
