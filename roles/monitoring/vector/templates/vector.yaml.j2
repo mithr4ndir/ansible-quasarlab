@@ -7,24 +7,16 @@ sources:
   var_log:
     type: file
     include:
-      - /var/log/**/*.log
-      - /var/log/*.log
-    exclude:
-      - /var/log/filebeat/**
-      - /var/log/journal/**
-      - /var/log/vector/**
-      - /var/log/containers/**
-      - /var/log/pods/**
-      - /var/log/grafana/**
-      - /var/log/libvirt/**
-      - /var/log/syslog
-      - /var/log/auth.log
-      - /var/log/kern.log
-      - /var/log/apt/**
-      - /var/log/lxc/**
-      - /var/log/unattended-upgrades/**
-      - /var/log/crowdsec-firewall-bouncer.log
-      - /var/log/wazuh-passwords-tool.log
+      - /var/log/nginx/*.log
+      - /var/log/haproxy.log
+      - /var/log/jellyfin/*.log
+      - /var/log/ceph/*.log
+      - /var/log/pve*.log
+      - /var/log/gpu-*.log
+      - /var/log/failover.log
+      - /var/log/dpkg.log
+      - /var/log/cloud-init*.log
+      - /var/log/ansible-quasarlab/*.log
     read_from: end
     ignore_older_secs: 86400
 
