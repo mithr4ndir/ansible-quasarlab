@@ -1,0 +1,21 @@
+services:
+  crowdsec:
+    image: {{ crowdsec_image }}
+    container_name: crowdsec
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "{{ crowdsec_collections | join(' ') }}"
+    volumes:
+      - {{ crowdsec_config_dir }}/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - {{ crowdsec_data_dir }}:/var/lib/crowdsec/data
+      - {{ npm_log_dir }}:/var/log/npm:ro
+      - /var/log/syslog:/var/log/syslog:ro
+      - /var/log/auth.log:/var/log/auth.log:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - {{ npm_docker_network }}
+
+networks:
+  {{ npm_docker_network }}:
+    external: true

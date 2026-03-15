@@ -1,0 +1,8 @@
+name: crowdsecurity/internal-whitelist
+description: "Whitelist internal networks"
+whitelist:
+  reason: "Internal network — never ban"
+  cidr:
+{% for cidr in crowdsec_whitelist_cidrs %}
+    - {{ cidr }}
+{% endfor %}

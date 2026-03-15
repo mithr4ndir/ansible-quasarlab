@@ -3,3 +3,4 @@
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:
   - docker.service
+  - crowdsec-firewall-bouncer.service
