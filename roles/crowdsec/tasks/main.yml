@@ -38,7 +38,7 @@
   notify: Restart crowdsec container
 
 - name: Start CrowdSec container
-  community.docker.docker_compose_v2:
+  community.docker.docker_compose:
     project_src: "{{ crowdsec_config_dir }}"
     state: present
   register: crowdsec_compose
