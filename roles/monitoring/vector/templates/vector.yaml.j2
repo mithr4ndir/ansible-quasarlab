@@ -3,32 +3,31 @@ data_dir: /var/lib/vector
 sources:
   journald:
     type: journald
-    include_units:
-      - sshd
-      - systemd-logind
-      - sudo
-      - cron
-      - apt-daily
-      - apt-daily-upgrade
-      - vector
-      - node_exporter
-      - filebeat
 
   var_log:
     type: file
     include:
       - /var/log/*.log
-      - /var/log/syslog
-      - /var/log/auth.log
     exclude:
       - /var/log/filebeat/*.log
+      - /var/log/syslog
+      - /var/log/auth.log
+      - /var/log/kern.log
     read_from: end
 
 transforms:
+  noise_filter:
+    type: filter
+    inputs:
+      - journald
+      - var_log
+    condition: '!contains(to_string(.message) ?? "", "NVRM: No NVIDIA GPU found")'
+
   journald_remap:
     type: remap
     inputs:
-      - journald
+      - noise_filter
+    condition: 'exists(._SYSTEMD_UNIT) || exists(.SYSLOG_IDENTIFIER)'
     source: |
       .job = "varlogs"
       .host = "{{ inventory_hostname }}"
@@ -38,16 +37,13 @@ transforms:
   file_remap:
     type: remap
     inputs:
-      - var_log
+      - noise_filter
+    condition: 'exists(.file)'
     source: |
       .job = "varlogs"
       .host = "{{ inventory_hostname }}"
       file_path = to_string!(.file)
-      if contains(file_path, "auth") {
-        .log_type = "auth"
-      } else if contains(file_path, "syslog") {
-        .log_type = "syslog"
-      } else if contains(file_path, "kern") {
+      if contains(file_path, "kern") {
         .log_type = "kernel"
       } else {
         .log_type = "application"
