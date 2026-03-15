@@ -36,7 +36,7 @@
   ansible.builtin.command:
     cmd: /tmp/wazuh-certs-tool.sh --all
     chdir: /tmp
-    creates: /tmp/wazuh-certificates.tar
+    creates: /tmp/wazuh-certificates/root-ca.pem
 
 - name: Install Wazuh Indexer
   ansible.builtin.apt:
@@ -52,10 +52,10 @@
     group: wazuh-indexer
     mode: '0500'
 
-- name: Extract indexer certificates
+- name: Copy indexer certificates
   ansible.builtin.shell:
     cmd: |
-      tar -xf /tmp/wazuh-certificates.tar -C /etc/wazuh-indexer/certs/ ./wazuh-indexer.pem ./wazuh-indexer-key.pem ./root-ca.pem ./admin.pem ./admin-key.pem --strip-components=0
+      cp /tmp/wazuh-certificates/{wazuh-indexer.pem,wazuh-indexer-key.pem,root-ca.pem,admin.pem,admin-key.pem} /etc/wazuh-indexer/certs/
       chown -R wazuh-indexer:wazuh-indexer /etc/wazuh-indexer/certs
       chmod 400 /etc/wazuh-indexer/certs/*
     creates: /etc/wazuh-indexer/certs/root-ca.pem
@@ -132,10 +132,10 @@
     group: root
     mode: '0500'
 
-- name: Extract Filebeat certificates
+- name: Copy Filebeat certificates
   ansible.builtin.shell:
     cmd: |
-      tar -xf /tmp/wazuh-certificates.tar -C /etc/filebeat/certs/ ./wazuh-manager.pem ./wazuh-manager-key.pem ./root-ca.pem --strip-components=0
+      cp /tmp/wazuh-certificates/{wazuh-manager.pem,wazuh-manager-key.pem,root-ca.pem} /etc/filebeat/certs/
       chmod 400 /etc/filebeat/certs/*
     creates: /etc/filebeat/certs/root-ca.pem
 
@@ -165,10 +165,10 @@
     group: wazuh-dashboard
     mode: '0500'
 
-- name: Extract dashboard certificates
+- name: Copy dashboard certificates
   ansible.builtin.shell:
     cmd: |
-      tar -xf /tmp/wazuh-certificates.tar -C /etc/wazuh-dashboard/certs/ ./wazuh-dashboard.pem ./wazuh-dashboard-key.pem ./root-ca.pem --strip-components=0
+      cp /tmp/wazuh-certificates/{wazuh-dashboard.pem,wazuh-dashboard-key.pem,root-ca.pem} /etc/wazuh-dashboard/certs/
       chown -R wazuh-dashboard:wazuh-dashboard /etc/wazuh-dashboard/certs
       chmod 400 /etc/wazuh-dashboard/certs/*
     creates: /etc/wazuh-dashboard/certs/root-ca.pem
