@@ -1,0 +1,30 @@
+---
+- name: Add Vector GPG key
+  ansible.builtin.shell:
+    cmd: curl -fsSL https://repositories.timber.io/public/vector/gpg.3543DB2D0A2BC4B8.key | gpg --dearmor -o /usr/share/keyrings/vector-archive-keyring.gpg
+    creates: /usr/share/keyrings/vector-archive-keyring.gpg
+
+- name: Add Vector repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/vector-archive-keyring.gpg] https://repositories.timber.io/public/vector/deb/debian any-version main"
+    filename: vector
+    state: present
+
+- name: Install Vector
+  ansible.builtin.apt:
+    name: "vector={{ vector_version }}"
+    state: present
+    update_cache: true
+
+- name: Configure Vector
+  ansible.builtin.template:
+    src: vector.yaml.j2
+    dest: /etc/vector/vector.yaml
+    mode: '0644'
+  notify: Restart vector
+
+- name: Enable and start Vector
+  ansible.builtin.systemd:
+    name: vector
+    enabled: true
+    state: started
