@@ -16,7 +16,10 @@ sources:
       - /var/log/syslog
       - /var/log/auth.log
       - /var/log/kern.log
+      - /var/log/apt/**
+      - /var/log/unattended-upgrades/**
     read_from: end
+    ignore_older_secs: 86400
 
 transforms:
   noise_filter:
