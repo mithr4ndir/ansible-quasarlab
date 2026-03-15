@@ -1,0 +1,17 @@
+---
+- name: Deploy Wazuh Manager (all-in-one)
+  hosts: security
+  become: true
+  vars_files:
+    - ../group_vars/vault.yml
+  roles:
+    - wazuh_manager
+
+- name: Deploy Wazuh Agent to all Linux hosts
+  hosts: linux
+  become: true
+  vars_files:
+    - ../group_vars/vault.yml
+  roles:
+    - role: wazuh_agent
+      when: "'security' not in group_names and 'nas' not in group_names"
