@@ -1,0 +1,26 @@
+---
+plugin: community.proxmox.proxmox
+url: https://192.168.1.11:8006
+user: ansible@pve
+token_id: inventory
+token_secret: "7e4e0d2f-c91a-429c-9bea-a3ad76cf6588"
+validate_certs: false
+
+want_facts: true
+want_proxmox_nodes_ansible_host: false
+
+# Map VM name to inventory hostname
+compose:
+  ansible_host: proxmox_agent_interfaces | selectattr('name', 'ne', 'lo') | map(attribute='ip-addresses') | first | select('match', '^[0-9]') | first | regex_replace('/.*', '')
+  ansible_user: "'ladino'"
+
+# Group VMs by their Proxmox tags
+keyed_groups:
+  - key: proxmox_tags_parsed
+    separator: ""
+    prefix: ""
+    default_value: "untagged"
+
+# Create the linux parent group from tagged VMs
+groups:
+  linux: "'linux' in (proxmox_tags_parsed | default([]))"
