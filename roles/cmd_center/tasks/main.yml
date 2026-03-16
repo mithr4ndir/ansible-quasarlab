@@ -45,3 +45,31 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: '0600'
+
+- name: Deploy ansible-proxmox systemd service
+  ansible.builtin.template:
+    src: ansible-proxmox.service.j2
+    dest: /etc/systemd/system/ansible-proxmox.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-proxmox timer
+
+- name: Deploy ansible-proxmox systemd timer
+  ansible.builtin.template:
+    src: ansible-proxmox.timer.j2
+    dest: /etc/systemd/system/ansible-proxmox.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-proxmox timer
+
+- name: Enable and start ansible-proxmox timer
+  ansible.builtin.systemd:
+    name: ansible-proxmox.timer
+    enabled: true
+    state: started

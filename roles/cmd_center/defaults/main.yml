@@ -1,0 +1,2 @@
+---
+ansible_repo_path: /home/{{ ansible_user }}/code/ansible-quasarlab

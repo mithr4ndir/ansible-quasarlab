@@ -1,0 +1,13 @@
+[Unit]
+Description=Ansible Proxmox configuration enforcement
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart={{ ansible_repo_path }}/scripts/run-proxmox.sh
+WorkingDirectory={{ ansible_repo_path }}
+Environment=ANSIBLE_CONFIG={{ ansible_repo_path }}/ansible.cfg
+Environment=HOME=/home/{{ ansible_user }}
