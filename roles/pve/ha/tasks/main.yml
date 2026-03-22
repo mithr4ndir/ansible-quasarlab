@@ -1,8 +1,9 @@
 ---
 # QDevice and HA configuration — run on one Proxmox node only
+# QDevice VM runs at 192.168.1.16 (VM inside TrueNAS, running corosync-qnetd)
 - name: Check if QDevice is already configured
   ansible.builtin.shell:
-    cmd: pvecm qdevice status >/dev/null 2>&1 && echo "configured" || echo "not_configured"
+    cmd: corosync-qdevice-tool -s >/dev/null 2>&1 && echo "configured" || echo "not_configured"
   register: qdevice_status
   changed_when: false
   when: inventory_hostname == 'pve'
@@ -13,20 +14,9 @@
     state: present
   when: inventory_hostname == 'pve'
 
-- name: Install corosync-qnetd on TrueNAS (QDevice host)
-  ansible.builtin.apt:
-    name: corosync-qnetd
-    state: present
-  delegate_to: truenas
-  become: true
-  run_once: true
-  when:
-    - inventory_hostname == 'pve'
-    - qdevice_status.stdout == 'not_configured'
-
-- name: Setup QDevice on TrueNAS (one-time)
+- name: Setup QDevice (one-time)
   ansible.builtin.command:
-    cmd: pvecm qdevice setup 192.168.1.15 --force
+    cmd: pvecm qdevice setup 192.168.1.16 --force
   when:
     - inventory_hostname == 'pve'
     - qdevice_status.stdout == 'not_configured'
