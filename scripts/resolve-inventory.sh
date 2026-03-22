@@ -80,7 +80,8 @@ print()
     if [[ -s "${INVENTORY_CACHE}.tmp" ]]; then
         mv "${INVENTORY_CACHE}.tmp" "$INVENTORY_CACHE"
         chmod 644 "$INVENTORY_CACHE"
-        echo "$(date -Iseconds) Inventory cache updated ($(grep -c 'ansible_host' "$INVENTORY_CACHE") hosts)" >> "$LOGFILE"
+        host_count=$(grep 'ansible_host' "$INVENTORY_CACHE" | awk '{print $1}' | sort -u | wc -l)
+        echo "$(date -Iseconds) Inventory cache updated (${host_count} unique hosts)" >> "$LOGFILE"
         return 0
     else
         rm -f "${INVENTORY_CACHE}.tmp"
