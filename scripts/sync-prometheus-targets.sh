@@ -11,7 +11,7 @@ set -euo pipefail
 # Source 1Password service account token for dynamic inventory
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
 if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$(op read "op://Infrastructure/Proxmox VE API/Ansible Inventory/token_secret" 2>/dev/null || true)}"
+    export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>/dev/null || true)}"
 fi
 
 NAMESPACE="monitoring"
