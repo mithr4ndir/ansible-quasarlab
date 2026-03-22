@@ -30,6 +30,9 @@ git pull --ff-only origin master >> "$LOGFILE" 2>&1
 
 cd "$REPO_DIR"
 
+# Resolve inventory with fallback to cache
+source "${REPO_DIR}/scripts/resolve-inventory.sh"
+
 start_time=$(date +%s)
 exit_code=0
 declare -A playbook_results
@@ -41,7 +44,7 @@ declare -A playbook_total_changed
 for playbook in proxmox.yml monitoring.yml grafana_config.yml jellyfin.yml lb_setup.yml deploy-ha.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     tmpfile=$(mktemp)
-    ansible-playbook "playbooks/${playbook}" --diff > "$tmpfile" 2>&1
+    ansible-playbook "playbooks/${playbook}" $INVENTORY_ARGS --diff > "$tmpfile" 2>&1
     rc=$?
     cat "$tmpfile" >> "$LOGFILE"
     playbook_results["${playbook}"]=$rc
