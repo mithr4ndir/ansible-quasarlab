@@ -7,3 +7,8 @@
   ansible.builtin.systemd:
     name: ansible-proxmox.timer
     state: restarted
+
+- name: Restart ansible-security timer
+  ansible.builtin.systemd:
+    name: ansible-security.timer
+    state: restarted

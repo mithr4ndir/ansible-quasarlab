@@ -23,12 +23,27 @@
 
     <directories check_all="yes" realtime="yes">/etc,/usr/bin,/usr/sbin</directories>
     <directories check_all="yes" realtime="yes">/bin,/sbin,/boot</directories>
+    <directories check_all="yes" realtime="yes">/usr/local/bin,/usr/local/sbin</directories>
+
+    <!-- Persistence and privilege escalation vectors -->
+    <directories check_all="yes" realtime="yes">/var/spool/cron</directories>
+    <directories check_all="yes" realtime="yes">/etc/cron.d,/etc/cron.daily,/etc/cron.hourly</directories>
+    <directories check_all="yes" realtime="yes">/root/.ssh</directories>
+    <directories check_all="yes" report_changes="yes" realtime="yes">/etc/sudoers.d</directories>
+
+{% if 'proxmox' in wazuh_agent_groups %}
+    <!-- Proxmox-specific paths -->
+    <directories check_all="yes" realtime="yes">/etc/pve/nodes</directories>
+    <directories check_all="yes" realtime="yes">/etc/pve/user.cfg</directories>
+{% endif %}
 
     <ignore>/etc/mtab</ignore>
     <ignore>/etc/hosts.deny</ignore>
     <ignore>/etc/random-seed</ignore>
     <ignore>/etc/adjtime</ignore>
     <ignore>/etc/resolv.conf</ignore>
+    <ignore>/etc/pve/.clusterlog</ignore>
+    <ignore>/etc/pve/.rrd</ignore>
 
     <skip_nfs>yes</skip_nfs>
     <skip_dev>yes</skip_dev>
@@ -52,6 +67,53 @@
     <log_format>syslog</log_format>
     <location>/var/log/auth.log</location>
   </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/kern.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/dpkg.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/cron.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/cloud-init.log</location>
+  </localfile>
+
+  <!-- Linux audit log (auditd) -->
+  <localfile>
+    <log_format>audit</log_format>
+    <location>/var/log/audit/audit.log</location>
+  </localfile>
+
+{% if 'proxmox' in wazuh_agent_groups %}
+  <!-- Proxmox-specific logs -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/pveproxy/access.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/pve-firewall.log</location>
+  </localfile>
+{% endif %}
+
+{% if 'kubernetes' in wazuh_agent_groups %}
+  <!-- Kubernetes node logs -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/pods/*/*.log</location>
+  </localfile>
+{% endif %}
 
   <!-- Security Configuration Assessment -->
   <sca>

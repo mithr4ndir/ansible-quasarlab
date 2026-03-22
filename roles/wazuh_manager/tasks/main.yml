@@ -102,11 +102,60 @@
     group: wazuh
   notify: Restart wazuh-manager
 
+- name: Create custom rules directory
+  ansible.builtin.file:
+    path: /var/ossec/etc/rules
+    state: directory
+    owner: root
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy custom rules
+  ansible.builtin.copy:
+    src: local_rules.xml
+    dest: /var/ossec/etc/rules/local_rules.xml
+    owner: root
+    group: wazuh
+    mode: '0660'
+  notify: Restart wazuh-manager
+
+- name: Create integrations directory
+  ansible.builtin.file:
+    path: /var/ossec/integrations
+    state: directory
+    owner: root
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy Alertmanager integration script
+  ansible.builtin.copy:
+    src: custom-alertmanager.py
+    dest: /var/ossec/integrations/custom-alertmanager
+    owner: root
+    group: wazuh
+    mode: '0750'
+
 - name: Enable and start Wazuh Manager
   ansible.builtin.systemd:
     name: wazuh-manager
     enabled: true
     state: started
+
+- name: Add vector user to wazuh group for alert log access
+  ansible.builtin.user:
+    name: vector
+    groups: wazuh
+    append: true
+  failed_when: false
+  notify: Restart vector
+
+- name: Ensure Wazuh alerts log directory is group-readable
+  ansible.builtin.file:
+    path: /var/ossec/logs/alerts
+    mode: '0750'
+    owner: wazuh
+    group: wazuh
+  failed_when: false
 
 - name: Install Filebeat for Wazuh
   ansible.builtin.apt:

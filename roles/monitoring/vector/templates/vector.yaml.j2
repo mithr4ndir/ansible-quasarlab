@@ -19,6 +19,15 @@ sources:
     read_from: end
     ignore_older_secs: 86400
 
+{% if 'security' in group_names %}
+  wazuh_alerts:
+    type: file
+    include:
+      - /var/ossec/logs/alerts/alerts.json
+    read_from: end
+    ignore_older_secs: 86400
+{% endif %}
+
 transforms:
   noise_filter:
     type: filter
@@ -54,11 +63,38 @@ transforms:
       }
       del(.source_type)
 
+{% if 'security' in group_names %}
+  wazuh_remap:
+    type: remap
+    inputs:
+      - wazuh_alerts
+    source: |
+      .job = "wazuh"
+      .host = "{{ inventory_hostname }}"
+      .log_type = "security"
+      .app = "wazuh"
+      if exists(.rule) {
+        rule = object!(.rule)
+        .wazuh_rule_id = string(rule.id) ?? ""
+        .wazuh_rule_level = to_string(rule.level) ?? ""
+        .wazuh_rule_description = string(rule.description) ?? ""
+      }
+      if exists(.agent) {
+        agent = object!(.agent)
+        .wazuh_agent = string(agent.name) ?? ""
+      }
+      del(.source_type)
+      del(.file)
+{% endif %}
+
 sinks:
   loki:
     type: loki
     inputs:
       - remap
+{% if 'security' in group_names %}
+      - wazuh_remap
+{% endif %}
     endpoint: "{{ loki_endpoint }}"
     encoding:
       codec: json

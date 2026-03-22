@@ -1,0 +1,57 @@
+# QuasarLab auditd rules — security-relevant syscalls for Wazuh
+# These generate entries in /var/log/audit/audit.log which Wazuh parses natively.
+
+# Self-auditing: log changes to audit config
+-w /etc/audit/ -p wa -k audit_config
+-w /etc/audisp/ -p wa -k audit_config
+
+# Identity and authentication
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+# Login/session tracking
+-w /var/log/faillog -p wa -k logins
+-w /var/log/lastlog -p wa -k logins
+-w /var/log/wtmp -p wa -k logins
+-w /var/log/btmp -p wa -k logins
+-w /var/run/utmp -p wa -k session
+
+# Privilege escalation
+-w /etc/sudoers -p wa -k privilege_escalation
+-w /etc/sudoers.d/ -p wa -k privilege_escalation
+-w /usr/bin/sudo -p x -k privilege_escalation
+-w /usr/bin/su -p x -k privilege_escalation
+
+# SSH configuration
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+-w /root/.ssh/ -p wa -k ssh_keys
+
+# Scheduled tasks (persistence vector)
+-w /etc/crontab -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+-w /var/spool/cron/ -p wa -k cron
+-w /etc/cron.daily/ -p wa -k cron
+-w /etc/cron.hourly/ -p wa -k cron
+
+# Systemd service changes (persistence vector)
+-w /etc/systemd/system/ -p wa -k systemd
+-w /usr/lib/systemd/system/ -p wa -k systemd
+
+# Kernel module loading
+-w /sbin/insmod -p x -k kernel_modules
+-w /sbin/modprobe -p x -k kernel_modules
+-w /sbin/rmmod -p x -k kernel_modules
+
+# Network configuration
+-w /etc/hosts -p wa -k network_config
+-w /etc/network/ -p wa -k network_config
+-w /etc/netplan/ -p wa -k network_config
+
+# Time changes (anti-forensics indicator)
+-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time_change
+
+# File deletion by non-root users
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k file_deletion
