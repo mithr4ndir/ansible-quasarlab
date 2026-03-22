@@ -1,9 +1,9 @@
 [Unit]
-Description=Run Ansible Proxmox playbook every 30 minutes
+Description=Run Ansible infrastructure playbooks every hour
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=30min
+OnUnitActiveSec=1h
 RandomizedDelaySec=2min
 
 [Install]

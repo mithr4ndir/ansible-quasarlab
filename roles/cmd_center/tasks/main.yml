@@ -73,3 +73,39 @@
     name: ansible-proxmox.timer
     enabled: true
     state: started
+
+- name: Deploy ansible-security systemd service
+  ansible.builtin.template:
+    src: ansible-security.service.j2
+    dest: /etc/systemd/system/ansible-security.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-security timer
+
+- name: Deploy ansible-security systemd timer
+  ansible.builtin.template:
+    src: ansible-security.timer.j2
+    dest: /etc/systemd/system/ansible-security.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-security timer
+
+- name: Enable and start ansible-security timer
+  ansible.builtin.systemd:
+    name: ansible-security.timer
+    enabled: true
+    state: started
+
+- name: Make run scripts executable
+  ansible.builtin.file:
+    path: "{{ ansible_repo_path }}/scripts/{{ item }}"
+    mode: '0755'
+  loop:
+    - run-proxmox.sh
+    - run-security.sh

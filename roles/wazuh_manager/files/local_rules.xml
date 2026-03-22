@@ -1,0 +1,97 @@
+<!-- QuasarLab custom Wazuh rules -->
+<group name="local,quasarlab,">
+
+  <!-- SSH brute force: lower threshold for homelab (5 failures in 120s) -->
+  <rule id="100001" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>5710</if_matched_sid>
+    <description>SSH brute force: 5+ failed logins from same source</description>
+    <group>authentication_failures,</group>
+  </rule>
+
+  <!-- SSH login from unexpected source (not RFC1918) -->
+  <rule id="100002" level="12">
+    <if_sid>5715</if_sid>
+    <match negate="yes">192.168.|10.|172.1[6-9].|172.2[0-9].|172.3[0-1].</match>
+    <description>SSH login accepted from non-RFC1918 address</description>
+    <group>authentication_success,</group>
+  </rule>
+
+  <!-- New user account created -->
+  <rule id="100010" level="10">
+    <if_sid>5901</if_sid>
+    <description>New user account created on $(hostname)</description>
+    <group>account_change,</group>
+  </rule>
+
+  <!-- User added to sudo/admin group -->
+  <rule id="100011" level="12">
+    <if_sid>5901,5902</if_sid>
+    <match>sudo|admin|wheel</match>
+    <description>User added to privileged group on $(hostname)</description>
+    <group>account_change,privilege_escalation,</group>
+  </rule>
+
+  <!-- Authorized keys file modified (FIM alert enrichment) -->
+  <rule id="100020" level="12">
+    <if_sid>550,553,554</if_sid>
+    <match>authorized_keys</match>
+    <description>SSH authorized_keys file modified on $(hostname)</description>
+    <group>syscheck,persistence,</group>
+  </rule>
+
+  <!-- Crontab modified -->
+  <rule id="100021" level="10">
+    <if_sid>550,553,554</if_sid>
+    <match>/var/spool/cron|/etc/cron</match>
+    <description>Cron configuration modified on $(hostname)</description>
+    <group>syscheck,persistence,</group>
+  </rule>
+
+  <!-- Sudoers modified -->
+  <rule id="100022" level="12">
+    <if_sid>550,553,554</if_sid>
+    <match>sudoers</match>
+    <description>Sudoers configuration modified on $(hostname)</description>
+    <group>syscheck,privilege_escalation,</group>
+  </rule>
+
+  <!-- Package installed or removed -->
+  <rule id="100030" level="7">
+    <if_sid>2902</if_sid>
+    <description>Package installation/removal detected on $(hostname)</description>
+    <group>package_change,</group>
+  </rule>
+
+  <!-- Proxmox-specific: PVE user config changed -->
+  <rule id="100040" level="10">
+    <if_sid>550,553,554</if_sid>
+    <match>/etc/pve/user.cfg</match>
+    <description>Proxmox user configuration changed</description>
+    <group>syscheck,proxmox,</group>
+  </rule>
+
+  <!-- Proxmox-specific: PVE node config changed -->
+  <rule id="100041" level="10">
+    <if_sid>550,553,554</if_sid>
+    <match>/etc/pve/nodes</match>
+    <description>Proxmox node configuration changed</description>
+    <group>syscheck,proxmox,</group>
+  </rule>
+
+  <!-- Critical vulnerability detected (CVSS >= 9.0) -->
+  <rule id="100050" level="12">
+    <if_sid>23504</if_sid>
+    <field name="data.vulnerability.severity">Critical</field>
+    <description>Critical vulnerability found: $(data.vulnerability.cve) on $(hostname)</description>
+    <group>vulnerability-detector,</group>
+  </rule>
+
+  <!-- Multiple authentication failures from same agent (possible lateral movement) -->
+  <rule id="100060" level="12" frequency="10" timeframe="300">
+    <if_matched_sid>5710</if_matched_sid>
+    <same_agent/>
+    <description>Possible lateral movement: 10+ auth failures on $(hostname)</description>
+    <group>authentication_failures,lateral_movement,</group>
+  </rule>
+
+</group>

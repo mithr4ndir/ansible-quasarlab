@@ -3,3 +3,8 @@
   ansible.builtin.systemd:
     name: wazuh-agent
     state: restarted
+
+- name: Restart auditd
+  ansible.builtin.command:
+    cmd: service auditd restart
+  changed_when: true

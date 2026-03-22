@@ -13,6 +13,14 @@
     <protocol>tcp</protocol>
   </remote>
 
+  <!-- Accept syslog from TrueNAS (no agent available for FreeBSD-based TrueNAS) -->
+  <remote>
+    <connection>syslog</connection>
+    <port>514</port>
+    <protocol>udp</protocol>
+    <allowed-ips>192.168.1.15</allowed-ips>
+  </remote>
+
   <auth>
     <port>{{ wazuh_registration_port }}</port>
     <use_source_ip>no</use_source_ip>
@@ -21,6 +29,14 @@
     <purge>yes</purge>
     <use_password>no</use_password>
   </auth>
+
+  <!-- Alertmanager integration for critical and high-severity alerts -->
+  <integration>
+    <name>custom-alertmanager</name>
+    <hook_url>http://192.168.1.230:9093</hook_url>
+    <level>10</level>
+    <alert_format>json</alert_format>
+  </integration>
 
   <!-- File integrity monitoring -->
   <syscheck>
@@ -31,6 +47,13 @@
 
     <directories check_all="yes" realtime="yes">/etc,/usr/bin,/usr/sbin</directories>
     <directories check_all="yes" realtime="yes">/bin,/sbin,/boot</directories>
+    <directories check_all="yes" realtime="yes">/usr/local/bin,/usr/local/sbin</directories>
+
+    <!-- Persistence and privilege escalation vectors -->
+    <directories check_all="yes" realtime="yes">/var/spool/cron</directories>
+    <directories check_all="yes" realtime="yes">/etc/cron.d,/etc/cron.daily,/etc/cron.hourly</directories>
+    <directories check_all="yes" realtime="yes">/root/.ssh</directories>
+    <directories check_all="yes" report_changes="yes" realtime="yes">/etc/sudoers.d</directories>
 
     <ignore>/etc/mtab</ignore>
     <ignore>/etc/hosts.deny</ignore>
@@ -88,6 +111,27 @@
     </provider>
   </vulnerability-detector>
 
+  <!-- Active response: block brute-force attackers -->
+  <command>
+    <name>firewall-drop</name>
+    <executable>firewall-drop</executable>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_id>5763</rules_id>
+    <timeout>1800</timeout>
+  </active-response>
+
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_id>2502</rules_id>
+    <timeout>1800</timeout>
+  </active-response>
+
   <!-- Log analysis -->
   <localfile>
     <log_format>syslog</log_format>
@@ -103,6 +147,41 @@
     <log_format>syslog</log_format>
     <location>/var/log/auth.log</location>
   </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/kern.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/dpkg.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/cron.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/cloud-init.log</location>
+  </localfile>
+
+  <!-- Linux audit log (auditd) -->
+  <localfile>
+    <log_format>audit</log_format>
+    <location>/var/log/audit/audit.log</location>
+  </localfile>
+
+  <!-- Custom rules -->
+  <ruleset>
+    <decoder_dir>ruleset/decoders</decoder_dir>
+    <rule_dir>ruleset/rules</rule_dir>
+    <rule_dir>etc/rules</rule_dir>
+    <decoder_dir>etc/decoders</decoder_dir>
+    <list>etc/lists/audit-keys</list>
+  </ruleset>
 
   <!-- Security Configuration Assessment -->
   <sca>

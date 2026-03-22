@@ -1,2 +1,16 @@
 ---
 wazuh_manager_ip: "192.168.1.171"
+
+# Unattended upgrades — block Wazuh packages (managed deployment)
+unattended_upgrades_blacklist:
+  - wazuh-manager
+  - wazuh-indexer
+  - wazuh-dashboard
+
+# Systemd service monitoring via node_exporter
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - wazuh-manager.service
+  - wazuh-indexer.service
+  - wazuh-dashboard.service
+  - filebeat.service

@@ -1,0 +1,13 @@
+[Unit]
+Description=Ansible security configuration enforcement (Wazuh, CrowdSec)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart={{ ansible_repo_path }}/scripts/run-security.sh
+WorkingDirectory={{ ansible_repo_path }}
+Environment=ANSIBLE_CONFIG={{ ansible_repo_path }}/ansible.cfg
+Environment=HOME=/home/{{ ansible_user }}

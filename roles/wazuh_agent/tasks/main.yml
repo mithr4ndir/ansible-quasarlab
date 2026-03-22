@@ -1,4 +1,24 @@
 ---
+- name: Install auditd
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - audispd-plugins
+    state: present
+
+- name: Deploy audit rules for security monitoring
+  ansible.builtin.copy:
+    src: quasarlab-audit.rules
+    dest: /etc/audit/rules.d/quasarlab.rules
+    mode: '0640'
+  notify: Restart auditd
+
+- name: Enable and start auditd
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+
 - name: Add Wazuh GPG key
   ansible.builtin.shell:
     cmd: curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
