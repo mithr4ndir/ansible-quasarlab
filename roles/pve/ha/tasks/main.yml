@@ -7,11 +7,22 @@
   changed_when: false
   when: inventory_hostname == 'pve'
 
-- name: Install corosync-qdevice package
+- name: Install corosync-qdevice package on PVE
   ansible.builtin.apt:
     name: corosync-qdevice
     state: present
   when: inventory_hostname == 'pve'
+
+- name: Install corosync-qnetd on TrueNAS (QDevice host)
+  ansible.builtin.apt:
+    name: corosync-qnetd
+    state: present
+  delegate_to: truenas
+  become: true
+  run_once: true
+  when:
+    - inventory_hostname == 'pve'
+    - qdevice_status.stdout == 'not_configured'
 
 - name: Setup QDevice on TrueNAS (one-time)
   ansible.builtin.command:
