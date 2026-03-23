@@ -1,0 +1,153 @@
+---
+# Rejoin k8cluster2 and k8cluster3 as proper control-plane nodes
+# These nodes currently joined as workers despite having the control-plane label.
+# This playbook will drain, reset, and rejoin them one at a time.
+#
+# Usage: ansible-playbook playbooks/k8s_rejoin_controlplane.yml
+
+# Step 1: Generate a fresh control-plane join command on k8cluster1
+- name: Generate control-plane join command
+  hosts: k8cluster1
+  become: true
+  tasks:
+    - name: Upload certs and generate join command with --control-plane
+      ansible.builtin.shell: |
+        CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -n1)
+        JOIN_CMD=$(kubeadm token create --print-join-command)
+        echo "${JOIN_CMD} --control-plane --certificate-key ${CERT_KEY}" > /tmp/rejoin-cp.sh
+        chmod 755 /tmp/rejoin-cp.sh
+      changed_when: true
+
+    - name: Fetch join script to Ansible controller
+      ansible.builtin.fetch:
+        src: /tmp/rejoin-cp.sh
+        dest: /tmp/rejoin-cp.sh
+        flat: true
+
+# Step 2: Process each node serially - drain, reset, rejoin, uncordon
+- name: Rejoin nodes as control-plane (one at a time)
+  hosts: k8cluster2:k8cluster3
+  become: true
+  serial: 1
+  vars:
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+  tasks:
+    - name: Cordon the node
+      ansible.builtin.command: >
+        kubectl cordon {{ inventory_hostname }}
+        --kubeconfig {{ kubeconfig }}
+      delegate_to: k8cluster1
+      become: false
+      changed_when: true
+
+    - name: Drain the node
+      ansible.builtin.command: >
+        kubectl drain {{ inventory_hostname }}
+        --kubeconfig {{ kubeconfig }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --force
+        --timeout=300s
+      delegate_to: k8cluster1
+      become: false
+      changed_when: true
+
+    - name: Wait for pods to evacuate
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Reset kubeadm on the node
+      ansible.builtin.command: kubeadm reset -f
+      changed_when: true
+
+    - name: Clean up CNI and iptables residue
+      ansible.builtin.shell: |
+        rm -rf /etc/cni/net.d/*
+        iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
+      changed_when: true
+
+    - name: Delete the node from the cluster
+      ansible.builtin.command: >
+        kubectl delete node {{ inventory_hostname }}
+        --kubeconfig {{ kubeconfig }}
+      delegate_to: k8cluster1
+      become: false
+      changed_when: true
+      ignore_errors: true
+
+    - name: Copy control-plane join script to node
+      ansible.builtin.copy:
+        src: /tmp/rejoin-cp.sh
+        dest: /tmp/rejoin-cp.sh
+        mode: "0755"
+
+    - name: Join as control-plane node
+      ansible.builtin.command: bash /tmp/rejoin-cp.sh
+      changed_when: true
+
+    - name: Wait for node to become Ready
+      ansible.builtin.shell: >
+        kubectl get node {{ inventory_hostname }}
+        --kubeconfig {{ kubeconfig }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      delegate_to: k8cluster1
+      become: false
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Uncordon the node
+      ansible.builtin.command: >
+        kubectl uncordon {{ inventory_hostname }}
+        --kubeconfig {{ kubeconfig }}
+      delegate_to: k8cluster1
+      become: false
+      changed_when: true
+
+    - name: Wait for node to stabilize before processing next
+      ansible.builtin.pause:
+        seconds: 60
+
+# Step 3: Verify the final state
+- name: Verify HA control plane
+  hosts: k8cluster1
+  become: true
+  tasks:
+    - name: Check etcd member list
+      ansible.builtin.command: >
+        etcdctl member list
+        --cacert /etc/kubernetes/pki/etcd/ca.crt
+        --cert /etc/kubernetes/pki/etcd/server.crt
+        --key /etc/kubernetes/pki/etcd/server.key
+      register: etcd_members
+      changed_when: false
+
+    - name: Show etcd members
+      ansible.builtin.debug:
+        var: etcd_members.stdout_lines
+
+    - name: Check all nodes
+      ansible.builtin.command: >
+        kubectl get nodes -o wide
+        --kubeconfig /home/{{ ansible_user }}/.kube/config
+      register: node_status
+      become: false
+      changed_when: false
+
+    - name: Show node status
+      ansible.builtin.debug:
+        var: node_status.stdout_lines
+
+    - name: Check kube-system pods across all nodes
+      ansible.builtin.command: >
+        kubectl get pods -n kube-system -o wide
+        --kubeconfig /home/{{ ansible_user }}/.kube/config
+      register: system_pods
+      become: false
+      changed_when: false
+
+    - name: Show kube-system pods
+      ansible.builtin.debug:
+        var: system_pods.stdout_lines
