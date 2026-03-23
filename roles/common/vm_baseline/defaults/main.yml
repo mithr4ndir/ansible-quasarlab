@@ -11,8 +11,8 @@ vm_baseline_packages:
 # NTP — chrony preferred over systemd-timesyncd
 vm_baseline_ntp_package: chrony
 
-# Sysctl tuning
+# Sysctl tuning (vm.swappiness excluded — K8s nodes have swap off,
+# non-K8s VMs use group_vars to override if needed)
 vm_baseline_sysctl:
-  vm.swappiness: 10
   net.core.somaxconn: 1024
   net.ipv4.tcp_tw_reuse: 1
