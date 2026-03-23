@@ -12,22 +12,19 @@
 # Usage: ansible-playbook playbooks/vm_baseline.yml
 #
 # Exclusions:
-#   - NAS group: no vector, unattended_upgrades, or wazuh (TrueNAS appliance)
+#   - Proxmox hosts: bare-metal hypervisors, not VMs (no qemu-guest-agent)
+#   - NAS group: TrueNAS appliance (locked-down apt)
 #   - Security group (wazuh manager): no wazuh_agent (it IS the manager)
 
 - name: Deploy VM baseline and monitoring stack
-  hosts: linux
+  hosts: linux:!proxmox:!nas
   become: true
   vars_files:
     - ../group_vars/vault.yml
   roles:
     - common/vm_baseline
     - monitoring/node_exporter
-    - role: monitoring/vector
-      when: "'nas' not in group_names"
-    - role: unattended_upgrades
-      when: "'nas' not in group_names"
+    - monitoring/vector
+    - unattended_upgrades
     - role: wazuh_agent
-      when:
-        - "'nas' not in group_names"
-        - "'security' not in group_names"
+      when: "security not in group_names"

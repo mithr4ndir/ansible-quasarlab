@@ -1,0 +1,53 @@
+---
+- name: Configure uptime-kuma
+  hosts: uptime-kuma
+  become: true
+  vars:
+    app_name: "uptime-kuma"
+    app_port: "3001"
+    docker_compose: |
+      services:
+        uptime-kuma:
+          image: louislam/uptime-kuma:1
+          container_name: uptime-kuma
+          restart: unless-stopped
+          ports:
+            - "3001:3001"
+          volumes:
+            - uptime-kuma-data:/app/data
+      volumes:
+        uptime-kuma-data:
+      
+  roles:
+    - common/os/debian
+    - k8s/docker
+
+  tasks:
+    - name: Create app directory
+      file:
+        path: "/opt/uptime-kuma"
+        state: directory
+        mode: "0755"
+
+    - name: Write docker-compose.yml
+      copy:
+        content: |
+          services:
+            uptime-kuma:
+              image: louislam/uptime-kuma:1
+              container_name: uptime-kuma
+              restart: unless-stopped
+              ports:
+                - "3001:3001"
+              volumes:
+                - uptime-kuma-data:/app/data
+          volumes:
+            uptime-kuma-data:
+          
+        dest: "/opt/uptime-kuma/docker-compose.yml"
+        mode: "0644"
+
+    - name: Start uptime-kuma with docker compose
+      command: docker compose up -d
+      args:
+        chdir: "/opt/uptime-kuma"
