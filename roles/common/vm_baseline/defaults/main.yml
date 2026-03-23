@@ -1,0 +1,18 @@
+---
+# Baseline packages every VM should have
+vm_baseline_packages:
+  - qemu-guest-agent
+  - curl
+  - jq
+  - htop
+  - net-tools
+  - rsyslog
+
+# NTP — chrony preferred over systemd-timesyncd
+vm_baseline_ntp_package: chrony
+
+# Sysctl tuning
+vm_baseline_sysctl:
+  vm.swappiness: 10
+  net.core.somaxconn: 1024
+  net.ipv4.tcp_tw_reuse: 1
