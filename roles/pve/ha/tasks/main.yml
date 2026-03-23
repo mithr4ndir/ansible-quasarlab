@@ -23,7 +23,7 @@
 
 - name: Check existing HA groups
   ansible.builtin.command:
-    cmd: ha-manager grouplist
+    cmd: ha-manager groupconfig
   register: ha_groups
   changed_when: false
   when: inventory_hostname == 'pve'
