@@ -3,6 +3,9 @@
 # These nodes currently joined as workers despite having the control-plane label.
 # This playbook will drain, reset, and rejoin them one at a time.
 #
+# Uses kubernetes.core modules for node management where available.
+# kubeadm commands remain as shell tasks (no Ansible module exists).
+#
 # Usage: ansible-playbook playbooks/k8s_rejoin_controlplane.yml
 
 # Step 1: Generate a fresh control-plane join command on k8cluster1
@@ -33,24 +36,25 @@
     kubeconfig: "/home/{{ ansible_user }}/.kube/config"
   tasks:
     - name: Cordon the node
-      ansible.builtin.command: >
-        kubectl cordon {{ inventory_hostname }}
-        --kubeconfig {{ kubeconfig }}
+      kubernetes.core.k8s_drain:
+        state: cordon
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ kubeconfig }}"
       delegate_to: k8cluster1
       become: false
-      changed_when: true
 
     - name: Drain the node
-      ansible.builtin.command: >
-        kubectl drain {{ inventory_hostname }}
-        --kubeconfig {{ kubeconfig }}
-        --ignore-daemonsets
-        --delete-emptydir-data
-        --force
-        --timeout=300s
+      kubernetes.core.k8s_drain:
+        state: drain
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ kubeconfig }}"
+        delete_options:
+          force: true
+          delete_emptydir_data: true
+          ignore_daemonsets: true
+          terminate_grace_period: 300
       delegate_to: k8cluster1
       become: false
-      changed_when: true
 
     - name: Wait for pods to evacuate
       ansible.builtin.pause:
@@ -67,12 +71,14 @@
       changed_when: true
 
     - name: Delete the node from the cluster
-      ansible.builtin.command: >
-        kubectl delete node {{ inventory_hostname }}
-        --kubeconfig {{ kubeconfig }}
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        state: absent
+        kubeconfig: "{{ kubeconfig }}"
       delegate_to: k8cluster1
       become: false
-      changed_when: true
       ignore_errors: true
 
     - name: Copy control-plane join script to node
@@ -86,25 +92,40 @@
       changed_when: true
 
     - name: Wait for node to become Ready
-      ansible.builtin.shell: >
-        kubectl get node {{ inventory_hostname }}
-        --kubeconfig {{ kubeconfig }}
-        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ kubeconfig }}"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_sleep: 10
+        wait_timeout: 300
       delegate_to: k8cluster1
       become: false
-      register: node_ready
-      until: node_ready.stdout == "True"
-      retries: 30
-      delay: 10
-      changed_when: false
+
+    - name: Remove control-plane NoSchedule taint
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ kubeconfig }}"
+        definition:
+          spec:
+            taints: []
+        merge_type: strategic-merge
+      delegate_to: k8cluster1
+      become: false
 
     - name: Uncordon the node
-      ansible.builtin.command: >
-        kubectl uncordon {{ inventory_hostname }}
-        --kubeconfig {{ kubeconfig }}
+      kubernetes.core.k8s_drain:
+        state: uncordon
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ kubeconfig }}"
       delegate_to: k8cluster1
       become: false
-      changed_when: true
 
     - name: Wait for node to stabilize before processing next
       ansible.builtin.pause:
@@ -128,26 +149,35 @@
       ansible.builtin.debug:
         var: etcd_members.stdout_lines
 
-    - name: Check all nodes
-      ansible.builtin.command: >
-        kubectl get nodes -o wide
-        --kubeconfig /home/{{ ansible_user }}/.kube/config
-      register: node_status
+    - name: Get all nodes
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+      register: all_nodes
       become: false
-      changed_when: false
 
     - name: Show node status
       ansible.builtin.debug:
-        var: node_status.stdout_lines
+        msg: "{{ item.metadata.name }} - {{ item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first }}"
+      loop: "{{ all_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
 
-    - name: Check kube-system pods across all nodes
-      ansible.builtin.command: >
-        kubectl get pods -n kube-system -o wide
-        --kubeconfig /home/{{ ansible_user }}/.kube/config
-      register: system_pods
+    - name: Verify control-plane pods on all nodes
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: kube-system
+        label_selectors:
+          - "tier=control-plane"
+        kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+      register: cp_pods
       become: false
-      changed_when: false
 
-    - name: Show kube-system pods
+    - name: Show control-plane pod distribution
       ansible.builtin.debug:
-        var: system_pods.stdout_lines
+        msg: "{{ item.metadata.name }} -> {{ item.spec.nodeName }}"
+      loop: "{{ cp_pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
