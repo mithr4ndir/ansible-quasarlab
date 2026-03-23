@@ -1,0 +1,33 @@
+---
+# Deploy baseline configuration and monitoring agents to all Linux VMs
+# This is the single playbook for ensuring every VM has the full stack.
+#
+# Stack:
+#   - vm_baseline: qemu-guest-agent, chrony, sysctl, base packages
+#   - node_exporter: Prometheus metrics
+#   - vector: log shipping to Loki
+#   - unattended_upgrades: automatic security patching
+#   - wazuh_agent: SIEM agent + auditd
+#
+# Usage: ansible-playbook playbooks/vm_baseline.yml
+#
+# Exclusions:
+#   - NAS group: no vector, unattended_upgrades, or wazuh (TrueNAS appliance)
+#   - Security group (wazuh manager): no wazuh_agent (it IS the manager)
+
+- name: Deploy VM baseline and monitoring stack
+  hosts: linux
+  become: true
+  vars_files:
+    - ../group_vars/vault.yml
+  roles:
+    - common/vm_baseline
+    - monitoring/node_exporter
+    - role: monitoring/vector
+      when: "'nas' not in group_names"
+    - role: unattended_upgrades
+      when: "'nas' not in group_names"
+    - role: wazuh_agent
+      when:
+        - "'nas' not in group_names"
+        - "'security' not in group_names"
