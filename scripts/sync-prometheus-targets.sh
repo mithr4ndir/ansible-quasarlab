@@ -8,10 +8,21 @@
 #
 set -euo pipefail
 
+LOG_PREFIX="[sync-prometheus-targets]"
+MIN_EXPECTED_TARGETS=10
+
 # Source 1Password service account token for dynamic inventory
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
+if [[ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]]; then
+    echo "${LOG_PREFIX} WARNING: OP_SERVICE_ACCOUNT_TOKEN is empty — dynamic inventory will not work" >&2
+fi
+
 if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
     export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>/dev/null || true)}"
+fi
+
+if [[ -z "${PROXMOX_TOKEN_SECRET:-}" ]]; then
+    echo "${LOG_PREFIX} WARNING: PROXMOX_TOKEN_SECRET is empty — only static inventory hosts will be discovered" >&2
 fi
 
 NAMESPACE="monitoring"
@@ -20,8 +31,9 @@ PORT="9100"
 
 cd "$(dirname "$0")/.."
 
-# Use ansible-inventory to dump all hosts with resolved IPs
-ansible-inventory --list 2>/dev/null | python3 -c "
+# Capture stderr from ansible-inventory so plugin errors are visible
+inventory_stderr=$(mktemp)
+ansible-inventory --list 2>"$inventory_stderr" | python3 -c "
 import json, sys
 
 data = json.load(sys.stdin)
@@ -49,8 +61,20 @@ for host in sorted(linux_hosts):
 print(json.dumps(targets, indent=2))
 " > /tmp/vm-targets.json
 
+if [[ -s "$inventory_stderr" ]]; then
+    echo "${LOG_PREFIX} ansible-inventory stderr:" >&2
+    sed "s/^/  /" "$inventory_stderr" >&2
+fi
+rm -f "$inventory_stderr"
+
 count=$(python3 -c "import json; print(len(json.load(open('/tmp/vm-targets.json'))))")
-echo "Generated ${count} targets from inventory"
+echo "${LOG_PREFIX} Generated ${count} targets from inventory"
+
+if [[ "$count" -lt "$MIN_EXPECTED_TARGETS" ]]; then
+    echo "${LOG_PREFIX} ERROR: Only ${count} targets found (expected >= ${MIN_EXPECTED_TARGETS}). Dynamic inventory likely failed — skipping ConfigMap update to avoid overwriting good data" >&2
+    rm -f /tmp/vm-targets.json
+    exit 1
+fi
 
 # Apply as ConfigMap
 kubectl create configmap "${CONFIGMAP_NAME}" \
@@ -58,5 +82,5 @@ kubectl create configmap "${CONFIGMAP_NAME}" \
   --from-file=vm-targets.json=/tmp/vm-targets.json \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "ConfigMap ${CONFIGMAP_NAME} updated in ${NAMESPACE}"
+echo "${LOG_PREFIX} ConfigMap ${CONFIGMAP_NAME} updated in ${NAMESPACE}"
 rm /tmp/vm-targets.json

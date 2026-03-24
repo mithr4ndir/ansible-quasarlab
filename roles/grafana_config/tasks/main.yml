@@ -1,4 +1,11 @@
 ---
+- name: Install Grafana plugins
+  community.grafana.grafana_plugin:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ grafana_plugins }}"
+  notify: Restart grafana
+
 - name: Create dashboard directories
   ansible.builtin.file:
     path: "{{ grafana_dashboards_dir }}/{{ item }}"
