@@ -27,4 +27,4 @@
     - monitoring/vector
     - unattended_upgrades
     - role: wazuh_agent
-      when: "security not in group_names"
+      when: "'security' not in group_names"
