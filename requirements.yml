@@ -4,3 +4,5 @@ collections:
     version: ">=1.5.4"
   - name: community.docker
     version: ">=3.7.0"
+  - name: community.grafana
+    version: ">=2.1.0"
