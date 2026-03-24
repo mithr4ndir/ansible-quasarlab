@@ -9,10 +9,8 @@
 # Exports: INVENTORY_ARGS (pass to ansible-playbook as extra args)
 #
 
-INVENTORY_CACHE="/var/lib/ansible-quasarlab/inventory-cache.ini"
-INVENTORY_CACHE_DIR="$(dirname "$INVENTORY_CACHE")"
-
-mkdir -p "$INVENTORY_CACHE_DIR"
+# Cache lives in repo root so group_vars/ and host_vars/ are found when falling back
+INVENTORY_CACHE="${REPO_DIR}/inventory-cache.ini"
 
 # Try to resolve dynamic inventory and cache the result
 _resolve_dynamic_inventory() {
