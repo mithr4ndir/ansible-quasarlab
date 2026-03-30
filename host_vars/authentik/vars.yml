@@ -1,0 +1,11 @@
+---
+# Systemd service monitoring via node_exporter
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - docker.service
+
+# Unattended upgrades — block Docker packages (managed deployment)
+unattended_upgrades_blacklist:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io

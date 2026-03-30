@@ -1,0 +1,90 @@
+---
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+
+- name: Add Docker GPG key
+  ansible.builtin.shell:
+    cmd: |
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+    creates: /etc/apt/keyrings/docker.asc
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    filename: docker
+    state: present
+
+- name: Install Docker Engine
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Enable Docker service
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Add ansible user to docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: true
+
+- name: Create Authentik directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ authentik_config_dir }}"
+    - "{{ authentik_media_dir }}"
+    - "{{ authentik_templates_dir }}"
+    - "{{ authentik_postgres_data_dir }}"
+
+- name: Template Authentik environment file
+  ansible.builtin.template:
+    src: authentik.env.j2
+    dest: "{{ authentik_config_dir }}/.env"
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart authentik
+
+- name: Template Authentik docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ authentik_config_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart authentik
+
+- name: Start Authentik stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ authentik_config_dir }}"
+    state: present
+    pull: missing
+  register: authentik_compose
+
+- name: Wait for Authentik to be ready
+  ansible.builtin.wait_for:
+    port: "{{ authentik_port_http }}"
+    delay: 15
+    timeout: 120
+  when: authentik_compose.changed
