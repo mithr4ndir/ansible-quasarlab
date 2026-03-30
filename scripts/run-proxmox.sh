@@ -41,7 +41,7 @@ declare -A playbook_changed_hosts
 declare -A playbook_total_changed
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
-for playbook in proxmox.yml vm_baseline.yml monitoring.yml grafana_config.yml jellyfin.yml lb_setup.yml deploy-ha.yml; do
+for playbook in proxmox.yml vm_baseline.yml monitoring.yml grafana_config.yml jellyfin.yml authentik.yml lb_setup.yml deploy-ha.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     tmpfile=$(mktemp)
     ansible-playbook "playbooks/${playbook}" $INVENTORY_ARGS --diff > "$tmpfile" 2>&1

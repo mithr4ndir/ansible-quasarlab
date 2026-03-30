@@ -1,0 +1,25 @@
+---
+authentik_version: "2025.10"
+authentik_image: "ghcr.io/goauthentik/server:{{ authentik_version }}"
+
+authentik_config_dir: /opt/authentik
+authentik_media_dir: /opt/authentik/media
+authentik_templates_dir: /opt/authentik/custom-templates
+
+authentik_port_http: 9000
+authentik_port_https: 9443
+
+# PostgreSQL
+authentik_db_name: authentik
+authentik_db_user: authentik
+
+# Redis
+authentik_redis_image: "docker.io/library/redis:alpine"
+
+# PostgreSQL
+authentik_postgres_image: "docker.io/library/postgres:16-alpine"
+authentik_postgres_data_dir: /opt/authentik/postgres
+
+# Monitoring
+authentik_metrics_enabled: true
+authentik_metrics_port: 9300

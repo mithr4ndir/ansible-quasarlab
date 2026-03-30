@@ -4,5 +4,7 @@
 - import_playbook: playbooks/k8s_final.yml
 - import_playbook: playbooks/monitoring.yml
   tags: [monitoring]
+- import_playbook: playbooks/authentik.yml
+  tags: [authentik]
 - import_playbook: playbooks/proxmox.yml
   tags: [proxmox]
