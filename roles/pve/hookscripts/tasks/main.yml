@@ -15,14 +15,23 @@
     group: root
     mode: "0755"
 
+- name: Check current hookscript on GPU VMs
+  ansible.builtin.command:
+    cmd: "qm config {{ item.key }}"
+  loop: "{{ pve_gpu_vms | dict2items }}"
+  register: vm_configs
+  changed_when: false
+  when: inventory_hostname == 'pve2'
+
 - name: Attach hookscript to GPU VMs
   ansible.builtin.command:
-    cmd: "qm set {{ item.key }} -hookscript local:snippets/gpu-failover.sh"
-  loop: "{{ pve_gpu_vms | dict2items }}"
-  register: hookscript_result
-  changed_when: "'update' in hookscript_result.stderr or 'update' in hookscript_result.stdout"
-  failed_when: hookscript_result.rc != 0
-  when: inventory_hostname == 'pve2'
+    cmd: "qm set {{ item.item.key }} -hookscript local:snippets/gpu-failover.sh"
+  loop: "{{ vm_configs.results }}"
+  when:
+    - inventory_hostname == 'pve2'
+    - item.stdout is defined
+    - "'hookscript: local:snippets/gpu-failover.sh' not in item.stdout"
+  changed_when: true
 
 # --- GPU VM Health Monitor ---
 - name: Deploy GPU VM monitor script
