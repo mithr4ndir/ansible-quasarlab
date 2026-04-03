@@ -48,13 +48,21 @@
     seconds: 10
   when: crowdsec_compose.changed
 
+- name: Check installed CrowdSec collections
+  community.docker.docker_container_exec:
+    container: crowdsec
+    command: "cscli collections list -o json"
+  register: installed_collections
+  changed_when: false
+
 - name: Install CrowdSec collections
   community.docker.docker_container_exec:
     container: crowdsec
     command: "cscli collections install {{ item }}"
   loop: "{{ crowdsec_collections }}"
   register: collection_result
-  changed_when: "'overwrite' not in collection_result.stdout"
+  changed_when: true
+  when: "item not in (installed_collections.stdout | from_json | map(attribute='name') | list)"
 
 - name: Check if bouncer API key exists
   ansible.builtin.command:
