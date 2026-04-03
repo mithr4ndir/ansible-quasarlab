@@ -80,6 +80,7 @@
     project_src: "{{ authentik_config_dir }}"
     state: present
     pull: missing
+    recreate: never
   register: authentik_compose
 
 - name: Wait for Authentik to be ready

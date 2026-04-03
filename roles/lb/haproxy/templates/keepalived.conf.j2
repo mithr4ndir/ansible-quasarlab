@@ -1,8 +1,8 @@
 vrrp_instance VI_1 {
-    state {{ 'MASTER' if inventory_hostname == groups['lb'][0] else 'BACKUP' }}
+    state {{ keepalived_state }}
     interface {{ vip_interface }}
     virtual_router_id 51
-    priority {{ 100 if inventory_hostname == groups['lb'][0] else 90 }}
+    priority {{ keepalived_priority }}
     advert_int 1
     authentication {
         auth_type PASS

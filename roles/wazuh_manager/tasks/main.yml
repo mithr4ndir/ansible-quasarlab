@@ -81,12 +81,26 @@
     delay: 10
     timeout: 120
 
+- name: Check if Wazuh Indexer security is already initialized
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ wazuh_indexer_port }}/.opendistro_security"
+    method: GET
+    user: admin
+    password: admin
+    validate_certs: false
+    force_basic_auth: true
+    status_code: [200, 401, 403]
+  register: security_check
+  failed_when: false
+  changed_when: false
+
 - name: Initialize Wazuh Indexer security
   ansible.builtin.command:
     cmd: /usr/share/wazuh-indexer/bin/indexer-security-init.sh
   register: security_init
   changed_when: security_init.rc == 0
   failed_when: false
+  when: security_check.status is not defined or security_check.status == -1
 
 - name: Install Wazuh Manager
   ansible.builtin.apt:
@@ -243,6 +257,21 @@
     delay: 15
     timeout: 120
 
+- name: Check if indexer admin password is already set
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ wazuh_indexer_port }}/_cluster/health"
+    method: GET
+    user: admin
+    password: "{{ wazuh_admin_password }}"
+    validate_certs: false
+    force_basic_auth: true
+    status_code: [200]
+  register: password_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+  when: wazuh_admin_password is defined
+
 - name: Change indexer admin password
   ansible.builtin.shell:
     cmd: >
@@ -250,7 +279,9 @@
       -u admin -p '{{ wazuh_admin_password }}'
   no_log: true
   changed_when: true
-  when: wazuh_admin_password is defined
+  when:
+    - wazuh_admin_password is defined
+    - password_check.status is not defined or password_check.status != 200
 
 - name: Change Wazuh API password
   ansible.builtin.uri:
