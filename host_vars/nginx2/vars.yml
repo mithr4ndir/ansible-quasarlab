@@ -1,3 +1,7 @@
 ---
 # Stagger reboot after nginx1 to maintain HA
 unattended_upgrades_reboot_time: "04:00"
+
+# Keepalived HA role (pinned — do not derive from group ordering)
+keepalived_state: BACKUP
+keepalived_priority: 90
