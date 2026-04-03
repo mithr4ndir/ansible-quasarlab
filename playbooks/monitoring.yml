@@ -19,4 +19,4 @@
     - name: Generate and apply Prometheus file_sd targets
       ansible.builtin.command:
         cmd: "{{ playbook_dir }}/../scripts/sync-prometheus-targets.sh"
-      changed_when: true
+      changed_when: false
