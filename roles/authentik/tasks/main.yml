@@ -7,6 +7,7 @@
       - gnupg
     state: present
     update_cache: true
+    cache_valid_time: 3600
 
 - name: Add Docker GPG key
   ansible.builtin.shell:
@@ -30,7 +31,6 @@
       - containerd.io
       - docker-compose-plugin
     state: present
-    update_cache: true
 
 - name: Enable Docker service
   ansible.builtin.systemd:
@@ -82,6 +82,7 @@
     pull: missing
     recreate: never
   register: authentik_compose
+  changed_when: authentik_compose.actions | default([]) | length > 0
 
 - name: Wait for Authentik to be ready
   ansible.builtin.wait_for:
