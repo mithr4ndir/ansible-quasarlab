@@ -1,0 +1,51 @@
+---
+- name: Verify 1Password service account token file exists
+  ansible.builtin.stat:
+    path: "{{ eso_sa_token_file }}"
+  register: sa_token_stat
+
+- name: Fail if service account token file is missing
+  ansible.builtin.fail:
+    msg: >-
+      1Password service account token not found at {{ eso_sa_token_file }}.
+      Retrieve it from 1Password and place it there before running this playbook.
+  when: not sa_token_stat.stat.exists
+
+- name: Read 1Password service account token
+  ansible.builtin.slurp:
+    src: "{{ eso_sa_token_file }}"
+  register: sa_token_raw
+  no_log: true
+
+- name: Set token fact
+  ansible.builtin.set_fact:
+    _eso_sa_token: "{{ sa_token_raw.content | b64decode | trim }}"
+  no_log: true
+
+- name: Ensure external-secrets namespace exists
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ eso_namespace }}"
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+
+- name: Create 1Password service account token secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ eso_sa_token_secret_name }}"
+        namespace: "{{ eso_namespace }}"
+      type: Opaque
+      stringData:
+        token: "{{ _eso_sa_token }}"
+    kubeconfig: "{{ kubeconfig_path }}"
+  no_log: true
+
+- name: Clear token fact
+  ansible.builtin.set_fact:
+    _eso_sa_token: ""
+  no_log: true

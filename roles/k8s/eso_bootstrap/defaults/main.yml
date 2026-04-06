@@ -1,0 +1,4 @@
+---
+eso_namespace: external-secrets
+eso_sa_token_secret_name: onepassword-service-account-token
+eso_sa_token_file: "{{ ansible_env.HOME }}/.config/op/service-account-token"

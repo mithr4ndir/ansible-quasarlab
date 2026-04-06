@@ -1,0 +1,16 @@
+---
+# Bootstrap the 1Password service account token secret required by
+# External Secrets Operator ClusterSecretStore.
+#
+# Run from the command center (which has the SA token and kubeconfig):
+#   ansible-playbook playbooks/k8s_eso_bootstrap.yml -l cmd_center1
+#
+# The token is read at runtime from ~/.config/op/service-account-token
+# and is NEVER stored in this repository.
+
+- name: Bootstrap ESO 1Password service account secret
+  hosts: cmd_center1
+  gather_facts: true
+  become: false
+  roles:
+    - k8s/eso_bootstrap
