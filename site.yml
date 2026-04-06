@@ -8,3 +8,5 @@
   tags: [authentik]
 - import_playbook: playbooks/proxmox.yml
   tags: [proxmox]
+- import_playbook: playbooks/postgresql.yml
+  tags: [postgresql]
