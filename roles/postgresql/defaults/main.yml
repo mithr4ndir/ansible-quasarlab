@@ -1,0 +1,54 @@
+---
+# PostgreSQL version
+postgresql_version: "16"
+
+# Listen addresses — bind to all interfaces for remote access
+postgresql_listen_addresses: "*"
+postgresql_port: 5432
+
+# Authentication method
+postgresql_auth_method: scram-sha-256
+
+# Memory tuning (conservative defaults for a 4GB VM)
+postgresql_shared_buffers: "1GB"
+postgresql_work_mem: "64MB"
+postgresql_effective_cache_size: "3GB"
+postgresql_maintenance_work_mem: "256MB"
+
+# Connection limits
+postgresql_max_connections: 100
+
+# WAL configuration
+postgresql_wal_level: replica
+postgresql_max_wal_size: "1GB"
+
+# Logging
+postgresql_log_destination: stderr
+postgresql_log_min_duration_statement: 1000
+
+# pg_hba access rules (list of dicts with type, database, user, address, method)
+postgresql_hba_entries:
+  - { type: local, database: all, user: postgres, method: peer }
+  - { type: local, database: all, user: all, method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "127.0.0.1/32", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "::1/128", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "192.168.1.88/32", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: grafana, user: grafana, address: "192.168.1.121/32", method: "{{ postgresql_auth_method }}" }
+
+# Databases to create (list of dicts with name, owner)
+postgresql_databases:
+  - { name: grafana, owner: grafana }
+
+# Users to create (list of dicts with name, password_var)
+# password_var references an Ansible Vault variable
+postgresql_users:
+  - { name: grafana, password_var: vault_postgresql_grafana_password }
+
+# Backup configuration
+postgresql_backup_enabled: true
+postgresql_backup_nfs_server: "192.168.1.15"
+postgresql_backup_nfs_path: "/mnt/tank/files/postgresql"
+postgresql_backup_mount_point: "/mnt/pg_backup"
+postgresql_backup_retention_days: 14
+postgresql_backup_schedule: "0 2 * * *"

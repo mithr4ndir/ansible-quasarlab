@@ -1,0 +1,24 @@
+---
+- name: Deploy PostgreSQL database server
+  hosts: postgresql
+  become: true
+  vars_files:
+    - ../group_vars/vault.yml
+  pre_tasks:
+    - name: Fetch PostgreSQL credentials from 1Password
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Get grafana DB password
+          ansible.builtin.command:
+            cmd: op read "op://Infrastructure/PostgreSQL Grafana DB/password"
+          register: op_grafana_db_pass
+          changed_when: false
+          no_log: true
+
+        - name: Set PostgreSQL credential facts
+          ansible.builtin.set_fact:
+            vault_postgresql_grafana_password: "{{ op_grafana_db_pass.stdout }}"
+          no_log: true
+  roles:
+    - postgresql

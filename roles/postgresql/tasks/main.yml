@@ -1,0 +1,141 @@
+---
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name:
+      - gnupg2
+      - python3-psycopg2
+      - acl
+      - nfs-common
+    state: present
+    update_cache: true
+
+- name: Add PostgreSQL APT signing key
+  ansible.builtin.apt_key:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    state: present
+
+- name: Add PostgreSQL official APT repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+    state: present
+    filename: pgdg
+
+- name: Install PostgreSQL {{ postgresql_version }}
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgresql_version }}"
+      - "postgresql-client-{{ postgresql_version }}"
+    state: present
+    update_cache: true
+
+- name: Configure postgresql.conf
+  ansible.builtin.lineinfile:
+    path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { regexp: "^#?listen_addresses", line: "listen_addresses = '{{ postgresql_listen_addresses }}'" }
+    - { regexp: "^#?port", line: "port = {{ postgresql_port }}" }
+    - { regexp: "^#?max_connections", line: "max_connections = {{ postgresql_max_connections }}" }
+    - { regexp: "^#?shared_buffers", line: "shared_buffers = {{ postgresql_shared_buffers }}" }
+    - { regexp: "^#?work_mem", line: "work_mem = {{ postgresql_work_mem }}" }
+    - { regexp: "^#?effective_cache_size", line: "effective_cache_size = {{ postgresql_effective_cache_size }}" }
+    - { regexp: "^#?maintenance_work_mem", line: "maintenance_work_mem = {{ postgresql_maintenance_work_mem }}" }
+    - { regexp: "^#?wal_level", line: "wal_level = {{ postgresql_wal_level }}" }
+    - { regexp: "^#?max_wal_size", line: "max_wal_size = {{ postgresql_max_wal_size }}" }
+    - { regexp: "^#?password_encryption", line: "password_encryption = {{ postgresql_auth_method }}" }
+    - { regexp: "^#?log_destination", line: "log_destination = '{{ postgresql_log_destination }}'" }
+    - { regexp: "^#?log_min_duration_statement", line: "log_min_duration_statement = {{ postgresql_log_min_duration_statement }}" }
+  notify: Restart postgresql
+
+- name: Deploy pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  notify: Reload postgresql
+
+- name: Ensure PostgreSQL is started and enabled
+  ansible.builtin.systemd:
+    name: postgresql
+    enabled: true
+    state: started
+
+- name: Create PostgreSQL users
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ lookup('vars', item.password_var) }}"
+    role_attr_flags: LOGIN
+    state: present
+  loop: "{{ postgresql_users }}"
+  no_log: true
+
+- name: Create PostgreSQL databases
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.owner }}"
+    encoding: UTF-8
+    lc_collate: C.UTF-8
+    lc_ctype: C.UTF-8
+    template: template0
+    state: present
+  loop: "{{ postgresql_databases }}"
+
+- name: Configure backup NFS mount
+  when: postgresql_backup_enabled
+  block:
+    - name: Create backup mount point
+      ansible.builtin.file:
+        path: "{{ postgresql_backup_mount_point }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+
+    - name: Mount NFS backup share
+      ansible.posix.mount:
+        src: "{{ postgresql_backup_nfs_server }}:{{ postgresql_backup_nfs_path }}"
+        path: "{{ postgresql_backup_mount_point }}"
+        fstype: nfs
+        opts: "rw,hard,intr,nfsvers=4"
+        state: mounted
+
+    - name: Deploy backup script
+      ansible.builtin.template:
+        src: pg_backup.sh.j2
+        dest: /usr/local/bin/pg_backup.sh
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Create backup cron job
+      ansible.builtin.cron:
+        name: "PostgreSQL daily backup"
+        job: "/usr/local/bin/pg_backup.sh >> /var/log/pg_backup.log 2>&1"
+        minute: "{{ postgresql_backup_schedule.split(' ')[0] }}"
+        hour: "{{ postgresql_backup_schedule.split(' ')[1] }}"
+        day: "{{ postgresql_backup_schedule.split(' ')[2] }}"
+        month: "{{ postgresql_backup_schedule.split(' ')[3] }}"
+        weekday: "{{ postgresql_backup_schedule.split(' ')[4] }}"
+        user: postgres
+        state: present
+
+    - name: Configure backup log rotation
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/pg_backup
+        content: |
+          /var/log/pg_backup.log {
+              weekly
+              rotate 4
+              compress
+              missingok
+              notifempty
+              create 0640 postgres postgres
+          }
+        mode: '0644'
