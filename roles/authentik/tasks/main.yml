@@ -82,7 +82,7 @@
     pull: missing
     recreate: never
   register: authentik_compose
-  changed_when: authentik_compose.actions | default([]) | length > 0
+  changed_when: authentik_compose.actions | default([]) | rejectattr("status", "in", ["Waiting", "Running", "Healthy"]) | list | length > 0
 
 - name: Wait for Authentik to be ready
   ansible.builtin.wait_for:
