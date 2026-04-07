@@ -55,6 +55,16 @@
   register: installed_collections
   changed_when: false
 
+- name: Parse installed CrowdSec collections
+  ansible.builtin.set_fact:
+    _cscli_parsed: "{{ installed_collections.stdout | from_json }}"
+
+- name: Set installed collection names
+  ansible.builtin.set_fact:
+    _installed_collection_names: >-
+      {{ (_cscli_parsed.collections | default(_cscli_parsed))
+         | map(attribute='name') | list }}
+
 - name: Install CrowdSec collections
   community.docker.docker_container_exec:
     container: crowdsec
@@ -62,7 +72,7 @@
   loop: "{{ crowdsec_collections }}"
   register: collection_result
   changed_when: true
-  when: "item not in (installed_collections.stdout | from_json | map(attribute='name') | list)"
+  when: "item not in _installed_collection_names"
 
 - name: Check if bouncer API key exists
   ansible.builtin.command:
