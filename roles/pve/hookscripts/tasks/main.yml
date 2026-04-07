@@ -21,6 +21,7 @@
   loop: "{{ pve_gpu_vms | dict2items }}"
   register: vm_configs
   changed_when: false
+  failed_when: false
   when: inventory_hostname == 'pve2'
 
 - name: Attach hookscript to GPU VMs
@@ -29,6 +30,7 @@
   loop: "{{ vm_configs.results }}"
   when:
     - inventory_hostname == 'pve2'
+    - item.rc is defined and item.rc == 0
     - item.stdout is defined
     - "'hookscript: local:snippets/gpu-failover.sh' not in item.stdout"
   changed_when: true
