@@ -21,7 +21,7 @@
   loop: "{{ pve_gpu_vms | dict2items }}"
   register: vm_configs
   changed_when: false
-  failed_when: false
+  failed_when: rc != 0 and 'does not exist' not in stderr
   when: inventory_hostname == 'pve2'
 
 - name: Attach hookscript to GPU VMs
