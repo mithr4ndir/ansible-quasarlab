@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# Drop-in for pve-guests.service that blocks VM autostart until the
+# TrueNAS API is reachable. Closes the freenas-proxmox boot race
+# (see 2026-04-13 incident).
+[Service]
+Environment=TRUENAS_API_URL={{ freenas_api_wait_url }}
+Environment=TRUENAS_API_TIMEOUT={{ freenas_api_wait_timeout_secs }}
+Environment=TRUENAS_API_INTERVAL={{ freenas_api_wait_interval_secs }}
+ExecStartPre=/usr/local/sbin/wait-truenas-api.sh
