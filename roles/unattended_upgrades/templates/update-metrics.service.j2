@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Refresh unattended-upgrades Prometheus metrics
+# Do not depend on apt state; we want this to run even when no apt
+# activity has happened for a while (the whole point is to catch
+# reboot-required going from 1 to 0 after a reboot).
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/update-metrics.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

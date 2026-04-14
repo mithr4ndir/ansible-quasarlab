@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic refresh of unattended-upgrades Prometheus metrics
+
+[Timer]
+# Fire 2 minutes after boot so a reboot that cleared
+# /var/run/reboot-required is reflected in the metric quickly, and
+# then every 10 minutes after that. AccuracySec spreads firings so
+# all VMs do not hit apt cache at once.
+OnBootSec=2min
+OnUnitActiveSec={{ unattended_upgrades_metric_refresh_interval }}
+AccuracySec=30s
+Persistent=true
+Unit=update-metrics.service
+
+[Install]
+WantedBy=timers.target
