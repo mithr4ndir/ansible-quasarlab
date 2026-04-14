@@ -78,3 +78,18 @@
     enabled: true
     state: started
   loop: "{{ pve_iscsi_services }}"
+
+# fancontrol ships installed-but-unconfigured (/etc/fancontrol has all
+# mandatory fields blank unless someone runs pwmconfig interactively).
+# The unit fails at boot on both pve and pve2, which shows up as a
+# permanent failed-unit in systemctl --failed and pollutes the
+# NodeFailedUnits signal. BIOS-level fan curves handle cooling fine
+# on both hosts (observed Tctl ~57C, Tccd2 ~70C under normal load),
+# so disable the unit entirely.
+- name: Disable fancontrol (empty config, BIOS handles fan curves)
+  ansible.builtin.systemd:
+    name: fancontrol
+    enabled: false
+    state: stopped
+    masked: true
+  failed_when: false
