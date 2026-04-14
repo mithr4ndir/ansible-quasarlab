@@ -26,8 +26,13 @@ attempts=0
 
 while [ "$(date +%s)" -lt "$deadline" ]; do
     attempts=$((attempts + 1))
-    if curl -ksfL --max-time 3 -o /dev/null "$API_URL"; then
-        logger -t wait-truenas-api "TrueNAS API at $API_URL reachable after $attempts attempt(s)"
+    # Any 3-digit HTTP response means the API daemon is serving (even 401
+    # without auth, which is what an unauthenticated GET returns). We only
+    # care that the daemon is up, not that our probe is authorized, so do
+    # NOT pass -f.
+    http_code=$(curl -ks --max-time 3 -o /dev/null -w '%{http_code}' "$API_URL" 2>/dev/null || true)
+    if [[ "$http_code" =~ ^[1-5][0-9]{2}$ ]]; then
+        logger -t wait-truenas-api "TrueNAS API at $API_URL reachable (HTTP $http_code) after $attempts attempt(s)"
         exit 0
     fi
     sleep "$INTERVAL"
