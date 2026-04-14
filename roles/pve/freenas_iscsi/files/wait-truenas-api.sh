@@ -30,12 +30,15 @@ attempts=0
 
 while [ "$(date +%s)" -lt "$deadline" ]; do
     attempts=$((attempts + 1))
-    # Any 3-digit HTTP response means the API daemon is serving (even 401
-    # without auth, which is what an unauthenticated GET returns). We only
-    # care that the daemon is up, not that our probe is authorized, so do
-    # NOT pass -f.
     http_code=$(curl -ks --max-time 3 -o /dev/null -w '%{http_code}' "$API_URL" 2>/dev/null || true)
-    if [[ "$http_code" =~ ^[1-5][0-9]{2}$ ]]; then
+    # Accept 2xx (healthy) and 401/403 (API daemon up but rejecting our
+    # unauthenticated probe, which is what TrueNAS does on
+    # /api/v2.0/system/info). Reject 5xx: a 500/502/503 during TrueNAS
+    # startup means the daemon is listening but the application is not
+    # actually usable yet, and the freenas-proxmox plugin will still fail
+    # at VM start time. We do NOT pass curl -f because -f treats 4xx as
+    # failure, and 401 is the expected unauthenticated response.
+    if [[ "$http_code" =~ ^2[0-9]{2}$ || "$http_code" == "401" || "$http_code" == "403" ]]; then
         logger -t wait-truenas-api "TrueNAS API at $API_URL reachable (HTTP $http_code) after $attempts attempt(s)"
         exit 0
     fi
