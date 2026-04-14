@@ -3,10 +3,12 @@
 # TrueNAS API is reachable. Closes the freenas-proxmox boot race
 # (see 2026-04-13 incident).
 [Service]
-# Bump unit start timeout well above TRUENAS_API_TIMEOUT so systemd does
-# not kill the wait mid-probe. Default DefaultTimeoutStartSec is 90s on
-# most systems, which would truncate a TrueNAS cold boot wait.
-TimeoutStartSec={{ freenas_api_wait_systemd_timeout_secs }}s
+# Explicitly keep the start timeout unbounded, matching pve-guests.service's
+# upstream `TimeoutSec=infinity`. This drop-in must not introduce a finite
+# cap: a host with many onboot VMs can legitimately run startall for many
+# minutes (observed ~35s per VM in 2026-04-14 testing), and the script's
+# own TRUENAS_API_TIMEOUT already bounds the probe itself.
+TimeoutStartSec=infinity
 Environment=TRUENAS_API_URL={{ freenas_api_wait_url }}
 Environment=TRUENAS_API_TIMEOUT={{ freenas_api_wait_timeout_secs }}
 Environment=TRUENAS_API_INTERVAL={{ freenas_api_wait_interval_secs }}
