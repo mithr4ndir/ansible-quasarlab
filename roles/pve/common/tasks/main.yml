@@ -86,10 +86,21 @@
 # NodeFailedUnits signal. BIOS-level fan curves handle cooling fine
 # on both hosts (observed Tctl ~57C, Tccd2 ~70C under normal load),
 # so disable the unit entirely.
+#
+# We check for the unit before touching it so a future host that does
+# not have fancontrol installed does not fail the play, while still
+# surfacing any real systemd/DBus errors on hosts that do.
+- name: Check whether fancontrol unit exists
+  ansible.builtin.command: systemctl list-unit-files fancontrol.service
+  register: fancontrol_unit
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Disable fancontrol (empty config, BIOS handles fan curves)
   ansible.builtin.systemd:
     name: fancontrol
     enabled: false
     state: stopped
     masked: true
-  failed_when: false
+  when: "'fancontrol.service' in fancontrol_unit.stdout"
