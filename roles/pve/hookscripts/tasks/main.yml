@@ -21,7 +21,15 @@
   loop: "{{ pve_gpu_vms | dict2items }}"
   register: vm_configs
   changed_when: false
-  failed_when: rc != 0 and 'does not exist' not in stderr
+  # Suppress only the "VM lives on a different node" case so migration
+  # is tolerated; real errors (permissions, broken binaries, etc.) still
+  # fail the play. default() wrappers are required because a stricter
+  # `rc != 0 and ...` form intermittently surfaced 'rc is undefined'
+  # errors inside the loop context (see 2026-04-14 ansible run where
+  # proxmox.yml failed on pve2 for item.key=115).
+  failed_when: >-
+    (rc | default(0)) != 0
+    and 'does not exist' not in (stderr | default(''))
   when: inventory_hostname == 'pve2'
 
 - name: Attach hookscript to GPU VMs
