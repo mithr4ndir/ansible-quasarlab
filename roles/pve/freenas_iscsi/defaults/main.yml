@@ -18,3 +18,11 @@ freenas_patched_files:
 # FreeNAS.pm module (copied, not patched)
 freenas_module_src: "/usr/local/src/freenas-proxmox/perl5/PVE/Storage/LunCmd/FreeNAS.pm"
 freenas_module_dest: "/usr/share/perl5/PVE/Storage/LunCmd/FreeNAS.pm"
+
+# pve-guests wait-for-TrueNAS-API drop-in
+# Blocks pve-guests.service until the TrueNAS REST API is reachable,
+# so onboot VMs with ZFS-over-iSCSI disks do not fail to start during
+# a cold boot race. See 2026-04-13 incident.
+freenas_api_wait_url: "https://10.10.12.2/api/v2.0/system/info"
+freenas_api_wait_timeout_secs: 120
+freenas_api_wait_interval_secs: 2
