@@ -115,6 +115,8 @@
     owner: root
     group: root
     mode: '0755'
+  tags:
+    - wait_truenas
 
 - name: Ensure pve-guests drop-in directory exists
   ansible.builtin.file:
@@ -123,6 +125,8 @@
     owner: root
     group: root
     mode: '0755'
+  tags:
+    - wait_truenas
 
 - name: Deploy pve-guests wait-for-TrueNAS-API drop-in
   ansible.builtin.template:
@@ -132,8 +136,12 @@
     group: root
     mode: '0644'
   register: pve_guests_dropin
+  tags:
+    - wait_truenas
 
 - name: Reload systemd so the new drop-in is picked up
   ansible.builtin.systemd:
     daemon_reload: true
   when: pve_guests_dropin.changed
+  tags:
+    - wait_truenas

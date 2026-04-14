@@ -24,5 +24,9 @@ freenas_module_dest: "/usr/share/perl5/PVE/Storage/LunCmd/FreeNAS.pm"
 # so onboot VMs with ZFS-over-iSCSI disks do not fail to start during
 # a cold boot race. See 2026-04-13 incident.
 freenas_api_wait_url: "https://10.10.12.2/api/v2.0/system/info"
-freenas_api_wait_timeout_secs: 120
+freenas_api_wait_timeout_secs: 300
 freenas_api_wait_interval_secs: 2
+# Systemd start-timeout for pve-guests.service. Must be larger than
+# freenas_api_wait_timeout_secs with enough headroom for the VM
+# autostart loop itself (~35s per VM in the observed 2026-04-14 test).
+freenas_api_wait_systemd_timeout_secs: 900
