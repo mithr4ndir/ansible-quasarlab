@@ -22,3 +22,10 @@ unattended_upgrades_mail: ""
 # How often to run (daily via apt systemd timer, default)
 unattended_upgrades_update_interval: 1
 unattended_upgrades_download_interval: 1
+
+# Frequency for the metric refresh timer. The apt Post-Invoke hook
+# fires the same script on apt activity, but between apt runs the
+# metric goes stale (notably node_reboot_required stays at 1 after
+# a reboot clears /var/run/reboot-required). 10 minutes keeps the
+# lag small without scraping apt metadata too often.
+unattended_upgrades_metric_refresh_interval: "10min"

@@ -36,6 +36,31 @@
     dest: /etc/apt/apt.conf.d/99update-metrics
     mode: '0644'
 
+- name: Deploy update-metrics systemd service unit
+  ansible.builtin.template:
+    src: update-metrics.service.j2
+    dest: /etc/systemd/system/update-metrics.service
+    mode: '0644'
+  register: update_metrics_service
+
+- name: Deploy update-metrics systemd timer unit
+  ansible.builtin.template:
+    src: update-metrics.timer.j2
+    dest: /etc/systemd/system/update-metrics.timer
+    mode: '0644'
+  register: update_metrics_timer
+
+- name: Reload systemd if unit files changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: update_metrics_service.changed or update_metrics_timer.changed
+
+- name: Enable and start update-metrics timer
+  ansible.builtin.systemd:
+    name: update-metrics.timer
+    enabled: true
+    state: started
+
 - name: Run metrics script to seed initial data
   ansible.builtin.command: /usr/local/bin/update-metrics.sh
   changed_when: false
