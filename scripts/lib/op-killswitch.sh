@@ -79,12 +79,26 @@ METRICS
     chmod 644 "$OP_KILLSWITCH_METRIC_FILE" 2>/dev/null || true
 }
 
-# Trip the killswitch. Idempotent; does not reset the mtime if the lock
-# already exists so we do not extend the TTL unnecessarily.
+# Trip the killswitch. If an active lock already exists (mtime within
+# TTL) we preserve its mtime so we do not extend the TTL on a flurry
+# of errors. If the lock is stale (mtime older than TTL) we overwrite
+# it so a new rate-limit event after the previous window expired gets
+# a fresh TTL, instead of leaving a stale one-shot lock that would
+# make op_killswitch_is_active report "inactive" and swallow the event.
 op_killswitch_trip() {
     local reason="${1:-rate_limited}"
     op_killswitch_init
-    if [[ ! -f "$OP_KILLSWITCH_LOCK" ]]; then
+    local refresh=1
+    if [[ -f "$OP_KILLSWITCH_LOCK" ]]; then
+        local existing_mtime age
+        existing_mtime=$(stat -c %Y "$OP_KILLSWITCH_LOCK" 2>/dev/null || echo 0)
+        age=$(( $(date +%s) - existing_mtime ))
+        if (( age < OP_KILLSWITCH_TTL_SECS )); then
+            # Lock is still within TTL; leave it alone, do not log again.
+            refresh=0
+        fi
+    fi
+    if (( refresh )); then
         printf '%s trip_reason=%s\n' "$(date -u +%FT%TZ)" "$reason" > "$OP_KILLSWITCH_LOCK" 2>/dev/null || true
         chmod 644 "$OP_KILLSWITCH_LOCK" 2>/dev/null || true
         logger -t op-killswitch "1Password kill-switch TRIPPED: reason=${reason}. Further op calls are suppressed until TTL (${OP_KILLSWITCH_TTL_SECS}s) expires or the lock is removed."
