@@ -5,18 +5,34 @@
   vars_files:
     - ../group_vars/vault.yml
   pre_tasks:
-    # Secrets are resolved from env vars populated by the wrapper's
-    # cached_op_read (see scripts/lib/op-secret-cache.sh). For direct
-    # `ansible-playbook` invocations outside the wrapper, set these
-    # env vars first: WAZUH_PASSWORD, WAZUH_API_PASSWORD,
-    # WAZUH_INDEXER_ADMIN_PASSWORD.
+    # Secrets come from env vars populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). The assert
+    # below fail-fasts on empty values because `lookup('env', X) |
+    # mandatory` would pass an empty string through silently. For
+    # direct `ansible-playbook` runs outside the wrapper, export
+    # WAZUH_PASSWORD, WAZUH_API_PASSWORD, WAZUH_INDEXER_ADMIN_PASSWORD
+    # first.
+    - name: Assert wrapper-cached Wazuh env is populated
+      delegate_to: localhost
+      become: false
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'WAZUH_PASSWORD')               | length > 0
+          - lookup('env', 'WAZUH_API_PASSWORD')           | length > 0
+          - lookup('env', 'WAZUH_INDEXER_ADMIN_PASSWORD') | length > 0
+        fail_msg: >-
+          One or more required env vars are empty or unset. Run via
+          scripts/run-security.sh or export WAZUH_PASSWORD,
+          WAZUH_API_PASSWORD, WAZUH_INDEXER_ADMIN_PASSWORD first.
+        quiet: true
+
     - name: Resolve Wazuh credentials from wrapper-cached env
       delegate_to: localhost
       become: false
       ansible.builtin.set_fact:
-        wazuh_admin_password: "{{ lookup('env', 'WAZUH_PASSWORD') | mandatory }}"
-        wazuh_api_password: "{{ lookup('env', 'WAZUH_API_PASSWORD') | mandatory }}"
-        wazuh_indexer_password: "{{ lookup('env', 'WAZUH_INDEXER_ADMIN_PASSWORD') | mandatory }}"
+        wazuh_admin_password: "{{ lookup('env', 'WAZUH_PASSWORD') }}"
+        wazuh_api_password: "{{ lookup('env', 'WAZUH_API_PASSWORD') }}"
+        wazuh_indexer_password: "{{ lookup('env', 'WAZUH_INDEXER_ADMIN_PASSWORD') }}"
       no_log: true
   roles:
     - wazuh_manager

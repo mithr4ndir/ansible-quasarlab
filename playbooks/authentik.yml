@@ -3,19 +3,39 @@
   hosts: authentik
   become: true
   pre_tasks:
-    # Secrets are resolved from env vars populated by the wrapper's
-    # cached_op_read (see scripts/lib/op-secret-cache.sh). This skips
-    # four `op read` calls per playbook run in the common case. For
-    # direct `ansible-playbook` invocations outside the wrapper, set
-    # the env vars manually first.
+    # Secrets come from env vars populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). The assert
+    # below fail-fasts when any of them is empty or unset, because
+    # `lookup('env', X) | mandatory` would pass an empty string
+    # through silently (the env lookup is always defined, mandatory
+    # only catches undefined). For direct `ansible-playbook` runs
+    # outside the wrapper, export AUTHENTIK_PG_PASSWORD,
+    # AUTHENTIK_SECRET_KEY, AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN,
+    # AUTHENTIK_ADMIN_EMAIL first.
+    - name: Assert wrapper-cached Authentik env is populated
+      delegate_to: localhost
+      become: false
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'AUTHENTIK_PG_PASSWORD')           | length > 0
+          - lookup('env', 'AUTHENTIK_SECRET_KEY')            | length > 0
+          - lookup('env', 'AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN') | length > 0
+          - lookup('env', 'AUTHENTIK_ADMIN_EMAIL')           | length > 0
+        fail_msg: >-
+          One or more required env vars are empty or unset. Run via
+          scripts/run-proxmox.sh (which calls load_cached_secrets) or
+          export AUTHENTIK_PG_PASSWORD, AUTHENTIK_SECRET_KEY,
+          AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN, AUTHENTIK_ADMIN_EMAIL first.
+        quiet: true
+
     - name: Resolve Authentik credentials from wrapper-cached env
       delegate_to: localhost
       become: false
       ansible.builtin.set_fact:
-        authentik_db_password: "{{ lookup('env', 'AUTHENTIK_PG_PASSWORD') | mandatory }}"
-        authentik_secret_key: "{{ lookup('env', 'AUTHENTIK_SECRET_KEY') | mandatory }}"
-        authentik_admin_token: "{{ lookup('env', 'AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN') | mandatory }}"
-        authentik_admin_email: "{{ lookup('env', 'AUTHENTIK_ADMIN_EMAIL') | mandatory }}"
+        authentik_db_password: "{{ lookup('env', 'AUTHENTIK_PG_PASSWORD') }}"
+        authentik_secret_key: "{{ lookup('env', 'AUTHENTIK_SECRET_KEY') }}"
+        authentik_admin_token: "{{ lookup('env', 'AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN') }}"
+        authentik_admin_email: "{{ lookup('env', 'AUTHENTIK_ADMIN_EMAIL') }}"
       no_log: true
   roles:
     - authentik
