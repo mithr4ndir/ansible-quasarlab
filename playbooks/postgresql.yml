@@ -5,15 +5,28 @@
   vars_files:
     - ../group_vars/vault.yml
   pre_tasks:
-    # Secret resolved from env var populated by the wrapper's
-    # cached_op_read (see scripts/lib/op-secret-cache.sh). For direct
-    # `ansible-playbook` invocations outside the wrapper, set
+    # Secret comes from env var populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). The assert
+    # below fail-fasts on empty values because `lookup('env', X) |
+    # mandatory` would pass an empty string through silently. For
+    # direct `ansible-playbook` runs outside the wrapper, export
     # GRAFANA_PG_PASSWORD first.
+    - name: Assert wrapper-cached PostgreSQL env is populated
+      delegate_to: localhost
+      become: false
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'GRAFANA_PG_PASSWORD') | length > 0
+        fail_msg: >-
+          GRAFANA_PG_PASSWORD is empty or unset. Run via
+          scripts/run-proxmox.sh or export it first.
+        quiet: true
+
     - name: Resolve PostgreSQL credentials from wrapper-cached env
       delegate_to: localhost
       become: false
       ansible.builtin.set_fact:
-        vault_postgresql_grafana_password: "{{ lookup('env', 'GRAFANA_PG_PASSWORD') | mandatory }}"
+        vault_postgresql_grafana_password: "{{ lookup('env', 'GRAFANA_PG_PASSWORD') }}"
       no_log: true
   roles:
     - postgresql
