@@ -13,10 +13,23 @@ PROM_FILE="${TEXTFILE_DIR}/ansible_security.prom"
 
 mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 
+# shellcheck source=lib/op-killswitch.sh
+source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
+# If 1P is currently rate-limited (known via the shared lock file),
+# skip this run entirely so we do not keep the rolling window pinned.
+op_killswitch_check_or_exit
+
 # Source 1Password service account token for dynamic inventory + vault
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
 if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>/dev/null || true)}"
+    op_err=$(mktemp)
+    token_value=$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>"$op_err" || true)
+    if [[ -n "$token_value" ]]; then
+        export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$token_value}"
+    else
+        op_killswitch_scan_file "$op_err" || true
+    fi
+    rm -f "$op_err"
 fi
 
 # Source ARA callback plugin environment
@@ -45,6 +58,10 @@ for playbook in wazuh.yml crowdsec.yml; do
     rc=$?
     cat "$tmpfile" >> "$LOGFILE"
     playbook_results["${playbook}"]=$rc
+    # Any playbook that invoked `op read` and hit the rate limit puts
+    # "Too many requests" in its output. Surface that to the killswitch
+    # so subsequent scheduled runs short-circuit.
+    op_killswitch_scan_file "$tmpfile" || true
 
     failed_hosts=""
     if [[ $rc -ne 0 ]]; then
