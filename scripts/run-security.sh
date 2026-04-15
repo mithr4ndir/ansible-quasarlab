@@ -15,22 +15,22 @@ mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 
 # shellcheck source=lib/op-killswitch.sh
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
+# shellcheck source=lib/op-secret-cache.sh
+source "${REPO_DIR}/scripts/lib/op-secret-cache.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
 op_killswitch_check_or_exit
 
 # Source 1Password service account token for dynamic inventory + vault
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
-if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    op_err=$(mktemp)
-    token_value=$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>"$op_err" || true)
-    if [[ -n "$token_value" ]]; then
-        export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$token_value}"
-    else
-        op_killswitch_scan_file "$op_err" || true
-    fi
-    rm -f "$op_err"
-fi
+
+# Pre-populate secrets. See run-proxmox.sh for the rationale.
+load_cached_secrets <<'SECRETS'
+PROXMOX_TOKEN_SECRET             proxmox_token                       op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
+WAZUH_PASSWORD                   wazuh_password                      op://Infrastructure/Wazuh SIEM/password
+WAZUH_API_PASSWORD               wazuh_api_password                  op://Infrastructure/Wazuh SIEM/API Credentials/api_password
+WAZUH_INDEXER_ADMIN_PASSWORD     wazuh_indexer_admin_password        op://Infrastructure/Wazuh SIEM/Indexer/indexer_admin_password
+SECRETS
 
 # Source ARA callback plugin environment
 if [[ -f /etc/profile.d/ara-ansible-env.sh ]]; then

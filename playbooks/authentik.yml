@@ -3,43 +3,19 @@
   hosts: authentik
   become: true
   pre_tasks:
-    - name: Fetch Authentik credentials from 1Password
+    # Secrets are resolved from env vars populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). This skips
+    # four `op read` calls per playbook run in the common case. For
+    # direct `ansible-playbook` invocations outside the wrapper, set
+    # the env vars manually first.
+    - name: Resolve Authentik credentials from wrapper-cached env
       delegate_to: localhost
       become: false
-      block:
-        - name: Get PostgreSQL password
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Authentik/PostgreSQL Password"
-          register: op_pg_pass
-          changed_when: false
-          no_log: true
-
-        - name: Get Authentik secret key
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Authentik/Secret Key"
-          register: op_secret_key
-          changed_when: false
-          no_log: true
-
-        - name: Get Authentik admin bootstrap token
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Authentik/Admin Bootstrap Token"
-          register: op_admin_token
-          changed_when: false
-          no_log: true
-
-        - name: Get Authentik admin email
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Authentik/Admin Email"
-          register: op_admin_email
-          changed_when: false
-
-        - name: Set Authentik credential facts
-          ansible.builtin.set_fact:
-            authentik_db_password: "{{ op_pg_pass.stdout }}"
-            authentik_secret_key: "{{ op_secret_key.stdout }}"
-            authentik_admin_token: "{{ op_admin_token.stdout }}"
-            authentik_admin_email: "{{ op_admin_email.stdout }}"
-          no_log: true
+      ansible.builtin.set_fact:
+        authentik_db_password: "{{ lookup('env', 'AUTHENTIK_PG_PASSWORD') | mandatory }}"
+        authentik_secret_key: "{{ lookup('env', 'AUTHENTIK_SECRET_KEY') | mandatory }}"
+        authentik_admin_token: "{{ lookup('env', 'AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN') | mandatory }}"
+        authentik_admin_email: "{{ lookup('env', 'AUTHENTIK_ADMIN_EMAIL') | mandatory }}"
+      no_log: true
   roles:
     - authentik

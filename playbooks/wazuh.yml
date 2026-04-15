@@ -5,36 +5,19 @@
   vars_files:
     - ../group_vars/vault.yml
   pre_tasks:
-    - name: Fetch Wazuh credentials from 1Password
+    # Secrets are resolved from env vars populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). For direct
+    # `ansible-playbook` invocations outside the wrapper, set these
+    # env vars first: WAZUH_PASSWORD, WAZUH_API_PASSWORD,
+    # WAZUH_INDEXER_ADMIN_PASSWORD.
+    - name: Resolve Wazuh credentials from wrapper-cached env
       delegate_to: localhost
       become: false
-      block:
-        - name: Get Wazuh dashboard admin password
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Wazuh SIEM/password"
-          register: op_wazuh_admin_pass
-          changed_when: false
-          no_log: true
-
-        - name: Get Wazuh API password
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Wazuh SIEM/API Credentials/api_password"
-          register: op_wazuh_api_pass
-          changed_when: false
-          no_log: true
-
-        - name: Get Wazuh indexer admin password
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/Wazuh SIEM/Indexer/indexer_admin_password"
-          register: op_wazuh_indexer_pass
-          changed_when: false
-          no_log: true
-
-        - name: Set Wazuh credential facts
-          ansible.builtin.set_fact:
-            wazuh_admin_password: "{{ op_wazuh_admin_pass.stdout }}"
-            wazuh_api_password: "{{ op_wazuh_api_pass.stdout }}"
-            wazuh_indexer_password: "{{ op_wazuh_indexer_pass.stdout }}"
+      ansible.builtin.set_fact:
+        wazuh_admin_password: "{{ lookup('env', 'WAZUH_PASSWORD') | mandatory }}"
+        wazuh_api_password: "{{ lookup('env', 'WAZUH_API_PASSWORD') | mandatory }}"
+        wazuh_indexer_password: "{{ lookup('env', 'WAZUH_INDEXER_ADMIN_PASSWORD') | mandatory }}"
+      no_log: true
   roles:
     - wazuh_manager
 
