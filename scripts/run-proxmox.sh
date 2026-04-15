@@ -12,22 +12,28 @@ mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 
 # shellcheck source=lib/op-killswitch.sh
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
+# shellcheck source=lib/op-secret-cache.sh
+source "${REPO_DIR}/scripts/lib/op-secret-cache.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
 op_killswitch_check_or_exit
 
 # Source 1Password service account token for dynamic inventory + vault
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
-if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    op_err=$(mktemp)
-    token_value=$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>"$op_err" || true)
-    if [[ -n "$token_value" ]]; then
-        export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$token_value}"
-    else
-        op_killswitch_scan_file "$op_err" || true
-    fi
-    rm -f "$op_err"
-fi
+
+# Pre-populate all secrets the downstream playbooks need. Each
+# cached_op_read call returns the cache value if it is fresh (TTL
+# default 12h), otherwise calls `op` once and updates the cache. This
+# collapses what used to be ~13 `op read` calls per run into 0 (all
+# cache hits) or ~8 (all cache misses, once per TTL window).
+load_cached_secrets <<'SECRETS'
+PROXMOX_TOKEN_SECRET             proxmox_token                      op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
+AUTHENTIK_PG_PASSWORD            authentik_pg_password              op://Infrastructure/Authentik/PostgreSQL Password
+AUTHENTIK_SECRET_KEY             authentik_secret_key               op://Infrastructure/Authentik/Secret Key
+AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN  authentik_admin_bootstrap_token    op://Infrastructure/Authentik/Admin Bootstrap Token
+AUTHENTIK_ADMIN_EMAIL            authentik_admin_email              op://Infrastructure/Authentik/Admin Email
+GRAFANA_PG_PASSWORD              grafana_pg_password                op://Infrastructure/PostgreSQL Grafana DB/password
+SECRETS
 
 # Source ARA callback plugin environment (records runs to ARA database)
 if [[ -f /etc/profile.d/ara-ansible-env.sh ]]; then

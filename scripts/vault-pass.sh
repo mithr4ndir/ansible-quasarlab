@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Pulls Ansible vault password from 1Password.
-# Falls back to .vault_pass file if op CLI is unavailable OR the
-# 1Password rate-limit kill-switch is tripped.
+# Pulls Ansible vault password from 1Password, via the wrapper secret
+# cache so each `ansible-playbook` invocation (which spawns this script)
+# does not hit 1Password every time.
+#
+# Falls back to .vault_pass file if op CLI is unavailable, the
+# 1Password rate-limit kill switch is tripped, or the cache and op
+# are both empty.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/op-killswitch.sh
 source "${SCRIPT_DIR}/lib/op-killswitch.sh"
+# shellcheck source=lib/op-secret-cache.sh
+source "${SCRIPT_DIR}/lib/op-secret-cache.sh"
 
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
 
-# Fallback path used when op is unavailable, the killswitch is tripped,
-# or the op call fails for any reason.
 fallback_vault_pass() {
     local vault_file="${SCRIPT_DIR}/../.vault_pass"
     if [[ -f "$vault_file" ]]; then
@@ -22,20 +26,12 @@ fallback_vault_pass() {
     exit 1
 }
 
-# Short-circuit to fallback if killswitch is active; do NOT call op.
-if op_killswitch_is_active; then
-    fallback_vault_pass
-fi
-
-if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    op_err=$(mktemp)
-    if op read "op://Infrastructure/Ansible Vault Password/password" 2>"$op_err"; then
-        rm -f "$op_err"
-        exit 0
-    fi
-    # op failed; check whether it was a rate-limit and trip the switch
-    op_killswitch_scan_file "$op_err" || true
-    rm -f "$op_err"
+# cached_op_read handles the kill-switch check, cache freshness, op
+# invocation, and stale-fallback internally. It returns rc=0 with the
+# value on stdout, or rc=1 when nothing is available at all.
+if value=$(cached_op_read ansible_vault_password "op://Infrastructure/Ansible Vault Password/password"); then
+    printf '%s' "$value"
+    exit 0
 fi
 
 fallback_vault_pass

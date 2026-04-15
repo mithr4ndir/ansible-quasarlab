@@ -5,20 +5,15 @@
   vars_files:
     - ../group_vars/vault.yml
   pre_tasks:
-    - name: Fetch PostgreSQL credentials from 1Password
+    # Secret resolved from env var populated by the wrapper's
+    # cached_op_read (see scripts/lib/op-secret-cache.sh). For direct
+    # `ansible-playbook` invocations outside the wrapper, set
+    # GRAFANA_PG_PASSWORD first.
+    - name: Resolve PostgreSQL credentials from wrapper-cached env
       delegate_to: localhost
       become: false
-      block:
-        - name: Get grafana DB password
-          ansible.builtin.command:
-            cmd: op read "op://Infrastructure/PostgreSQL Grafana DB/password"
-          register: op_grafana_db_pass
-          changed_when: false
-          no_log: true
-
-        - name: Set PostgreSQL credential facts
-          ansible.builtin.set_fact:
-            vault_postgresql_grafana_password: "{{ op_grafana_db_pass.stdout }}"
-          no_log: true
+      ansible.builtin.set_fact:
+        vault_postgresql_grafana_password: "{{ lookup('env', 'GRAFANA_PG_PASSWORD') | mandatory }}"
+      no_log: true
   roles:
     - postgresql
