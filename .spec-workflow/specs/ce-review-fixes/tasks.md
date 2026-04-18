@@ -15,20 +15,20 @@ Progress tracked as checkboxes. Each task corresponds to a specific `safe_auto` 
 - [x] **Fix #9** Broaden `parse_reset()` regex to handle "N seconds", "Never"; fallback `None` on unknown shapes
 - [x] **Fix #10** Inline `OP_SERVICE_ACCOUNT_TOKEN` export to the `op` call only, remove global export
 - [x] Run `python3 -m unittest roles/op_quota_collector/tests/test_parse.py -v` - all 5 tests pass
-- [ ] Commit fixes as single `fix(op-quota-collector): address ce:review P1/P2 findings` commit
-- [ ] Push to `origin/feat/op-quota-collector`
+- [x] Commit fixes as single `fix(op-quota-collector): address ce:review P1/P2 findings` commit (b8df298)
+- [x] Push to `origin/feat/op-quota-collector`
 
 ## Branch feat/etcd-defrag-timer (PR #107)
 
-- [ ] **Fix #11** Wrap every `kubectl exec ... etcdctl` call in `etcd-defrag.sh.j2` with `timeout 60`
-- [ ] Commit fix as `fix(etcd-defrag): add 60s timeout to kubectl exec calls`
-- [ ] Push to `origin/feat/etcd-defrag-timer`
+- [x] **Fix #11** Wrap every `kubectl exec ... etcdctl` call in `etcd-defrag.sh.j2` with `timeout 60` (100ecb1)
+- [x] Commit fix as `fix(etcd-defrag): add 60s timeout to kubectl exec calls`
+- [x] Push to `origin/feat/etcd-defrag-timer`
 
 ## Verification
 
 - [ ] PR #109 CI green (GitHub Actions, any ansible-lint or yaml-lint steps)
 - [ ] PR #107 CI green
-- [ ] No em dashes in any changed file
+- [x] No em dashes in any changed file
 - [ ] Both PRs still pointed at `main` and not drifted
 
 ## Follow-ups (captured, NOT done here)
