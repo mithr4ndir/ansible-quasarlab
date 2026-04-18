@@ -1,0 +1,20 @@
+---
+# User that runs the collector. Must match the user that owns the existing
+# node_exporter textfile directory (ladino on command-center1).
+op_quota_user: ladino
+
+# Collector cadence. Every 15 min = 96 runs/day = 9.6% of the 1P Families
+# 1000/day account-wide cap. Tune via host_vars if needed.
+op_quota_schedule: "*:0/15"
+
+# Output path (must be inside the node_exporter textfile directory).
+op_quota_metric_file: /var/lib/node_exporter/textfiles/op_quota.prom
+
+# Where the parser helper is installed.
+op_quota_parser: /usr/local/lib/op-quota-collector/parse.py
+
+# Shared kill-switch library.
+op_quota_killswitch_lib: /home/ladino/code/ansible-quasarlab/scripts/lib/op-killswitch.sh
+
+# Read-only service account token (same one used by the other wrappers).
+op_quota_token_file: "{{ ansible_env.HOME | default('/home/' + op_quota_user) }}/.config/op/service-account-token"

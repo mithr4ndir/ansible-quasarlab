@@ -1,0 +1,18 @@
+# HELP onepassword_ratelimit_used Requests used in the current window.
+# TYPE onepassword_ratelimit_used gauge
+onepassword_ratelimit_used{type="token",action="write"} 0
+onepassword_ratelimit_used{type="token",action="read"} 0
+onepassword_ratelimit_used{type="account",action="read_write"} 1000
+# HELP onepassword_ratelimit_limit Request limit for this window.
+# TYPE onepassword_ratelimit_limit gauge
+onepassword_ratelimit_limit{type="token",action="write"} 100
+onepassword_ratelimit_limit{type="token",action="read"} 1000
+onepassword_ratelimit_limit{type="account",action="read_write"} 1000
+# HELP onepassword_ratelimit_remaining Requests remaining before the window resets.
+# TYPE onepassword_ratelimit_remaining gauge
+onepassword_ratelimit_remaining{type="token",action="write"} 100
+onepassword_ratelimit_remaining{type="token",action="read"} 1000
+onepassword_ratelimit_remaining{type="account",action="read_write"} 0
+# HELP onepassword_ratelimit_reset_seconds Seconds until the limit resets.
+# TYPE onepassword_ratelimit_reset_seconds gauge
+onepassword_ratelimit_reset_seconds{type="account",action="read_write"} 18000

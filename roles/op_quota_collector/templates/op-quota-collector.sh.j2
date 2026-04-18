@@ -1,0 +1,116 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# 1Password quota collector.
+# Runs `op service-account ratelimit`, parses the table through parse.py,
+# writes Prometheus textfile metrics at {{ op_quota_metric_file }}.
+# See k8s-argocd .spec-workflow/specs/1password-quota-monitoring for
+# the alert side of the system. Exits 0 always; failure surfaces via
+# `onepassword_ratelimit_collector_success 0` in the metric file plus
+# a syslog line tagged op-quota-collector with a reason= string.
+set -uo pipefail
+
+METRIC_FILE="{{ op_quota_metric_file }}"
+PARSER="{{ op_quota_parser }}"
+KILLSWITCH_LIB="{{ op_quota_killswitch_lib }}"
+TOKEN_FILE="${OP_TOKEN_FILE:-{{ op_quota_token_file }}}"
+LOG_TAG="op-quota-collector"
+
+# Keep the main metric body stable across failures; only overwrite the
+# trailing success/timestamp lines. We achieve that by extracting the
+# main body from the existing file (if any) and appending fresh trailing
+# gauges on every write.
+finish() {
+    local reason="$1"
+    local success="$2"
+    local tmp
+    tmp="$(mktemp)"
+
+    # Preserve whatever gauges were last written (or empty on first run).
+    if [[ -s "$METRIC_FILE" ]]; then
+        # Strip any prior collector_success / collector_timestamp lines so
+        # we can append fresh ones. Keeps the main body intact across
+        # transient failures.
+        grep -vE '^onepassword_ratelimit_collector_(success|timestamp_seconds)(\s|$)' \
+            "$METRIC_FILE" > "$tmp" || true
+    fi
+
+    {
+        echo "# HELP onepassword_ratelimit_collector_success 1 if the last run succeeded, 0 otherwise."
+        echo "# TYPE onepassword_ratelimit_collector_success gauge"
+        echo "onepassword_ratelimit_collector_success ${success}"
+        echo "# HELP onepassword_ratelimit_collector_timestamp_seconds Unix timestamp of the last collector run."
+        echo "# TYPE onepassword_ratelimit_collector_timestamp_seconds gauge"
+        echo "onepassword_ratelimit_collector_timestamp_seconds $(date +%s)"
+    } >> "$tmp"
+
+    mv "$tmp" "$METRIC_FILE" 2>/dev/null || rm -f "$tmp"
+    chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+    logger -t "$LOG_TAG" "reason=${reason} success=${success}"
+    exit 0
+}
+
+# Ensure the kill-switch library is present and source it. If it is not
+# available we cannot safely call op, since we cannot detect a rate-limit
+# trip. Bail out as a collector failure rather than risk pinning 1P.
+if [[ -f "$KILLSWITCH_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$KILLSWITCH_LIB"
+else
+    finish "killswitch_lib_missing" 0
+fi
+
+# Kill switch already tripped? Skip the op call entirely.
+if op_killswitch_is_active; then
+    finish "killswitch" 0
+fi
+
+# Load the op service account token from the standard location used by
+# the other wrappers. Read-only is sufficient for `service-account ratelimit`.
+if [[ -r "$TOKEN_FILE" ]]; then
+    export OP_SERVICE_ACCOUNT_TOKEN
+    OP_SERVICE_ACCOUNT_TOKEN="$(cat "$TOKEN_FILE")"
+fi
+
+if ! command -v op >/dev/null 2>&1; then
+    finish "op_missing" 0
+fi
+
+if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+    finish "token_missing" 0
+fi
+
+# Run the ratelimit command, capturing stdout and stderr separately so we
+# can scan stderr for rate-limit markers without polluting the metric file.
+op_stdout="$(mktemp)"
+op_stderr="$(mktemp)"
+if ! op service-account ratelimit >"$op_stdout" 2>"$op_stderr"; then
+    # Scan for "Too many requests" etc. If found, trip the kill switch so
+    # every other op caller pauses.
+    op_killswitch_scan_file "$op_stderr" || true
+    cat "$op_stderr" | logger -t "$LOG_TAG" || true
+    rm -f "$op_stdout" "$op_stderr"
+    finish "op_error" 0
+fi
+rm -f "$op_stderr"
+
+# Pipe through the parser; on parser error, keep prior metrics and surface
+# via reason=parse_error.
+new_body="$(mktemp)"
+if ! python3 "$PARSER" < "$op_stdout" > "$new_body" 2>>/tmp/op-quota-parse.err; then
+    cat /tmp/op-quota-parse.err 2>/dev/null | logger -t "$LOG_TAG" || true
+    rm -f /tmp/op-quota-parse.err
+    rm -f "$op_stdout" "$new_body"
+    finish "parse_error" 0
+fi
+rm -f "$op_stdout" /tmp/op-quota-parse.err
+
+# Write the fresh body atomically, then append the trailing collector
+# success/timestamp gauges via finish().
+tmp="$(mktemp)"
+cat "$new_body" > "$tmp"
+rm -f "$new_body"
+mv "$tmp" "$METRIC_FILE" || {
+    finish "write_error" 0
+}
+chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+finish "success" 1
