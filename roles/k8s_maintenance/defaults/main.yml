@@ -1,0 +1,13 @@
+---
+# Weekly etcd defrag schedule (systemd OnCalendar syntax)
+# Sunday 4 AM local time, after the unattended-upgrades window (3 AM)
+etcd_defrag_schedule: "Sun *-*-* 04:00:00"
+
+# etcd pod names in kube-system, one per control-plane node. Override
+# via host_vars or group_vars when the cluster is renamed or resized.
+# The first entry is used as the compact source; any member can issue
+# the compact since etcd replicates it cluster-wide.
+etcd_defrag_pods:
+  - etcd-k8cluster1
+  - etcd-k8cluster2
+  - etcd-k8cluster3
