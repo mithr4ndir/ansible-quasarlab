@@ -12,35 +12,53 @@ TEXTFILE_DIR="{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/te
 PROM_FILE="${TEXTFILE_DIR}/etcd_maintenance.prom"
 LOG_TAG="etcd-defrag"
 
+# Hard timeout for every kubectl exec: a hung kube-apiserver or etcd member
+# must not pin this script indefinitely. 60s is long enough for a healthy
+# compact or defrag cycle but short enough that a stuck call surfaces fast.
+# Exit code 124 from `timeout(1)` maps to the "command timed out" branch.
+KUBECTL_TIMEOUT=60
+
 success=1
 start_time=$(date +%s)
 
 # Step 1: compact to current revision (from any member)
 logger -t "$LOG_TAG" "starting etcd compaction + defrag"
-REV=$(kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w json $CERT_FLAGS 2>/dev/null \
+REV=$(timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w json $CERT_FLAGS 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["Status"]["header"]["revision"])' 2>/dev/null)
 
 if [[ -z "$REV" ]]; then
-    logger -t "$LOG_TAG" "ERROR: could not get etcd revision"
+    logger -t "$LOG_TAG" "ERROR: could not get etcd revision (timeout or parse failure)"
     success=0
 else
     logger -t "$LOG_TAG" "compacting to revision $REV"
-    if ! kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
-        logger -t "$LOG_TAG" "WARNING: compaction returned non-zero (may already be compacted)"
+    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
+        rc=${PIPESTATUS[0]}
+        if [[ "$rc" -eq 124 ]]; then
+            logger -t "$LOG_TAG" "ERROR: compaction timed out after ${KUBECTL_TIMEOUT}s"
+            success=0
+        else
+            logger -t "$LOG_TAG" "WARNING: compaction returned ${rc} (may already be compacted)"
+        fi
     fi
 fi
 
 # Step 2: defrag each member sequentially (defrag briefly pauses the member)
 for pod in {% for pod in etcd_defrag_pods %}{{ pod }} {% endfor %}; do
     logger -t "$LOG_TAG" "defragmenting $pod"
-    if ! kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
-        logger -t "$LOG_TAG" "ERROR: defrag failed on $pod"
+    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
+        rc=${PIPESTATUS[0]}
+        if [[ "$rc" -eq 124 ]]; then
+            logger -t "$LOG_TAG" "ERROR: defrag timed out on $pod after ${KUBECTL_TIMEOUT}s"
+        else
+            logger -t "$LOG_TAG" "ERROR: defrag failed on $pod (rc=${rc})"
+        fi
         success=0
     fi
 done
 
 # Step 3: log final db sizes
-kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w table $CERT_FLAGS --cluster 2>&1 | logger -t "$LOG_TAG"
+timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w table $CERT_FLAGS --cluster 2>&1 | logger -t "$LOG_TAG" || \
+    logger -t "$LOG_TAG" "WARNING: final endpoint status did not complete"
 
 end_time=$(date +%s)
 duration=$(( end_time - start_time ))
