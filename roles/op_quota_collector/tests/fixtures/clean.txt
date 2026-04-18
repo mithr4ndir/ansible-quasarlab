@@ -1,0 +1,4 @@
+TYPE       ACTION        LIMIT    USED    REMAINING    RESET
+token      write         100      0       100          N/A
+token      read          1000     12      988          N/A
+account    read_write    1000     42      958          23 hours and 12 minutes from now

@@ -1,0 +1,145 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# 1Password quota collector.
+# Runs `op service-account ratelimit`, parses the table through parse.py,
+# writes Prometheus textfile metrics at {{ op_quota_metric_file }}.
+# See k8s-argocd .spec-workflow/specs/1password-quota-monitoring for
+# the alert side of the system. Exits 0 always; failure surfaces via
+# `onepassword_ratelimit_collector_success 0` in the metric file plus
+# a syslog line tagged op-quota-collector with a reason= string.
+set -uo pipefail
+
+METRIC_FILE="{{ op_quota_metric_file }}"
+PARSER="{{ op_quota_parser }}"
+KILLSWITCH_LIB="{{ op_quota_killswitch_lib }}"
+TOKEN_FILE="${OP_TOKEN_FILE:-{{ op_quota_token_file }}}"
+LOG_TAG="op-quota-collector"
+
+# Keep the main metric body stable across failures; only overwrite the
+# trailing success/timestamp lines. We achieve that by extracting the
+# main body from the existing file (if any) and appending fresh trailing
+# gauges on every write.
+finish() {
+    local reason="$1"
+    local success="$2"
+    local tmp
+    tmp="$(mktemp)"
+
+    # Preserve whatever gauges were last written (or empty on first run).
+    if [[ -s "$METRIC_FILE" ]]; then
+        # Strip any prior collector_success / collector_timestamp lines AND
+        # their matching HELP/TYPE comments, so we can append a fresh footer
+        # without duplicating comment lines on every run.
+        grep -vE '^(# (HELP|TYPE) )?onepassword_ratelimit_collector_(success|timestamp_seconds)(\s|$)' \
+            "$METRIC_FILE" > "$tmp" || true
+    fi
+
+    {
+        echo "# HELP onepassword_ratelimit_collector_success 1 if the last run succeeded, 0 otherwise."
+        echo "# TYPE onepassword_ratelimit_collector_success gauge"
+        echo "onepassword_ratelimit_collector_success ${success}"
+        echo "# HELP onepassword_ratelimit_collector_timestamp_seconds Unix timestamp of the last collector run."
+        echo "# TYPE onepassword_ratelimit_collector_timestamp_seconds gauge"
+        echo "onepassword_ratelimit_collector_timestamp_seconds $(date +%s)"
+    } >> "$tmp"
+
+    # If the rename fails (e.g. textfile dir unwritable, disk full) we
+    # cannot emit metrics at all. Log loudly so the operator sees a
+    # distinct signal that is different from a "bad quota" reading.
+    # We still exit 0 so the systemd unit does not flap, but the
+    # Prometheus scrape will show the last-known file or nothing,
+    # which is correct behavior for a collector that cannot write.
+    if ! mv "$tmp" "$METRIC_FILE" 2>/dev/null; then
+        rm -f "$tmp"
+        logger -t "$LOG_TAG" "reason=footer_write_failed success=${success} (original reason=${reason})"
+        exit 0
+    fi
+    chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+    logger -t "$LOG_TAG" "reason=${reason} success=${success}"
+    exit 0
+}
+
+# Ensure the kill-switch library is present and source it. If it is not
+# available we cannot safely call op, since we cannot detect a rate-limit
+# trip. Bail out as a collector failure rather than risk pinning 1P.
+if [[ -f "$KILLSWITCH_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$KILLSWITCH_LIB"
+else
+    finish "killswitch_lib_missing" 0
+fi
+
+# Kill switch already tripped? Skip the op call entirely.
+if op_killswitch_is_active; then
+    finish "killswitch" 0
+fi
+
+# Load the op service account token from the standard location used by
+# the other wrappers. Read-only is sufficient for `service-account ratelimit`.
+# Loaded into a local var and passed inline to `op` rather than exported
+# process-wide, so subprocess children (logger, parse.py) never see it.
+OP_TOKEN=""
+if [[ -r "$TOKEN_FILE" ]]; then
+    OP_TOKEN="$(cat "$TOKEN_FILE")"
+fi
+
+if ! command -v op >/dev/null 2>&1; then
+    finish "op_missing" 0
+fi
+
+if [[ -z "$OP_TOKEN" ]]; then
+    finish "token_missing" 0
+fi
+
+# Run the ratelimit command with a 30s hard timeout, capturing stdout and
+# stderr so we can scan BOTH streams for rate-limit markers (op CLI may
+# write the rate-limit warning to either). Timeout exit 124 is treated as
+# an op failure; op exit != 0 is also a failure. On any failure, scan the
+# combined output for markers and trip the kill switch if any match.
+op_stdout="$(mktemp)"
+op_stderr="$(mktemp)"
+op_status=0
+OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN" timeout 30 op service-account ratelimit \
+    >"$op_stdout" 2>"$op_stderr" || op_status=$?
+unset OP_TOKEN
+if [[ "$op_status" -ne 0 ]]; then
+    op_combined="$(mktemp)"
+    cat "$op_stdout" "$op_stderr" > "$op_combined"
+    op_killswitch_scan_file "$op_combined" || true
+    cat "$op_stderr" | logger -t "$LOG_TAG" || true
+    rm -f "$op_stdout" "$op_stderr" "$op_combined"
+    if [[ "$op_status" -eq 124 ]]; then
+        finish "op_timeout" 0
+    fi
+    finish "op_error" 0
+fi
+# Also scan stdout on success - some op versions put warnings there while
+# still exiting 0. If a marker is found we still consume this successful
+# response (we got the data) but flip the kill switch to protect other callers.
+op_killswitch_scan_file "$op_stdout" || true
+rm -f "$op_stderr"
+
+# Pipe through the parser; on parser error, keep prior metrics and surface
+# via reason=parse_error. Use mktemp for the parser stderr so we do not
+# touch a predictable /tmp path (symlink attack surface + unbounded growth
+# if the file were long-lived).
+new_body="$(mktemp)"
+parse_err="$(mktemp)"
+if ! python3 "$PARSER" < "$op_stdout" > "$new_body" 2>"$parse_err"; then
+    logger -t "$LOG_TAG" < "$parse_err" || true
+    rm -f "$op_stdout" "$new_body" "$parse_err"
+    finish "parse_error" 0
+fi
+rm -f "$op_stdout" "$parse_err"
+
+# Write the fresh body atomically, then append the trailing collector
+# success/timestamp gauges via finish().
+tmp="$(mktemp)"
+cat "$new_body" > "$tmp"
+rm -f "$new_body"
+if ! mv "$tmp" "$METRIC_FILE" 2>/dev/null; then
+    rm -f "$tmp"
+    finish "write_error" 0
+fi
+chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+finish "success" 1

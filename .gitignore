@@ -3,3 +3,5 @@
 .vault_pass
 group_vars/vault.yml
 inventory-cache.ini
+__pycache__/
+*.pyc

@@ -1,0 +1,11 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: reload-systemd
+
+- name: Restart op-quota-collector timer
+  ansible.builtin.systemd:
+    name: op-quota-collector.timer
+    state: restarted
+  listen: restart-op-quota-collector

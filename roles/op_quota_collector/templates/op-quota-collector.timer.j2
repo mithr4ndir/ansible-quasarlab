@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic 1Password quota measurement
+
+[Timer]
+OnCalendar={{ op_quota_schedule }}
+AccuracySec=30s
+Persistent=true
+Unit=op-quota-collector.service
+
+[Install]
+WantedBy=timers.target

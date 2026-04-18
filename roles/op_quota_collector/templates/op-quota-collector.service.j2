@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=1Password quota collector (runs `op service-account ratelimit`)
+
+[Service]
+Type=oneshot
+User={{ op_quota_user }}
+Group={{ op_quota_user }}
+ExecStart=/usr/local/bin/op-quota-collector.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
