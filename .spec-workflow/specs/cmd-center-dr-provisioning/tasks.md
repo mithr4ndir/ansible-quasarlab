@@ -2,10 +2,12 @@
 
 ## Phase 1: Refactor existing role
 
-- [ ] 1. Extract existing logic into topical task files
+- [x] 1. Extract existing logic into topical task files (PR #118)
   - Split `roles/cmd_center/tasks/main.yml` into `packages.yml`, `kubeconfig.yml`, `ansible_timers.yml`
-  - Rewrite `main.yml` to be a pure orchestrator using `include_tasks`
-  - Verify existing functionality still works: run playbook with `--check` mode against live cmd-center1, confirm zero unexpected changes
+  - Rewrite `main.yml` as a pure orchestrator using `import_tasks`
+  - All 14 original tasks preserved, each file tagged for selective runs
+  - `ansible-playbook --syntax-check` passes
+  - Open: verify with `--check` mode against live cmd-center1 (post-merge)
   - _Requirements: 2_
 
 ## Phase 2: New task files (dependencies first)
