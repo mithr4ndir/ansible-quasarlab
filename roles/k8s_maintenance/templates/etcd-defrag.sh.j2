@@ -5,6 +5,19 @@
 # See 2026-04-18 RCA: 124MB etcd db caused leader election instability
 # and controller-manager crash-loops. Defrag reclaims physical disk
 # space that compaction alone does not free.
+#
+# stderr scanning rationale (see issue #113):
+# etcdctl often returns exit code 0 even when the server-side operation
+# failed (e.g. a stale leader returned a partial "rpc error" then the
+# client retried and got a misleading success line). Previously we piped
+# the command output through `logger` and trusted the shell pipeline exit
+# status, which meant a compaction that wrote "rpc error: code = ..."
+# to stderr could complete the weekly timer as a success while the etcd
+# db remained un-defragmented. We now capture stdout+stderr to a temp
+# file, scan for known error signatures, log any matches visibly to the
+# script's own stderr (so journalctl shows them next to the unit), and
+# flip `success=0` on any match so the Prometheus textfile gauge and
+# the final exit status both reflect the real outcome.
 set -uo pipefail
 
 CERT_FLAGS="--cacert /etc/kubernetes/pki/etcd/ca.crt --cert /etc/kubernetes/pki/etcd/server.crt --key /etc/kubernetes/pki/etcd/server.key"
@@ -18,8 +31,40 @@ LOG_TAG="etcd-defrag"
 # Exit code 124 from `timeout(1)` maps to the "command timed out" branch.
 KUBECTL_TIMEOUT=60
 
+# Known etcdctl / gRPC error signatures that can appear on stdout or stderr
+# even when the process exits 0. Matched case-insensitively as an ERE.
+# Keep anchored where possible to reduce false positives on benign log lines
+# (e.g. a pod name containing "error" would still match `error` but that is
+# an acceptable over-trigger for a safety check).
+ETCD_ERROR_PATTERNS='rpc error|context deadline exceeded|context canceled|connection refused|member not found|compaction failed|^error|Error:'
+
 success=1
 start_time=$(date +%s)
+
+# scan_output <label> <file>
+# Scan a captured stdout+stderr file for known etcdctl failure signatures.
+# Returns 0 (clean) or 1 (matched). On match, echo matched lines to the
+# script's own stderr prefixed with the label, and also ship them via
+# logger so journalctl -u etcd-defrag.service surfaces them alongside the
+# systemd unit logs. Callers are expected to flip `success=0` on match.
+scan_output() {
+    local label="$1"
+    local file="$2"
+    local matches
+    if [[ ! -s "$file" ]]; then
+        return 0
+    fi
+    matches=$(grep -aEi "$ETCD_ERROR_PATTERNS" "$file" || true)
+    if [[ -n "$matches" ]]; then
+        echo "[${LOG_TAG}] ${label}: detected error signature(s) in etcdctl output:" >&2
+        # Print to the script's stderr so systemd captures it distinctly.
+        echo "$matches" >&2
+        # Also log via syslog so it lands in the shared journal stream.
+        echo "$matches" | logger -t "$LOG_TAG" -p user.err
+        return 1
+    fi
+    return 0
+}
 
 # Step 1: compact to current revision (from any member)
 logger -t "$LOG_TAG" "starting etcd compaction + defrag"
@@ -28,32 +73,51 @@ REV=$(timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods
 
 if [[ -z "$REV" ]]; then
     logger -t "$LOG_TAG" "ERROR: could not get etcd revision (timeout or parse failure)"
+    echo "[${LOG_TAG}] ERROR: could not get etcd revision (timeout or parse failure)" >&2
     success=0
 else
     logger -t "$LOG_TAG" "compacting to revision $REV"
-    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
-        rc=${PIPESTATUS[0]}
+    compact_out=$(mktemp)
+    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl compact "$REV" $CERT_FLAGS >"$compact_out" 2>&1; then
+        rc=$?
         if [[ "$rc" -eq 124 ]]; then
             logger -t "$LOG_TAG" "ERROR: compaction timed out after ${KUBECTL_TIMEOUT}s"
+            echo "[${LOG_TAG}] ERROR: compaction timed out after ${KUBECTL_TIMEOUT}s" >&2
             success=0
         else
             logger -t "$LOG_TAG" "WARNING: compaction returned ${rc} (may already be compacted)"
         fi
     fi
+    # Forward captured output to the journal so existing log consumers
+    # keep seeing per-line compaction messages.
+    logger -t "$LOG_TAG" < "$compact_out" || true
+    # Scan even on rc=0: etcdctl can emit gRPC errors while still exiting 0.
+    if ! scan_output "compact" "$compact_out"; then
+        success=0
+    fi
+    rm -f "$compact_out"
 fi
 
 # Step 2: defrag each member sequentially (defrag briefly pauses the member)
 for pod in {% for pod in etcd_defrag_pods %}{{ pod }} {% endfor %}; do
     logger -t "$LOG_TAG" "defragmenting $pod"
-    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
-        rc=${PIPESTATUS[0]}
+    defrag_out=$(mktemp)
+    if ! timeout "$KUBECTL_TIMEOUT" kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS >"$defrag_out" 2>&1; then
+        rc=$?
         if [[ "$rc" -eq 124 ]]; then
             logger -t "$LOG_TAG" "ERROR: defrag timed out on $pod after ${KUBECTL_TIMEOUT}s"
+            echo "[${LOG_TAG}] ERROR: defrag timed out on $pod after ${KUBECTL_TIMEOUT}s" >&2
         else
             logger -t "$LOG_TAG" "ERROR: defrag failed on $pod (rc=${rc})"
+            echo "[${LOG_TAG}] ERROR: defrag failed on $pod (rc=${rc})" >&2
         fi
         success=0
     fi
+    logger -t "$LOG_TAG" < "$defrag_out" || true
+    if ! scan_output "defrag ${pod}" "$defrag_out"; then
+        success=0
+    fi
+    rm -f "$defrag_out"
 done
 
 # Step 3: log final db sizes
@@ -67,6 +131,7 @@ if [[ $success -eq 1 ]]; then
     logger -t "$LOG_TAG" "completed successfully in ${duration}s"
 else
     logger -t "$LOG_TAG" "completed with errors in ${duration}s"
+    echo "[${LOG_TAG}] completed with errors in ${duration}s (see prior lines)" >&2
 fi
 
 # Write Prometheus metrics
@@ -87,5 +152,14 @@ METRICS
 if ! mv "${PROM_FILE}.tmp" "$PROM_FILE" 2>/dev/null; then
     rm -f "${PROM_FILE}.tmp"
     logger -t "$LOG_TAG" "ERROR: failed to write $PROM_FILE (dir full/unwritable?)"
+    echo "[${LOG_TAG}] ERROR: failed to write $PROM_FILE (dir full/unwritable?)" >&2
 fi
 chmod 644 "$PROM_FILE" 2>/dev/null || true
+
+# Exit non-zero on any detected failure so the systemd unit is marked
+# failed and the OnFailure=-style consumers (journal alerting, textfile
+# scrape) have a second independent signal beyond the Prometheus gauge.
+if [[ $success -ne 1 ]]; then
+    exit 1
+fi
+exit 0
