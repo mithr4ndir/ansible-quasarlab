@@ -1,119 +1,23 @@
-- name: Ensure kubernetes.core collection is installed
-  ansible.builtin.command: ansible-galaxy collection install kubernetes.core --force
-  args:
-    creates: /root/.ansible/collections/ansible_collections/kubernetes/core
-  become: true
+---
+# Orchestrator for the cmd_center role. Task files are included in the
+# order below; each file is standalone and can be run selectively with
+# its matching tag (see the `tags:` key in each file).
+#
+# Planned future task files (per spec cmd-center-dr-provisioning):
+#   cli_tools.yml           helm, yq, gh, terraform
+#   onepassword_token.yml   1P service account token from vault
+#   ssh_keys.yml            SSH keys from 1P via op
+#   linger.yml              loginctl enable-linger for user services
+#   git_repos.yml           clone claude-config and lab repos
+#   claude_bootstrap.yml    run claude-config/bin/bootstrap.sh
+#   node_runtime.yml        standalone Node 22 install
+#   spec_workflow.yml       systemd user unit for dashboard
 
-- name: Install Python packages via apt
-  apt:
-    name:
-      - curl
-      - python3-pip
-      - python3-kubernetes
-      - python3-openshift
-      - python3-yaml
-    state: present
-    update_cache: true
+- name: System packages and Ansible collections
+  ansible.builtin.import_tasks: packages.yml
 
-- name: Ensure .kube directory exists
-  file:
-    path: /home/{{ ansible_user }}/.kube
-    state: directory
-    owner: "{{ ansible_user }}"
-    group: "{{ ansible_user }}"
-    mode: '0700'
+- name: Kubeconfig fetch and install
+  ansible.builtin.import_tasks: kubeconfig.yml
 
-- name: Wait for kubeconfig to exist on first control plane node
-  wait_for:
-    path: /etc/kubernetes/admin.conf
-    timeout: 60
-  delegate_to: "{{ groups['k8s'][0] }}"
-  run_once: true
-
-- name: Fetch kubeconfig from first control plane node
-  fetch:
-    src: /etc/kubernetes/admin.conf
-    dest: /tmp/admin.conf
-    flat: true
-  delegate_to: "{{ groups['k8s'][0] }}"
-  run_once: true
-
-- name: Copy kubeconfig to command center
-  copy:
-    src: /tmp/admin.conf
-    dest: /home/{{ ansible_user }}/.kube/config
-    owner: "{{ ansible_user }}"
-    group: "{{ ansible_user }}"
-    mode: '0600'
-
-- name: Deploy ansible-proxmox systemd service
-  ansible.builtin.template:
-    src: ansible-proxmox.service.j2
-    dest: /etc/systemd/system/ansible-proxmox.service
-    owner: root
-    group: root
-    mode: '0644'
-  notify:
-    - Reload systemd
-    - Restart ansible-proxmox timer
-
-- name: Deploy ansible-proxmox systemd timer
-  ansible.builtin.template:
-    src: ansible-proxmox.timer.j2
-    dest: /etc/systemd/system/ansible-proxmox.timer
-    owner: root
-    group: root
-    mode: '0644'
-  notify:
-    - Reload systemd
-    - Restart ansible-proxmox timer
-
-- name: Enable and start ansible-proxmox timer
-  ansible.builtin.systemd:
-    name: ansible-proxmox.timer
-    enabled: true
-    state: started
-
-- name: Deploy ansible-security systemd service
-  ansible.builtin.template:
-    src: ansible-security.service.j2
-    dest: /etc/systemd/system/ansible-security.service
-    owner: root
-    group: root
-    mode: '0644'
-  notify:
-    - Reload systemd
-    - Restart ansible-security timer
-
-- name: Deploy ansible-security systemd timer
-  ansible.builtin.template:
-    src: ansible-security.timer.j2
-    dest: /etc/systemd/system/ansible-security.timer
-    owner: root
-    group: root
-    mode: '0644'
-  notify:
-    - Reload systemd
-    - Restart ansible-security timer
-
-- name: Enable and start ansible-security timer
-  ansible.builtin.systemd:
-    name: ansible-security.timer
-    enabled: true
-    state: started
-
-- name: Create inventory cache directory
-  ansible.builtin.file:
-    path: /var/lib/ansible-quasarlab
-    state: directory
-    owner: "{{ ansible_user }}"
-    group: "{{ ansible_user }}"
-    mode: '0755'
-
-- name: Make run scripts executable
-  ansible.builtin.file:
-    path: "{{ ansible_repo_path }}/scripts/{{ item }}"
-    mode: '0755'
-  loop:
-    - run-proxmox.sh
-    - run-security.sh
+- name: Periodic Ansible playbook systemd timers
+  ansible.builtin.import_tasks: ansible_timers.yml

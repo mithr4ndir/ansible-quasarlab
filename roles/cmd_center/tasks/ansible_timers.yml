@@ -1,0 +1,97 @@
+---
+# Deploy the two systemd timer/service pairs that run periodic Ansible
+# playbooks on the command center:
+#
+#   ansible-proxmox  runs run-proxmox.sh against the pve group
+#   ansible-security runs run-security.sh against the whole inventory
+#
+# Both units are system-scoped (not user) because they run playbooks
+# that require root access across the fleet.
+
+- name: Deploy ansible-proxmox systemd service
+  ansible.builtin.template:
+    src: ansible-proxmox.service.j2
+    dest: /etc/systemd/system/ansible-proxmox.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-proxmox timer
+  tags:
+    - ansible_timers
+
+- name: Deploy ansible-proxmox systemd timer
+  ansible.builtin.template:
+    src: ansible-proxmox.timer.j2
+    dest: /etc/systemd/system/ansible-proxmox.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-proxmox timer
+  tags:
+    - ansible_timers
+
+- name: Enable and start ansible-proxmox timer
+  ansible.builtin.systemd:
+    name: ansible-proxmox.timer
+    enabled: true
+    state: started
+  tags:
+    - ansible_timers
+
+- name: Deploy ansible-security systemd service
+  ansible.builtin.template:
+    src: ansible-security.service.j2
+    dest: /etc/systemd/system/ansible-security.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-security timer
+  tags:
+    - ansible_timers
+
+- name: Deploy ansible-security systemd timer
+  ansible.builtin.template:
+    src: ansible-security.timer.j2
+    dest: /etc/systemd/system/ansible-security.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ansible-security timer
+  tags:
+    - ansible_timers
+
+- name: Enable and start ansible-security timer
+  ansible.builtin.systemd:
+    name: ansible-security.timer
+    enabled: true
+    state: started
+  tags:
+    - ansible_timers
+
+- name: Create inventory cache directory
+  ansible.builtin.file:
+    path: /var/lib/ansible-quasarlab
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - ansible_timers
+
+- name: Make run scripts executable
+  ansible.builtin.file:
+    path: "{{ ansible_repo_path }}/scripts/{{ item }}"
+    mode: '0755'
+  loop:
+    - run-proxmox.sh
+    - run-security.sh
+  tags:
+    - ansible_timers
