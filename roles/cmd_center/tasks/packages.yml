@@ -1,0 +1,26 @@
+---
+# System-level dependencies for running kubernetes.core Ansible modules
+# and the python clients they rely on. Kept as apt packages (not pip in
+# a venv) because this host runs the Ansible controller role, not an
+# isolated Python app.
+
+- name: Ensure kubernetes.core collection is installed
+  ansible.builtin.command: ansible-galaxy collection install kubernetes.core --force
+  args:
+    creates: /root/.ansible/collections/ansible_collections/kubernetes/core
+  become: true
+  tags:
+    - packages
+
+- name: Install Python packages via apt
+  ansible.builtin.apt:
+    name:
+      - curl
+      - python3-pip
+      - python3-kubernetes
+      - python3-openshift
+      - python3-yaml
+    state: present
+    update_cache: true
+  tags:
+    - packages
