@@ -17,7 +17,7 @@ start_time=$(date +%s)
 
 # Step 1: compact to current revision (from any member)
 logger -t "$LOG_TAG" "starting etcd compaction + defrag"
-REV=$(kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl endpoint status -w json $CERT_FLAGS 2>/dev/null \
+REV=$(kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w json $CERT_FLAGS 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["Status"]["header"]["revision"])' 2>/dev/null)
 
 if [[ -z "$REV" ]]; then
@@ -25,13 +25,13 @@ if [[ -z "$REV" ]]; then
     success=0
 else
     logger -t "$LOG_TAG" "compacting to revision $REV"
-    if ! kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
+    if ! kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
         logger -t "$LOG_TAG" "WARNING: compaction returned non-zero (may already be compacted)"
     fi
 fi
 
 # Step 2: defrag each member sequentially (defrag briefly pauses the member)
-for pod in etcd-k8cluster1 etcd-k8cluster2 etcd-k8cluster3; do
+for pod in {% for pod in etcd_defrag_pods %}{{ pod }} {% endfor %}; do
     logger -t "$LOG_TAG" "defragmenting $pod"
     if ! kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
         logger -t "$LOG_TAG" "ERROR: defrag failed on $pod"
@@ -40,7 +40,7 @@ for pod in etcd-k8cluster1 etcd-k8cluster2 etcd-k8cluster3; do
 done
 
 # Step 3: log final db sizes
-kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl endpoint status -w table $CERT_FLAGS --cluster 2>&1 | logger -t "$LOG_TAG"
+kubectl exec -n kube-system {{ etcd_defrag_pods[0] }} -- etcdctl endpoint status -w table $CERT_FLAGS --cluster 2>&1 | logger -t "$LOG_TAG"
 
 end_time=$(date +%s)
 duration=$(( end_time - start_time ))
@@ -63,5 +63,11 @@ etcd_defrag_timestamp_seconds ${end_time}
 # TYPE etcd_defrag_duration_seconds gauge
 etcd_defrag_duration_seconds ${duration}
 METRICS
-mv "${PROM_FILE}.tmp" "$PROM_FILE" 2>/dev/null || true
+# Fail loudly if the textfile dir is unwritable. The operator needs a
+# distinct signal (not silence) so they can tell "defrag broken" apart
+# from "defrag succeeded, metrics stale because of a full disk".
+if ! mv "${PROM_FILE}.tmp" "$PROM_FILE" 2>/dev/null; then
+    rm -f "${PROM_FILE}.tmp"
+    logger -t "$LOG_TAG" "ERROR: failed to write $PROM_FILE (dir full/unwritable?)"
+fi
 chmod 644 "$PROM_FILE" 2>/dev/null || true
