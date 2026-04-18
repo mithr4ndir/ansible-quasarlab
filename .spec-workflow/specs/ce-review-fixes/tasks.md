@@ -26,15 +26,15 @@ Progress tracked as checkboxes. Each task corresponds to a specific `safe_auto` 
 
 ## Verification
 
-- [ ] PR #109 CI green (GitHub Actions, any ansible-lint or yaml-lint steps)
-- [ ] PR #107 CI green
+- [x] PR #109 CI green (merged 2026-04-18, CI passed)
+- [x] PR #107 CI green (merged 2026-04-18, CI passed)
 - [x] No em dashes in any changed file
-- [ ] Both PRs still pointed at `main` and not drifted
+- [x] Both PRs still pointed at `main` and not drifted (both merged cleanly)
 
 ## Follow-ups (captured, NOT done here)
 
-- [ ] Open issue: role rename `op_quota_collector` -> `op_ratelimit_collector` (cosmetic, keep backward-compatible alias)
-- [ ] Open issue: handler cascade cleanup in `op_quota_collector/handlers/main.yml`
-- [ ] Open issue: compaction-error stderr scanning in `etcd-defrag.sh.j2`
-- [ ] Post-merge: scale `external-secrets` back to 1 replica
-- [ ] Post-merge: redeploy collector so it picks up new `op-killswitch.sh` path
+- [x] Open issue: role rename `op_quota_collector` -> `op_ratelimit_collector` (cosmetic, keep backward-compatible alias) - filed as #111
+- [x] Open issue: handler cascade cleanup in `op_quota_collector/handlers/main.yml` - filed as #112
+- [x] Open issue: compaction-error stderr scanning in `etcd-defrag.sh.j2` - filed as #113
+- [x] Post-merge: scale `external-secrets` back to 1 replica (verified: already at 1 replica, no action needed)
+- [ ] Post-merge: redeploy collector so it picks up new `op-killswitch.sh` path (requires `ansible-playbook playbooks/cmd_center.yml --limit cmd_center --tags op_quota_collector`)
