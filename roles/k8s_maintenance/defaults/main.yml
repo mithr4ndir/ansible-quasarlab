@@ -1,0 +1,4 @@
+---
+# Weekly etcd defrag schedule (systemd OnCalendar syntax)
+# Sunday 4 AM local time, after the unattended-upgrades window (3 AM)
+etcd_defrag_schedule: "Sun *-*-* 04:00:00"

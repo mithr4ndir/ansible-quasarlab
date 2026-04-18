@@ -1,0 +1,67 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Weekly etcd compaction + defragmentation.
+# Runs from command-center via kubectl exec into each etcd pod.
+# See 2026-04-18 RCA: 124MB etcd db caused leader election instability
+# and controller-manager crash-loops. Defrag reclaims physical disk
+# space that compaction alone does not free.
+set -uo pipefail
+
+CERT_FLAGS="--cacert /etc/kubernetes/pki/etcd/ca.crt --cert /etc/kubernetes/pki/etcd/server.crt --key /etc/kubernetes/pki/etcd/server.key"
+TEXTFILE_DIR="{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}"
+PROM_FILE="${TEXTFILE_DIR}/etcd_maintenance.prom"
+LOG_TAG="etcd-defrag"
+
+success=1
+start_time=$(date +%s)
+
+# Step 1: compact to current revision (from any member)
+logger -t "$LOG_TAG" "starting etcd compaction + defrag"
+REV=$(kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl endpoint status -w json $CERT_FLAGS 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["Status"]["header"]["revision"])' 2>/dev/null)
+
+if [[ -z "$REV" ]]; then
+    logger -t "$LOG_TAG" "ERROR: could not get etcd revision"
+    success=0
+else
+    logger -t "$LOG_TAG" "compacting to revision $REV"
+    if ! kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl compact "$REV" $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
+        logger -t "$LOG_TAG" "WARNING: compaction returned non-zero (may already be compacted)"
+    fi
+fi
+
+# Step 2: defrag each member sequentially (defrag briefly pauses the member)
+for pod in etcd-k8cluster1 etcd-k8cluster2 etcd-k8cluster3; do
+    logger -t "$LOG_TAG" "defragmenting $pod"
+    if ! kubectl exec -n kube-system "$pod" -- etcdctl defrag $CERT_FLAGS 2>&1 | logger -t "$LOG_TAG"; then
+        logger -t "$LOG_TAG" "ERROR: defrag failed on $pod"
+        success=0
+    fi
+done
+
+# Step 3: log final db sizes
+kubectl exec -n kube-system etcd-k8cluster1 -- etcdctl endpoint status -w table $CERT_FLAGS --cluster 2>&1 | logger -t "$LOG_TAG"
+
+end_time=$(date +%s)
+duration=$(( end_time - start_time ))
+
+if [[ $success -eq 1 ]]; then
+    logger -t "$LOG_TAG" "completed successfully in ${duration}s"
+else
+    logger -t "$LOG_TAG" "completed with errors in ${duration}s"
+fi
+
+# Write Prometheus metrics
+cat > "${PROM_FILE}.tmp" <<METRICS
+# HELP etcd_defrag_success Whether the last etcd defrag run succeeded (1=success, 0=failure).
+# TYPE etcd_defrag_success gauge
+etcd_defrag_success ${success}
+# HELP etcd_defrag_timestamp_seconds Unix timestamp of the last etcd defrag completion.
+# TYPE etcd_defrag_timestamp_seconds gauge
+etcd_defrag_timestamp_seconds ${end_time}
+# HELP etcd_defrag_duration_seconds Duration of the last etcd defrag run.
+# TYPE etcd_defrag_duration_seconds gauge
+etcd_defrag_duration_seconds ${duration}
+METRICS
+mv "${PROM_FILE}.tmp" "$PROM_FILE" 2>/dev/null || true
+chmod 644 "$PROM_FILE" 2>/dev/null || true

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=etcd compaction + defragmentation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ladino
+Group=ladino
+ExecStart=/usr/local/bin/etcd-defrag.sh
+Environment=KUBECONFIG=/home/ladino/.kube/config
+Nice=10

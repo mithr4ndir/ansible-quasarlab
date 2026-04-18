@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly etcd compaction + defragmentation
+
+[Timer]
+OnCalendar={{ etcd_defrag_schedule }}
+AccuracySec=1h
+Persistent=true
+Unit=etcd-defrag.service
+
+[Install]
+WantedBy=timers.target
