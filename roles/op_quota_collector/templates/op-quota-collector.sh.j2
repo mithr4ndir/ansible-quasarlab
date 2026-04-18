@@ -27,10 +27,10 @@ finish() {
 
     # Preserve whatever gauges were last written (or empty on first run).
     if [[ -s "$METRIC_FILE" ]]; then
-        # Strip any prior collector_success / collector_timestamp lines so
-        # we can append fresh ones. Keeps the main body intact across
-        # transient failures.
-        grep -vE '^onepassword_ratelimit_collector_(success|timestamp_seconds)(\s|$)' \
+        # Strip any prior collector_success / collector_timestamp lines AND
+        # their matching HELP/TYPE comments, so we can append a fresh footer
+        # without duplicating comment lines on every run.
+        grep -vE '^(# (HELP|TYPE) )?onepassword_ratelimit_collector_(success|timestamp_seconds)(\s|$)' \
             "$METRIC_FILE" > "$tmp" || true
     fi
 
@@ -76,31 +76,47 @@ fi
 
 # Load the op service account token from the standard location used by
 # the other wrappers. Read-only is sufficient for `service-account ratelimit`.
+# Loaded into a local var and passed inline to `op` rather than exported
+# process-wide, so subprocess children (logger, parse.py) never see it.
+OP_TOKEN=""
 if [[ -r "$TOKEN_FILE" ]]; then
-    export OP_SERVICE_ACCOUNT_TOKEN
-    OP_SERVICE_ACCOUNT_TOKEN="$(cat "$TOKEN_FILE")"
+    OP_TOKEN="$(cat "$TOKEN_FILE")"
 fi
 
 if ! command -v op >/dev/null 2>&1; then
     finish "op_missing" 0
 fi
 
-if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+if [[ -z "$OP_TOKEN" ]]; then
     finish "token_missing" 0
 fi
 
-# Run the ratelimit command, capturing stdout and stderr separately so we
-# can scan stderr for rate-limit markers without polluting the metric file.
+# Run the ratelimit command with a 30s hard timeout, capturing stdout and
+# stderr so we can scan BOTH streams for rate-limit markers (op CLI may
+# write the rate-limit warning to either). Timeout exit 124 is treated as
+# an op failure; op exit != 0 is also a failure. On any failure, scan the
+# combined output for markers and trip the kill switch if any match.
 op_stdout="$(mktemp)"
 op_stderr="$(mktemp)"
-if ! op service-account ratelimit >"$op_stdout" 2>"$op_stderr"; then
-    # Scan for "Too many requests" etc. If found, trip the kill switch so
-    # every other op caller pauses.
-    op_killswitch_scan_file "$op_stderr" || true
+op_status=0
+OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN" timeout 30 op service-account ratelimit \
+    >"$op_stdout" 2>"$op_stderr" || op_status=$?
+unset OP_TOKEN
+if [[ "$op_status" -ne 0 ]]; then
+    op_combined="$(mktemp)"
+    cat "$op_stdout" "$op_stderr" > "$op_combined"
+    op_killswitch_scan_file "$op_combined" || true
     cat "$op_stderr" | logger -t "$LOG_TAG" || true
-    rm -f "$op_stdout" "$op_stderr"
+    rm -f "$op_stdout" "$op_stderr" "$op_combined"
+    if [[ "$op_status" -eq 124 ]]; then
+        finish "op_timeout" 0
+    fi
     finish "op_error" 0
 fi
+# Also scan stdout on success - some op versions put warnings there while
+# still exiting 0. If a marker is found we still consume this successful
+# response (we got the data) but flip the kill switch to protect other callers.
+op_killswitch_scan_file "$op_stdout" || true
 rm -f "$op_stderr"
 
 # Pipe through the parser; on parser error, keep prior metrics and surface

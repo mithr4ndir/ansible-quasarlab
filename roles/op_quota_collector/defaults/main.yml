@@ -13,8 +13,10 @@ op_quota_metric_file: /var/lib/node_exporter/textfiles/op_quota.prom
 # Where the parser helper is installed.
 op_quota_parser: /usr/local/lib/op-quota-collector/parse.py
 
-# Shared kill-switch library.
-op_quota_killswitch_lib: /home/ladino/code/ansible-quasarlab/scripts/lib/op-killswitch.sh
+# Shared kill-switch library (installed by this role).
+op_quota_killswitch_lib: /usr/local/lib/op-quota-collector/op-killswitch.sh
 
 # Read-only service account token (same one used by the other wrappers).
-op_quota_token_file: "{{ ansible_env.HOME | default('/home/' + op_quota_user) }}/.config/op/service-account-token"
+# Literal path (not ansible_env.HOME) because the play runs as become=yes and
+# HOME would be /root, not op_quota_user's home.
+op_quota_token_file: "/home/{{ op_quota_user }}/.config/op/service-account-token"

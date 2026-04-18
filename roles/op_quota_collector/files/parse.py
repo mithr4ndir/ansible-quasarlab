@@ -17,6 +17,11 @@ from typing import Optional
 
 EXPECTED_HEADER_COLS = ["TYPE", "ACTION", "LIMIT", "USED", "REMAINING", "RESET"]
 
+# Allowlist for type/action label values. Rejects anything the CLI emits
+# outside [a-z0-9_]+ (case-insensitive) so a malformed or adversarial response
+# cannot inject Prometheus label syntax (quotes, braces, newlines).
+LABEL_ALLOWED = re.compile(r"^[A-Za-z0-9_]+$")
+
 
 def fail(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
@@ -24,20 +29,33 @@ def fail(msg: str) -> None:
 
 
 def parse_reset(cell: str) -> Optional[int]:
-    """Convert reset strings like '5 hours from now' or '23 hours and 59 minutes from now' to seconds. Returns None for 'N/A'."""
+    """Convert reset strings like '5 hours from now', '30 minutes from now',
+    '45 seconds from now', or '23 hours and 59 minutes from now' to seconds.
+    Returns None for 'N/A', 'Never', empty, or any shape we do not recognize.
+    Unknown shapes log to stderr so operators can extend the parser if the
+    CLI format shifts, without failing the whole collector run."""
     cell = cell.strip()
-    if not cell or cell.upper() == "N/A":
+    if not cell:
+        return None
+    upper = cell.upper()
+    if upper in ("N/A", "NEVER"):
         return None
     m = re.match(
-        r"^(?:(\d+)\s+hours?)?(?:\s*and\s*)?(?:(\d+)\s+minutes?)?\s+from now$",
+        r"^(?:(\d+)\s+hours?)?"
+        r"(?:\s*(?:and\s*)?(\d+)\s+minutes?)?"
+        r"(?:\s*(?:and\s*)?(\d+)\s+seconds?)?"
+        r"\s+from now$",
         cell,
         re.IGNORECASE,
     )
-    if not m or (not m.group(1) and not m.group(2)):
-        fail(f"unrecognized reset value: {cell!r}")
+    if not m or not any(m.group(i) for i in (1, 2, 3)):
+        print(f"warn: unrecognized reset value, emitting no reset metric: {cell!r}",
+              file=sys.stderr)
+        return None
     hours = int(m.group(1) or 0)
     minutes = int(m.group(2) or 0)
-    return hours * 3600 + minutes * 60
+    seconds = int(m.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def parse_int(cell: str, col: str) -> int:
@@ -50,6 +68,23 @@ def parse_int(cell: str, col: str) -> int:
 
 
 def emit(rows: list[dict]) -> None:
+    # Defense in depth: drop any row whose TYPE or ACTION contains chars
+    # outside the allowlist. Prevents label injection if the CLI ever
+    # emits unexpected content. Rejected rows are logged to stderr.
+    clean: list[dict] = []
+    for r in rows:
+        if not LABEL_ALLOWED.match(r["type"]) or not LABEL_ALLOWED.match(r["action"]):
+            print(
+                f"warn: dropping row with non-allowlisted labels: "
+                f"type={r['type']!r} action={r['action']!r}",
+                file=sys.stderr,
+            )
+            continue
+        clean.append(r)
+    if not clean:
+        fail("no rows survived label allowlist")
+    rows = clean
+
     out: list[str] = []
     # used
     out.append("# HELP onepassword_ratelimit_used Requests used in the current window.")

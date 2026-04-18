@@ -19,6 +19,16 @@
   notify:
     - restart-op-quota-collector
 
+- name: Install shared op-killswitch.sh library
+  ansible.builtin.copy:
+    src: op-killswitch.sh
+    dest: "{{ op_quota_killswitch_lib }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify:
+    - restart-op-quota-collector
+
 - name: Install collector script
   ansible.builtin.template:
     src: op-quota-collector.sh.j2
@@ -63,16 +73,22 @@
 # Prime run so Prometheus has data on the very next scrape. Runs as the
 # collector user (not root) to match production execution context.
 #
+# Gated on absence of the metric file so repeated playbook runs do NOT burn
+# a 1Password quota read every time. The systemd timer takes over on schedule.
+#
 # `failed_when: false` is intentional here: the collector script always
 # exits 0 by design, surfacing failure through the
 # `onepassword_ratelimit_collector_success` gauge rather than a non-zero
-# exit code. A non-zero exit would flap the systemd service and pollute
-# `systemctl --failed`. If the first run has an issue, it shows up in
-# syslog (tagged op-quota-collector) and in the Prometheus metric, not
-# in Ansible's task result.
+# exit code.
+- name: Check for existing metric file
+  ansible.builtin.stat:
+    path: "{{ op_quota_metric_file }}"
+  register: op_quota_metric_stat
+
 - name: Prime first collector run
   ansible.builtin.command: /usr/local/bin/op-quota-collector.sh
   become: true
   become_user: "{{ op_quota_user }}"
   changed_when: false
   failed_when: false
+  when: not op_quota_metric_stat.stat.exists
