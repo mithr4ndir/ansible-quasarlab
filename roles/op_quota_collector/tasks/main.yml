@@ -9,6 +9,9 @@
     group: root
     mode: '0755'
 
+# Code file changes do not notify handlers. The collector is a oneshot
+# service triggered by the timer; the next scheduled fire picks up new
+# code automatically. See handlers/main.yml for policy rationale.
 - name: Install parse.py helper
   ansible.builtin.copy:
     src: parse.py
@@ -16,8 +19,6 @@
     owner: root
     group: root
     mode: '0755'
-  notify:
-    - restart-op-quota-collector
 
 - name: Install shared op-killswitch.sh library
   ansible.builtin.copy:
@@ -26,8 +27,6 @@
     owner: root
     group: root
     mode: '0755'
-  notify:
-    - restart-op-quota-collector
 
 - name: Install collector script
   ansible.builtin.template:
@@ -36,8 +35,6 @@
     owner: root
     group: root
     mode: '0755'
-  notify:
-    - restart-op-quota-collector
 
 - name: Install systemd service unit
   ansible.builtin.template:
@@ -48,7 +45,6 @@
     mode: '0644'
   notify:
     - reload-systemd
-    - restart-op-quota-collector
 
 - name: Install systemd timer unit
   ansible.builtin.template:
@@ -59,7 +55,7 @@
     mode: '0644'
   notify:
     - reload-systemd
-    - restart-op-quota-collector
+    - restart-op-quota-collector-timer
 
 - name: Flush handlers so timer is reloaded before we enable it
   ansible.builtin.meta: flush_handlers

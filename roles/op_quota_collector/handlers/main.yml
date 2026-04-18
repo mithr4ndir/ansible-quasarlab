@@ -1,5 +1,20 @@
 ---
-- name: Reload systemd
+# Handler chain for op_quota_collector:
+#
+#   reload-systemd                  systemctl daemon-reload
+#   restart-op-quota-collector-timer  systemctl restart op-quota-collector.timer
+#
+# Notification policy:
+#   - Code file changes (parse.py, op-killswitch.sh, collector script) do
+#     NOT notify anything. The collector is a oneshot service triggered
+#     by the timer; the next scheduled fire picks up new code automatically.
+#   - Service unit changes notify reload-systemd only. The service is not
+#     long-running; restarting it has no effect outside of a timer fire.
+#   - Timer unit changes notify both reload-systemd and restart-timer so
+#     the new schedule takes effect immediately instead of after the next
+#     fire at the old cadence.
+
+- name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true
   listen: reload-systemd
@@ -8,4 +23,4 @@
   ansible.builtin.systemd:
     name: op-quota-collector.timer
     state: restarted
-  listen: restart-op-quota-collector
+  listen: restart-op-quota-collector-timer
