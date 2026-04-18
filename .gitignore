@@ -6,3 +6,4 @@ inventory-cache.ini
 __pycache__/
 *.pyc
 .mcp.json
+.claude/worktrees/

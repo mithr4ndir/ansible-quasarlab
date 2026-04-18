@@ -8,4 +8,4 @@
     - k8s/cni
     - k8s/argocd
     - k8s_maintenance
-    - op_quota_collector
+    - op_ratelimit_collector
