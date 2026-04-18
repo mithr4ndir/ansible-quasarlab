@@ -43,7 +43,17 @@ finish() {
         echo "onepassword_ratelimit_collector_timestamp_seconds $(date +%s)"
     } >> "$tmp"
 
-    mv "$tmp" "$METRIC_FILE" 2>/dev/null || rm -f "$tmp"
+    # If the rename fails (e.g. textfile dir unwritable, disk full) we
+    # cannot emit metrics at all. Log loudly so the operator sees a
+    # distinct signal that is different from a "bad quota" reading.
+    # We still exit 0 so the systemd unit does not flap, but the
+    # Prometheus scrape will show the last-known file or nothing,
+    # which is correct behavior for a collector that cannot write.
+    if ! mv "$tmp" "$METRIC_FILE" 2>/dev/null; then
+        rm -f "$tmp"
+        logger -t "$LOG_TAG" "reason=footer_write_failed success=${success} (original reason=${reason})"
+        exit 0
+    fi
     chmod 0644 "$METRIC_FILE" 2>/dev/null || true
     logger -t "$LOG_TAG" "reason=${reason} success=${success}"
     exit 0
@@ -94,23 +104,26 @@ fi
 rm -f "$op_stderr"
 
 # Pipe through the parser; on parser error, keep prior metrics and surface
-# via reason=parse_error.
+# via reason=parse_error. Use mktemp for the parser stderr so we do not
+# touch a predictable /tmp path (symlink attack surface + unbounded growth
+# if the file were long-lived).
 new_body="$(mktemp)"
-if ! python3 "$PARSER" < "$op_stdout" > "$new_body" 2>>/tmp/op-quota-parse.err; then
-    cat /tmp/op-quota-parse.err 2>/dev/null | logger -t "$LOG_TAG" || true
-    rm -f /tmp/op-quota-parse.err
-    rm -f "$op_stdout" "$new_body"
+parse_err="$(mktemp)"
+if ! python3 "$PARSER" < "$op_stdout" > "$new_body" 2>"$parse_err"; then
+    logger -t "$LOG_TAG" < "$parse_err" || true
+    rm -f "$op_stdout" "$new_body" "$parse_err"
     finish "parse_error" 0
 fi
-rm -f "$op_stdout" /tmp/op-quota-parse.err
+rm -f "$op_stdout" "$parse_err"
 
 # Write the fresh body atomically, then append the trailing collector
 # success/timestamp gauges via finish().
 tmp="$(mktemp)"
 cat "$new_body" > "$tmp"
 rm -f "$new_body"
-mv "$tmp" "$METRIC_FILE" || {
+if ! mv "$tmp" "$METRIC_FILE" 2>/dev/null; then
+    rm -f "$tmp"
     finish "write_error" 0
-}
+fi
 chmod 0644 "$METRIC_FILE" 2>/dev/null || true
 finish "success" 1

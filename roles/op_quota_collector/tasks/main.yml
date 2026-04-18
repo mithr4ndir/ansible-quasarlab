@@ -62,6 +62,14 @@
 
 # Prime run so Prometheus has data on the very next scrape. Runs as the
 # collector user (not root) to match production execution context.
+#
+# `failed_when: false` is intentional here: the collector script always
+# exits 0 by design, surfacing failure through the
+# `onepassword_ratelimit_collector_success` gauge rather than a non-zero
+# exit code. A non-zero exit would flap the systemd service and pollute
+# `systemctl --failed`. If the first run has an issue, it shows up in
+# syslog (tagged op-quota-collector) and in the Prometheus metric, not
+# in Ansible's task result.
 - name: Prime first collector run
   ansible.builtin.command: /usr/local/bin/op-quota-collector.sh
   become: true
