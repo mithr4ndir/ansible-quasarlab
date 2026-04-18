@@ -1,5 +1,5 @@
 ---
-# Handler chain for op_quota_collector:
+# Handler chain for op_ratelimit_collector:
 #
 #   reload-systemd                  systemctl daemon-reload
 #   restart-op-quota-collector-timer  systemctl restart op-quota-collector.timer

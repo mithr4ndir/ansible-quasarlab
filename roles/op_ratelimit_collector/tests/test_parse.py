@@ -1,10 +1,10 @@
-"""Regression tests for op_quota_collector parse.py.
+"""Regression tests for op_ratelimit_collector parse.py.
 
 Run from the role directory:
     python3 -m unittest discover tests
 
 Or from the repo root:
-    python3 -m unittest discover roles/op_quota_collector/tests
+    python3 -m unittest discover roles/op_ratelimit_collector/tests
 """
 
 from __future__ import annotations
