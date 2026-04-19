@@ -1,0 +1,46 @@
+---
+# Clone the homelab git repos onto the command center. claude-config
+# must come first because its bin/bootstrap.sh (invoked by
+# claude_bootstrap.yml) creates the ~/.claude symlinks that other repos
+# depend on for spec-workflow and memory.
+#
+# Uses `update: false` so that existing local commits are never
+# clobbered by re-runs. Re-cloning an already-present repo is a no-op.
+#
+# Requires SSH keys deployed to ~/.ssh (from ssh_keys.yml) for the
+# git@github.com URLs to authenticate.
+
+- name: Ensure code directory exists
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/code"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - git_repos
+
+- name: Clone claude-config first (needed by claude_bootstrap.yml)
+  ansible.builtin.git:
+    repo: "{{ (lab_repos | selectattr('name', 'equalto', 'claude-config') | list | first).url }}"
+    dest: "/home/{{ ansible_user }}/code/claude-config"
+    update: false
+    accept_hostkey: true
+  become: true
+  become_user: "{{ ansible_user }}"
+  tags:
+    - git_repos
+
+- name: Clone remaining lab repos
+  ansible.builtin.git:
+    repo: "{{ item.url }}"
+    dest: "/home/{{ ansible_user }}/code/{{ item.name }}"
+    update: false
+    accept_hostkey: true
+  become: true
+  become_user: "{{ ansible_user }}"
+  loop: "{{ lab_repos | rejectattr('name', 'equalto', 'claude-config') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags:
+    - git_repos

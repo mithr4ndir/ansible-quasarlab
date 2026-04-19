@@ -6,8 +6,6 @@
 # Planned future task files (per spec cmd-center-dr-provisioning):
 #   onepassword_token.yml   1P service account token from vault
 #   ssh_keys.yml            SSH keys from 1P via op
-#   git_repos.yml           clone claude-config and lab repos
-#   claude_bootstrap.yml    run claude-config/bin/bootstrap.sh
 
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
@@ -23,6 +21,12 @@
 
 - name: Enable systemd linger for user services
   ansible.builtin.import_tasks: linger.yml
+
+- name: Clone homelab git repos
+  ansible.builtin.import_tasks: git_repos.yml
+
+- name: Bootstrap claude-config symlinks and settings
+  ansible.builtin.import_tasks: claude_bootstrap.yml
 
 - name: Standalone Node.js runtime for user-scoped tools
   ansible.builtin.import_tasks: node_runtime.yml

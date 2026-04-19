@@ -1,0 +1,65 @@
+---
+# Run the claude-config repo's bootstrap.sh to install Claude Code
+# settings, memory symlinks, MCP config, agents, and commands.
+#
+# The script is idempotent: it checks for existing symlinks and
+# settings before writing, so this task is safe to re-run.
+#
+# Depends on: git_repos.yml (claude-config must be cloned first).
+
+- name: Check claude-config bootstrap script exists
+  ansible.builtin.stat:
+    path: "/home/{{ ansible_user }}/code/claude-config/bin/bootstrap.sh"
+  register: cmd_center_claude_bootstrap_stat
+  tags:
+    - claude_bootstrap
+
+- name: Fail if claude-config repo was not cloned
+  ansible.builtin.fail:
+    msg: "claude-config/bin/bootstrap.sh is missing. Run git_repos.yml first."
+  when: not cmd_center_claude_bootstrap_stat.stat.exists
+  tags:
+    - claude_bootstrap
+
+- name: Run claude-config bootstrap.sh
+  ansible.builtin.command: /home/{{ ansible_user }}/code/claude-config/bin/bootstrap.sh
+  become: true
+  become_user: "{{ ansible_user }}"
+  register: cmd_center_claude_bootstrap_out
+  changed_when: "'created' in cmd_center_claude_bootstrap_out.stdout | lower or 'updated' in cmd_center_claude_bootstrap_out.stdout | lower"
+  tags:
+    - claude_bootstrap
+
+- name: Verify auto-memory symlink is in place
+  ansible.builtin.stat:
+    path: "/home/{{ ansible_user }}/.claude/projects/-home-{{ ansible_user }}/memory"
+  register: cmd_center_auto_memory_stat
+  tags:
+    - claude_bootstrap
+
+- name: Assert auto-memory points at claude-config/memory
+  ansible.builtin.assert:
+    that:
+      - cmd_center_auto_memory_stat.stat.islnk | default(false)
+      - cmd_center_auto_memory_stat.stat.lnk_target == "/home/" ~ ansible_user ~ "/code/claude-config/memory"
+    fail_msg: "Auto-memory symlink is missing or points somewhere unexpected"
+    success_msg: "Auto-memory symlinked to claude-config/memory as expected"
+  tags:
+    - claude_bootstrap
+
+- name: Verify memory-bank symlink is in place
+  ansible.builtin.stat:
+    path: "/home/{{ ansible_user }}/.claude/memory"
+  register: cmd_center_memory_bank_stat
+  tags:
+    - claude_bootstrap
+
+- name: Assert memory-bank points at claude-config/memory
+  ansible.builtin.assert:
+    that:
+      - cmd_center_memory_bank_stat.stat.islnk | default(false)
+      - cmd_center_memory_bank_stat.stat.lnk_target == "/home/" ~ ansible_user ~ "/code/claude-config/memory"
+    fail_msg: "Memory-bank symlink is missing or points somewhere unexpected"
+    success_msg: "Memory-bank symlinked to claude-config/memory as expected"
+  tags:
+    - claude_bootstrap
