@@ -4,7 +4,6 @@
 # its matching tag (see the `tags:` key in each file).
 #
 # Planned future task files (per spec cmd-center-dr-provisioning):
-#   cli_tools.yml           helm, yq, gh, terraform
 #   onepassword_token.yml   1P service account token from vault
 #   ssh_keys.yml            SSH keys from 1P via op
 #   git_repos.yml           clone claude-config and lab repos
@@ -12,6 +11,9 @@
 
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
+
+- name: CLI tools (gh, terraform, helm, yq, jq)
+  ansible.builtin.import_tasks: cli_tools.yml
 
 - name: Kubeconfig fetch and install
   ansible.builtin.import_tasks: kubeconfig.yml

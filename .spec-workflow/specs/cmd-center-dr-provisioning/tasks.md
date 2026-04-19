@@ -12,12 +12,15 @@
 
 ## Phase 2: New task files (dependencies first)
 
-- [ ] 2. Add CLI tools installation
+- [x] 2. Add CLI tools installation
   - File: `roles/cmd_center/tasks/cli_tools.yml`
-  - Install via apt where available: `jq`, `gh` (via hashicorp GPG key + repo), `yq` (binary from GitHub releases if not in apt)
-  - Install `helm` via helm.sh script or binary tarball
-  - Install `terraform` via hashicorp apt repo
-  - Verify `op` is handled by the existing `onepassword_cli` role (include it as a role dependency if needed)
+  - jq installed via apt
+  - gh via official cli.github.com apt repo (keyring in /etc/apt/keyrings)
+  - terraform via hashicorp apt repo (keyring in /etc/apt/keyrings)
+  - helm as pinned versioned binary in /usr/local/bin with a `helm` symlink
+  - yq as pinned versioned binary in /usr/local/bin with a `yq` symlink
+  - `op` is not installed here; the existing `onepassword_cli` role in the playbook handles it
+  - Final verify step runs each tool's `--version` to confirm it is on PATH
   - _Requirements: 1_
 
 - [ ] 3. Add 1Password service account token deployment
