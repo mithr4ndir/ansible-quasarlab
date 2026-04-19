@@ -1,0 +1,51 @@
+---
+# Install a standalone Node.js runtime at ~/.local/lib/nodejs/ for the
+# ansible_user. Required by the spec-workflow dashboard because the
+# Ubuntu apt Node (18.x) is too old for its dependencies (vite 8,
+# tailwindcss/oxide, find-my-way all require Node >= 20).
+#
+# Keeps Node 22 isolated to the user scope so it cannot collide with
+# system Node or other apt packages that depend on the system version.
+#
+# Idempotency: creates: on the unarchive step skips re-download when
+# the versioned directory already exists.
+
+- name: Ensure Node install parent directory exists
+  ansible.builtin.file:
+    path: "{{ node_install_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - node
+
+- name: Download and extract Node.js tarball
+  ansible.builtin.unarchive:
+    src: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+    dest: "{{ node_install_dir }}"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    creates: "{{ node_install_dir }}/node-v{{ node_version }}-linux-x64/bin/node"
+  tags:
+    - node
+
+- name: Symlink node version to 'current'
+  ansible.builtin.file:
+    src: "{{ node_install_dir }}/node-v{{ node_version }}-linux-x64"
+    dest: "{{ node_install_dir }}/current"
+    state: link
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    force: true
+  tags:
+    - node
+
+- name: Verify Node version
+  ansible.builtin.command: "{{ node_install_dir }}/current/bin/node --version"
+  register: cmd_center_node_version_out
+  changed_when: false
+  failed_when: cmd_center_node_version_out.stdout | trim != ('v' ~ node_version)
+  tags:
+    - node

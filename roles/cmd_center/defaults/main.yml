@@ -1,2 +1,16 @@
 ---
 ansible_repo_path: /home/{{ ansible_user }}/code/ansible-quasarlab
+
+# Node.js runtime (standalone install for user-scoped tools like the
+# spec-workflow dashboard, isolated from system apt Node).
+node_version: "22.16.0"
+node_install_dir: "/home/{{ ansible_user }}/.local/lib/nodejs"
+
+# spec-workflow dashboard systemd user service.
+# Binds to 0.0.0.0 by default so other hosts on the home lab LAN can
+# reach it. CORS disabled because the dashboard's built-in allowlist
+# only covers localhost, not LAN IPs.
+spec_workflow_port: 5000
+spec_workflow_bind_address: "0.0.0.0"
+spec_workflow_allow_external_access: true
+spec_workflow_cors_enabled: false
