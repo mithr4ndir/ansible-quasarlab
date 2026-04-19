@@ -12,3 +12,27 @@
   ansible.builtin.systemd:
     name: ansible-security.timer
     state: restarted
+
+# User systemd handlers for the spec-workflow dashboard. Run as the
+# ansible_user with the environment needed to talk to the user systemd
+# instance (XDG_RUNTIME_DIR and DBUS session bus address).
+- name: Reload user systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+    scope: user
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid | default(1000) }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid | default(1000) }}/bus"
+
+- name: Restart spec-workflow-dashboard
+  ansible.builtin.systemd:
+    name: spec-workflow-dashboard
+    scope: user
+    state: restarted
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid | default(1000) }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid | default(1000) }}/bus"

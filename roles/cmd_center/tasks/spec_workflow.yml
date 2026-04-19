@@ -1,0 +1,52 @@
+---
+# Deploy the spec-workflow-mcp dashboard as a systemd user service.
+# Runs under ansible_user (not root) so it can read the user's
+# ~/.claude and ~/code directories without capability escalation.
+#
+# Depends on:
+#   - node_runtime.yml  for Node 22 at ~/.local/lib/nodejs/current/
+#   - linger.yml        so the service survives logout and starts at boot
+#
+# The dashboard binds to 0.0.0.0 by default (home lab LAN reach) and
+# disables CORS so other hosts on the LAN can load the web UI. Override
+# via defaults if you want localhost-only binding.
+
+- name: Ensure systemd user unit directory exists
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - spec_workflow
+
+- name: Deploy spec-workflow-dashboard systemd user unit
+  ansible.builtin.template:
+    src: spec-workflow-dashboard.service.j2
+    dest: "/home/{{ ansible_user }}/.config/systemd/user/spec-workflow-dashboard.service"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+  notify:
+    - Reload user systemd
+    - Restart spec-workflow-dashboard
+  tags:
+    - spec_workflow
+
+- name: Flush handlers so the unit is reloaded before we enable it
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start spec-workflow-dashboard
+  ansible.builtin.systemd:
+    name: spec-workflow-dashboard
+    scope: user
+    enabled: true
+    state: started
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid | default(1000) }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid | default(1000) }}/bus"
+  tags:
+    - spec_workflow

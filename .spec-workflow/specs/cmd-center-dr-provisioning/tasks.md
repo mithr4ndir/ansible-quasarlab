@@ -36,11 +36,10 @@
   - `no_log: true` on all secret-handling tasks
   - _Requirements: 3_
 
-- [ ] 5. Add systemd linger enablement
+- [x] 5. Add systemd linger enablement
   - File: `roles/cmd_center/tasks/linger.yml`
-  - Check `/var/lib/systemd/linger/{{ ansible_user }}` existence first (idempotency guard)
-  - Run `loginctl enable-linger {{ ansible_user }}` if not present
-  - Requires `become: true`
+  - Stat check on `/var/lib/systemd/linger/{{ ansible_user }}` guards idempotency
+  - `loginctl enable-linger` runs with `become: true` when marker missing
   - _Requirements: 5_
 
 ## Phase 3: New task files (application layer)
@@ -61,43 +60,37 @@
   - Verify: `~/.claude/projects/-home-ladino/memory` is a symlink to `~/code/claude-config/memory`
   - _Requirements: 4_
 
-- [ ] 8. Add Node 22 standalone install
+- [x] 8. Add Node 22 standalone install
   - File: `roles/cmd_center/tasks/node_runtime.yml`
-  - Download `node-v{{ node_version }}-linux-x64.tar.xz` from nodejs.org
-  - Extract to `/home/{{ ansible_user }}/.local/lib/nodejs/`
-  - Create symlink `current` pointing to the versioned directory
-  - Use `creates:` argument for idempotency
-  - Verify `~/.local/lib/nodejs/current/bin/node --version` returns the expected version
+  - Unarchive with `creates:` for idempotency, download skipped when target exists
+  - `current` symlink maintained with `state: link force: true`
+  - Version verification step uses `failed_when` to assert expected v{{ node_version }}
   - _Requirements: 1, 2_
 
-- [ ] 9. Add spec-workflow dashboard service
-  - File: `roles/cmd_center/tasks/spec_workflow.yml`
-  - Template: `roles/cmd_center/templates/spec-workflow-dashboard.service.j2`
-  - Deploy unit to `~/.config/systemd/user/spec-workflow-dashboard.service`
-  - Notify handler: systemctl --user daemon-reload + restart
-  - Enable and start: `systemd: name=spec-workflow-dashboard scope=user enabled=true state=started`
-  - Verify: `curl http://127.0.0.1:5000` returns HTTP 200
+- [x] 9. Add spec-workflow dashboard service
+  - File: `roles/cmd_center/tasks/spec_workflow.yml` and `templates/spec-workflow-dashboard.service.j2`
+  - User-scoped systemd unit, templated port and bind address from defaults
+  - Flushes handlers before enable so a fresh unit is picked up on first deploy
+  - User systemd handlers added with XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS environment
   - _Requirements: 1, 5_
 
 ## Phase 4: Orchestration and variables
 
-- [ ] 10. Rewrite main.yml as orchestrator
+- [x] 10. Rewrite main.yml as orchestrator (partial)
   - File: `roles/cmd_center/tasks/main.yml`
-  - Sequence per design.md Orchestration Order section
-  - Each line is `- include_tasks: <filename>`
-  - Add tags per task file (e.g., `tags: [packages]`, `tags: [node]`) for selective runs
+  - Currently orchestrates: packages, kubeconfig, ansible_timers, linger, node_runtime, spec_workflow
+  - Pending addition: cli_tools, onepassword_token, ssh_keys, git_repos, claude_bootstrap (later phases)
   - _Requirements: 1_
 
-- [ ] 11. Update defaults
+- [x] 11. Update defaults (partial)
   - File: `roles/cmd_center/defaults/main.yml`
-  - Add: `node_version`, `node_install_dir`, `lab_repos`, `spec_workflow_port`, `spec_workflow_bind_address`, `spec_workflow_cors_enabled`
-  - Preserve existing `ansible_repo_path` variable
+  - Added: `node_version`, `node_install_dir`, `spec_workflow_port`, `spec_workflow_bind_address`, `spec_workflow_allow_external_access`, `spec_workflow_cors_enabled`
+  - Pending: `lab_repos` (added with git_repos.yml later)
   - _Requirements: 1_
 
-- [ ] 12. Add handler for user systemd reload
+- [x] 12. Add handler for user systemd reload
   - File: `roles/cmd_center/handlers/main.yml`
-  - Add handler: `Reload user systemd` running `systemctl --user daemon-reload`
-  - Add handler: `Restart spec-workflow-dashboard` running `systemctl --user restart spec-workflow-dashboard`
+  - `Reload user systemd` and `Restart spec-workflow-dashboard` handlers added, both user-scoped with XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS environment
   - _Requirements: 1_
 
 ## Phase 5: Secrets and vault setup

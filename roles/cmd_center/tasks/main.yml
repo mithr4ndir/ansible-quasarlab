@@ -7,11 +7,8 @@
 #   cli_tools.yml           helm, yq, gh, terraform
 #   onepassword_token.yml   1P service account token from vault
 #   ssh_keys.yml            SSH keys from 1P via op
-#   linger.yml              loginctl enable-linger for user services
 #   git_repos.yml           clone claude-config and lab repos
 #   claude_bootstrap.yml    run claude-config/bin/bootstrap.sh
-#   node_runtime.yml        standalone Node 22 install
-#   spec_workflow.yml       systemd user unit for dashboard
 
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
@@ -21,3 +18,12 @@
 
 - name: Periodic Ansible playbook systemd timers
   ansible.builtin.import_tasks: ansible_timers.yml
+
+- name: Enable systemd linger for user services
+  ansible.builtin.import_tasks: linger.yml
+
+- name: Standalone Node.js runtime for user-scoped tools
+  ansible.builtin.import_tasks: node_runtime.yml
+
+- name: Spec Workflow MCP dashboard systemd user service
+  ansible.builtin.import_tasks: spec_workflow.yml

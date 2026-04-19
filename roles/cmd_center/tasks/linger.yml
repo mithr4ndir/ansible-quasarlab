@@ -1,0 +1,22 @@
+---
+# Enable systemd linger for the ansible_user so user services start
+# at boot without a login session. Required for the spec-workflow
+# dashboard systemd user service to survive reboots.
+#
+# Idempotency: checks for the linger marker file before running
+# loginctl, so re-runs report ok without calling loginctl again.
+
+- name: Check systemd linger status
+  ansible.builtin.stat:
+    path: "/var/lib/systemd/linger/{{ ansible_user }}"
+  register: cmd_center_linger_stat
+  tags:
+    - linger
+
+- name: Enable systemd linger for user services
+  ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
+  become: true
+  when: not cmd_center_linger_stat.stat.exists
+  changed_when: true
+  tags:
+    - linger

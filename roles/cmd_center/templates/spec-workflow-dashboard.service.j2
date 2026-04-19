@@ -1,0 +1,19 @@
+[Unit]
+Description=Spec Workflow MCP Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/lib/nodejs/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=NODE_ENV=production
+Environment=SPEC_WORKFLOW_BIND_ADDRESS={{ spec_workflow_bind_address }}
+Environment=SPEC_WORKFLOW_ALLOW_EXTERNAL_ACCESS={{ spec_workflow_allow_external_access | string | lower }}
+Environment=SPEC_WORKFLOW_CORS_ENABLED={{ spec_workflow_cors_enabled | string | lower }}
+ExecStart=%h/.local/lib/nodejs/current/bin/npx -y @pimzino/spec-workflow-mcp@latest --dashboard --port {{ spec_workflow_port }}
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
