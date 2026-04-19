@@ -1,0 +1,155 @@
+---
+# Install CLI tools needed for day-to-day homelab ops:
+#   jq, yq   YAML/JSON processing (helm + kustomize rendering)
+#   gh       GitHub CLI (PRs, issues, auth for git push)
+#   helm     Helm client for chart rendering
+#   terraform HashiCorp Terraform for IaC
+#
+# The `op` 1Password CLI is handled by the separate onepassword_cli role.
+#
+# Tools that have official apt repos (gh, terraform) are installed via
+# apt so they track upstream. yq and helm ship as single binaries with
+# no apt repo, so they are downloaded to /usr/local/bin at a pinned
+# version.
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: true
+  tags:
+    - cli_tools
+
+- name: Install jq
+  ansible.builtin.apt:
+    name: jq
+    state: present
+  become: true
+  tags:
+    - cli_tools
+
+# GitHub CLI (gh): official apt repo at cli.github.com
+- name: Download GitHub CLI apt signing key
+  ansible.builtin.get_url:
+    url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    dest: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    mode: '0644'
+  become: true
+  tags:
+    - cli_tools
+
+- name: Add GitHub CLI apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ dpkg_arch }} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"
+    filename: github-cli
+    state: present
+  become: true
+  tags:
+    - cli_tools
+
+- name: Install gh
+  ansible.builtin.apt:
+    name: gh
+    state: present
+    update_cache: true
+  become: true
+  tags:
+    - cli_tools
+
+# HashiCorp Terraform: official apt repo at apt.releases.hashicorp.com
+- name: Download HashiCorp apt signing key
+  ansible.builtin.get_url:
+    url: https://apt.releases.hashicorp.com/gpg
+    dest: /etc/apt/keyrings/hashicorp-archive-keyring.gpg
+    mode: '0644'
+  become: true
+  tags:
+    - cli_tools
+
+- name: Add HashiCorp apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ dpkg_arch }} signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
+    filename: hashicorp
+    state: present
+  become: true
+  tags:
+    - cli_tools
+
+- name: Install terraform
+  ansible.builtin.apt:
+    name: terraform
+    state: present
+    update_cache: true
+  become: true
+  tags:
+    - cli_tools
+
+# Helm: single binary, no apt repo. Pinned version via defaults.
+- name: Install helm binary
+  ansible.builtin.unarchive:
+    src: "https://get.helm.sh/helm-v{{ helm_version }}-linux-{{ helm_arch }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "/usr/local/bin/helm-v{{ helm_version }}"
+  become: true
+  tags:
+    - cli_tools
+
+- name: Move helm to /usr/local/bin with versioned name
+  ansible.builtin.copy:
+    src: "/tmp/linux-{{ helm_arch }}/helm"
+    dest: "/usr/local/bin/helm-v{{ helm_version }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags:
+    - cli_tools
+
+- name: Symlink helm version to /usr/local/bin/helm
+  ansible.builtin.file:
+    src: "/usr/local/bin/helm-v{{ helm_version }}"
+    dest: /usr/local/bin/helm
+    state: link
+    force: true
+  become: true
+  tags:
+    - cli_tools
+
+# yq: single binary from GitHub releases. Pinned version via defaults.
+- name: Install yq binary
+  ansible.builtin.get_url:
+    url: "https://github.com/mikefarah/yq/releases/download/v{{ yq_version }}/yq_linux_{{ helm_arch }}"
+    dest: "/usr/local/bin/yq-v{{ yq_version }}"
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags:
+    - cli_tools
+
+- name: Symlink yq version to /usr/local/bin/yq
+  ansible.builtin.file:
+    src: "/usr/local/bin/yq-v{{ yq_version }}"
+    dest: /usr/local/bin/yq
+    state: link
+    force: true
+  become: true
+  tags:
+    - cli_tools
+
+- name: Verify CLI tools are on PATH with expected versions
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - gh --version
+    - terraform version
+    - helm version --short
+    - yq --version
+    - jq --version
+  register: cmd_center_cli_tools_check
+  changed_when: false
+  failed_when: cmd_center_cli_tools_check.rc != 0
+  tags:
+    - cli_tools

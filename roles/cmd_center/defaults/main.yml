@@ -1,6 +1,15 @@
 ---
 ansible_repo_path: /home/{{ ansible_user }}/code/ansible-quasarlab
 
+# Architecture for binary downloads. Used by helm, yq, and apt repo
+# entries. Override for ARM hosts if ever needed.
+dpkg_arch: amd64
+helm_arch: amd64
+
+# CLI tool versions. Pinned so upgrades are intentional.
+helm_version: "3.19.0"
+yq_version: "4.47.2"
+
 # Node.js runtime (standalone install for user-scoped tools like the
 # spec-workflow dashboard, isolated from system apt Node).
 node_version: "22.16.0"
