@@ -15,6 +15,25 @@ yq_version: "4.47.2"
 node_version: "22.16.0"
 node_install_dir: "/home/{{ ansible_user }}/.local/lib/nodejs"
 
+# Homelab git repos cloned onto the command center. claude-config MUST
+# come first; claude_bootstrap.yml depends on it being present before
+# it runs bootstrap.sh. Order for the rest does not matter.
+lab_repos:
+  - name: claude-config
+    url: "git@github.com:mithr4ndir/claude-config.git"
+  - name: ansible-quasarlab
+    url: "git@github.com:mithr4ndir/ansible-quasarlab.git"
+  - name: k8s-argocd
+    url: "git@github.com:mithr4ndir/k8s-argocd.git"
+  - name: observability-quasarlab
+    url: "git@github.com:mithr4ndir/observability-quasarlab.git"
+  - name: terraform-quasarlab
+    url: "git@github.com:mithr4ndir/terraform-quasarlab.git"
+  - name: quasarlab-disaster-recovery
+    url: "git@github.com:mithr4ndir/quasarlab-disaster-recovery.git"
+  - name: truenas-config-backup
+    url: "git@github.com:mithr4ndir/truenas-config-backup.git"
+
 # spec-workflow dashboard systemd user service.
 # Binds to 0.0.0.0 by default so other hosts on the home lab LAN can
 # reach it. CORS disabled because the dashboard's built-in allowlist

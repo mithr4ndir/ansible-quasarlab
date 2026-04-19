@@ -47,20 +47,18 @@
 
 ## Phase 3: New task files (application layer)
 
-- [ ] 6. Add git repo cloning
+- [x] 6. Add git repo cloning
   - File: `roles/cmd_center/tasks/git_repos.yml`
-  - Loop over `lab_repos` variable
-  - Clone `claude-config` FIRST, then others (order-sensitive due to claude-config bootstrap)
-  - Use `git: update=no` to avoid clobbering local work on re-runs
+  - Loops over `lab_repos`; claude-config cloned first as a distinct task, then the rest
+  - `update: false` protects local commits
   - Target directory: `/home/{{ ansible_user }}/code/{{ item.name }}`
   - _Requirements: 1, 2_
 
-- [ ] 7. Add Claude config bootstrap
+- [x] 7. Add Claude config bootstrap
   - File: `roles/cmd_center/tasks/claude_bootstrap.yml`
-  - Run `~/code/claude-config/bin/bootstrap.sh`
-  - The script is idempotent: it checks for existing symlinks before creating
-  - Verify: `~/.claude/memory` is a symlink to `~/code/claude-config/memory`
-  - Verify: `~/.claude/projects/-home-ladino/memory` is a symlink to `~/code/claude-config/memory`
+  - Runs `~/code/claude-config/bin/bootstrap.sh`
+  - Asserts both `~/.claude/memory` and `~/.claude/projects/-home-{user}/memory` are symlinks pointing at `~/code/claude-config/memory`
+  - Fails fast with a clear message if claude-config was not cloned first
   - _Requirements: 4_
 
 - [x] 8. Add Node 22 standalone install
@@ -104,10 +102,10 @@
   - Document vault password retrieval in README
   - _Requirements: 3_
 
-- [ ] 14. Document manual prereqs
-  - File: `roles/cmd_center/README.md` (create if missing) or update main project README
-  - List: Ubuntu 24.04 fresh install, `ladino` user with sudo, initial SSH key for Ansible runner, ansible-vault password
-  - Reference 1P item paths for SSH keys, op service account token
+- [x] 14. Document manual prereqs
+  - File: `roles/cmd_center/README.md` (new file)
+  - Lists Ubuntu 24.04, `ladino` with sudo, SSH access for runner, ansible-vault password, 1P service account token as prereqs
+  - Documents every task file's tag, the full install inventory, vault variables, and a DR runbook with RTO target
   - _Requirements: 6_
 
 ## Phase 6: Testing and verification
