@@ -3,9 +3,12 @@
 # node_exporter textfile directory (ladino on command-center1).
 op_quota_user: ladino
 
-# Collector cadence. Every 15 min = 96 runs/day = 9.6% of the 1P Families
-# 1000/day account-wide cap. Tune via host_vars if needed.
-op_quota_schedule: "*:0/15"
+# Collector cadence. `op service-account ratelimit` is a control-plane
+# call that does NOT count against any rate-limit tier (verified
+# 2026-04-19 against a draining cap), so frequency is not bounded by
+# quota cost. 5 min gives ~3x better alert resolution than the original
+# 15 min without any downside. Tune via host_vars if needed.
+op_quota_schedule: "*:0/5"
 
 # Output path (must be inside the node_exporter textfile directory).
 op_quota_metric_file: /var/lib/node_exporter/textfiles/op_quota.prom
