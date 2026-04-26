@@ -27,11 +27,23 @@ postgresql_log_destination: stderr
 postgresql_log_min_duration_statement: 1000
 
 # pg_hba access rules (list of dicts with type, database, user, address, method)
+#
+# Order matters: pg_hba is evaluated top-to-bottom, first match wins.
+# Narrow per-(db, user) rules go BEFORE the broad K8s pod CIDR rule so
+# the specific tuples document and enforce intended access scope. The
+# broad fallback remains for other apps that have not yet been narrowed.
+# DB-level CONNECT privileges (managed in tasks/main.yml) are the
+# stronger enforcement; pg_hba narrowing is defense-in-depth.
 postgresql_hba_entries:
   - { type: local, database: all, user: postgres, method: peer }
   - { type: local, database: all, user: all, method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "127.0.0.1/32", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "::1/128", method: "{{ postgresql_auth_method }}" }
+  # claude-bridge: narrow rules first, scoped to the bridge's own database.
+  - { type: host, database: claude_bridge, user: claude_bridge_app, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: claude_bridge, user: claude_bridge_migrate, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
+  # Broad K8s pod CIDR fallback for apps that have not yet been narrowed.
+  # New apps should add their own narrow (db, user, cidr) rule above this line.
   - { type: host, database: all, user: all, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "192.168.1.88/32", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: grafana, user: grafana, address: "192.168.1.121/32", method: "{{ postgresql_auth_method }}" }
