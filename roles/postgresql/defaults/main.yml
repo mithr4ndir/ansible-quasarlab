@@ -39,11 +39,23 @@ postgresql_hba_entries:
 # Databases to create (list of dicts with name, owner)
 postgresql_databases:
   - { name: grafana, owner: grafana }
+  # claude-bridge HITL approval store. Owned by claude_bridge_migrate so the
+  # deploy-time role can DDL freely; the runtime role (claude_bridge_app) is
+  # granted least-privilege per table by the bridge's Alembic migrations.
+  # See k8s-argocd/docs/plans/2026-04-26-001-feat-claude-bridge-hitl-discord-plan.md
+  - { name: claude_bridge, owner: claude_bridge_migrate }
 
 # Users to create (list of dicts with name, password_var)
 # password_var references an Ansible Vault variable
 postgresql_users:
   - { name: grafana, password_var: vault_postgresql_grafana_password }
+  # claude-bridge runtime role: connects from the K8s cluster, INSERT and
+  # SELECT on audit_log only (enforced by Alembic migration grants), full
+  # CRUD on other bridge tables. Never runs DDL.
+  - { name: claude_bridge_app, password_var: vault_postgresql_claude_bridge_app_password }
+  # claude-bridge deploy-time role: runs Alembic migrations, owns the
+  # claude_bridge database. Not used by the running pod.
+  - { name: claude_bridge_migrate, password_var: vault_postgresql_claude_bridge_migrate_password }
 
 # Backup configuration
 postgresql_backup_enabled: true
