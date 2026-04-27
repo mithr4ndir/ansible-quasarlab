@@ -1,0 +1,67 @@
+---
+# Enable and start the ce-review-viewer systemd user service.
+#
+# The unit file itself ships in the claude-config repo at
+# tools/ce-review-viewer/ce-review-viewer.service and is symlinked
+# into ~/.config/systemd/user/ by claude_bootstrap.yml's run of
+# bin/bootstrap.sh. This task only ensures the service is enabled +
+# started so the dashboard survives reboots and re-provisioning.
+#
+# The viewer binds on 0.0.0.0:8765 (homelab LAN reach). It walks up
+# from CWD looking for .context/compound-engineering/ce-review/, so
+# operators run ce:review from the relevant repo and the viewer
+# auto-discovers the runs. Override via CE_REVIEW_ARTIFACTS or by
+# `systemctl --user edit ce-review-viewer.service`.
+#
+# Depends on:
+#   - claude_bootstrap.yml  symlinks the unit file into systemd user dir
+#   - linger.yml            so the service survives logout / starts at boot
+
+- name: Check ce-review-viewer unit was linked by claude-config bootstrap
+  ansible.builtin.stat:
+    path: "/home/{{ ansible_user }}/.config/systemd/user/ce-review-viewer.service"
+  register: cmd_center_ce_review_unit_stat
+  tags:
+    - ce_review_viewer
+
+- name: Fail if ce-review-viewer unit symlink is missing
+  ansible.builtin.fail:
+    msg: >
+      ce-review-viewer.service is not linked into ~/.config/systemd/user/.
+      Run claude_bootstrap.yml first; bin/bootstrap.sh creates the
+      symlink from claude-config/tools/ce-review-viewer/.
+  when: not cmd_center_ce_review_unit_stat.stat.exists
+  tags:
+    - ce_review_viewer
+
+# Enable+start runs WITHOUT become so the task executes directly as
+# the SSH connection user (ladino). Two-hop sudo (root then back to
+# ladino) strips the dbus session env even with environment: set on
+# the task; running directly as the connection user preserves
+# XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS from the SSH session.
+# The pattern matches how `systemctl --user` is invoked
+# interactively. linger.yml ensures the user session bus is alive
+# without an active login.
+- name: Enable and start ce-review-viewer
+  ansible.builtin.systemd:
+    name: ce-review-viewer
+    scope: user
+    enabled: true
+    state: started
+  become: false
+  tags:
+    - ce_review_viewer
+
+# daemon-reload is intentionally NOT in the task above: the
+# bootstrap.sh script in claude-config already runs it whenever it
+# (re-)links the unit symlink, and adding it to the inline systemd
+# task here would require the same become: false treatment.
+
+- name: Confirm ce-review-viewer is listening on 8765
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8765
+    timeout: 10
+    state: started
+  tags:
+    - ce_review_viewer

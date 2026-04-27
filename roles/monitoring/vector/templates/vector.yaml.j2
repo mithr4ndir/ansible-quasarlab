@@ -59,7 +59,16 @@ transforms:
         del(.file)
       } else {
         .log_type = "journal"
-        .app = string(._SYSTEMD_UNIT) ?? string(.SYSLOG_IDENTIFIER) ?? "system"
+        unit = string(._SYSTEMD_UNIT) ?? string(.SYSLOG_IDENTIFIER) ?? "system"
+        if match!(unit, r'^session-\d+\.scope$') {
+          .app = "user-session"
+        } else if match!(unit, r'^\d+\.scope$') {
+          .app = "scope"
+        } else if match!(unit, r'^user@\d+\.service$') {
+          .app = "user-manager"
+        } else {
+          .app = unit
+        }
       }
       del(.source_type)
 
