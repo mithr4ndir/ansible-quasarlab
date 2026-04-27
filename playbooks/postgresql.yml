@@ -17,9 +17,13 @@
       ansible.builtin.assert:
         that:
           - lookup('env', 'GRAFANA_PG_PASSWORD') | length > 0
+          - lookup('env', 'CLAUDE_BRIDGE_APP_PG_PASSWORD') | length > 0
+          - lookup('env', 'CLAUDE_BRIDGE_MIGRATE_PG_PASSWORD') | length > 0
         fail_msg: >-
-          GRAFANA_PG_PASSWORD is empty or unset. Run via
-          scripts/run-proxmox.sh or export it first.
+          One or more PostgreSQL password env vars are empty or unset.
+          Required: GRAFANA_PG_PASSWORD, CLAUDE_BRIDGE_APP_PG_PASSWORD,
+          CLAUDE_BRIDGE_MIGRATE_PG_PASSWORD. Run via
+          scripts/run-proxmox.sh or export them first.
         quiet: true
 
     - name: Resolve PostgreSQL credentials from wrapper-cached env
@@ -27,6 +31,8 @@
       become: false
       ansible.builtin.set_fact:
         vault_postgresql_grafana_password: "{{ lookup('env', 'GRAFANA_PG_PASSWORD') }}"
+        vault_postgresql_claude_bridge_app_password: "{{ lookup('env', 'CLAUDE_BRIDGE_APP_PG_PASSWORD') }}"
+        vault_postgresql_claude_bridge_migrate_password: "{{ lookup('env', 'CLAUDE_BRIDGE_MIGRATE_PG_PASSWORD') }}"
       no_log: true
   roles:
     - postgresql

@@ -27,12 +27,14 @@ export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/
 # collapses what used to be ~13 `op read` calls per run into 0 (all
 # cache hits) or ~8 (all cache misses, once per TTL window).
 load_cached_secrets <<'SECRETS'
-PROXMOX_TOKEN_SECRET             proxmox_token                      op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
-AUTHENTIK_PG_PASSWORD            authentik_pg_password              op://Infrastructure/Authentik/PostgreSQL Password
-AUTHENTIK_SECRET_KEY             authentik_secret_key               op://Infrastructure/Authentik/Secret Key
-AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN  authentik_admin_bootstrap_token    op://Infrastructure/Authentik/Admin Bootstrap Token
-AUTHENTIK_ADMIN_EMAIL            authentik_admin_email              op://Infrastructure/Authentik/Admin Email
-GRAFANA_PG_PASSWORD              grafana_pg_password                op://Infrastructure/PostgreSQL Grafana DB/password
+PROXMOX_TOKEN_SECRET                proxmox_token                          op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
+AUTHENTIK_PG_PASSWORD               authentik_pg_password                  op://Infrastructure/Authentik/PostgreSQL Password
+AUTHENTIK_SECRET_KEY                authentik_secret_key                   op://Infrastructure/Authentik/Secret Key
+AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN     authentik_admin_bootstrap_token        op://Infrastructure/Authentik/Admin Bootstrap Token
+AUTHENTIK_ADMIN_EMAIL               authentik_admin_email                  op://Infrastructure/Authentik/Admin Email
+GRAFANA_PG_PASSWORD                 grafana_pg_password                    op://Infrastructure/PostgreSQL Grafana DB/password
+CLAUDE_BRIDGE_APP_PG_PASSWORD       claude_bridge_app_pg_password          op://Infrastructure/PostgreSQL Claude Bridge App/password
+CLAUDE_BRIDGE_MIGRATE_PG_PASSWORD   claude_bridge_migrate_pg_password      op://Infrastructure/PostgreSQL Claude Bridge Migrate/password
 SECRETS
 
 # Source ARA callback plugin environment (records runs to ARA database)

@@ -70,6 +70,14 @@
     name: "{{ item.name }}"
     password: "{{ lookup('vars', item.password_var) }}"
     role_attr_flags: LOGIN
+    # no_password_changes: true means re-running the role does NOT
+    # rewrite the password from the env var when the user already
+    # exists. Equivalent to `update_password: on_create` in newer
+    # community.postgresql versions; this collection (the lab's pinned
+    # version) uses the older boolean parameter. Intentional rotations
+    # go through a dedicated rotate playbook (not yet written) which
+    # sets no_password_changes=false to force the password update.
+    no_password_changes: true
     state: present
   loop: "{{ postgresql_users }}"
   no_log: true
@@ -86,6 +94,39 @@
     template: template0
     state: present
   loop: "{{ postgresql_databases }}"
+
+- name: Revoke CONNECT on system databases from PUBLIC
+  # Postgres grants CONNECT to PUBLIC implicitly on every database. A
+  # `REVOKE FROM <user>` is a no-op because the privilege comes from
+  # PUBLIC, not from a direct grant. To actually deny CONNECT to a user,
+  # we have to REVOKE FROM PUBLIC and re-GRANT to the legitimate owner.
+  #
+  # Scope: applied to postgres and template1 only. These are system
+  # databases that no application should connect to (apps connect to
+  # their own database). Stripping PUBLIC.CONNECT here is safe because
+  # legitimate use is only via the postgres SUPERUSER, which bypasses
+  # this check.
+  #
+  # Out of scope for this role: doing the same for grafana and other
+  # app databases. Grafana CONNECT-from-PUBLIC remains until grafana's
+  # own provisioning explicitly grants its app role and revokes PUBLIC.
+  # Result: claude_bridge_app technically can `\c grafana` and read DB
+  # metadata, but it has no SELECT/INSERT/UPDATE on any grafana table
+  # (no PUBLIC grants on tables; per-table grants are owner-restricted).
+  # Documented as a residual risk in the role README.
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    db: "{{ item }}"
+    role: PUBLIC
+    type: database
+    privs: CONNECT
+    state: absent
+  loop:
+    - postgres
+    - template1
+  loop_control:
+    label: "REVOKE CONNECT FROM PUBLIC ON {{ item }}"
 
 - name: Configure backup NFS mount
   when: postgresql_backup_enabled

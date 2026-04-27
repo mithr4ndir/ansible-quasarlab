@@ -27,11 +27,23 @@ postgresql_log_destination: stderr
 postgresql_log_min_duration_statement: 1000
 
 # pg_hba access rules (list of dicts with type, database, user, address, method)
+#
+# Order matters: pg_hba is evaluated top-to-bottom, first match wins.
+# Narrow per-(db, user) rules go BEFORE the broad K8s pod CIDR rule so
+# the specific tuples document and enforce intended access scope. The
+# broad fallback remains for other apps that have not yet been narrowed.
+# DB-level CONNECT privileges (managed in tasks/main.yml) are the
+# stronger enforcement; pg_hba narrowing is defense-in-depth.
 postgresql_hba_entries:
   - { type: local, database: all, user: postgres, method: peer }
   - { type: local, database: all, user: all, method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "127.0.0.1/32", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "::1/128", method: "{{ postgresql_auth_method }}" }
+  # claude-bridge: narrow rules first, scoped to the bridge's own database.
+  - { type: host, database: claude_bridge, user: claude_bridge_app, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: claude_bridge, user: claude_bridge_migrate, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
+  # Broad K8s pod CIDR fallback for apps that have not yet been narrowed.
+  # New apps should add their own narrow (db, user, cidr) rule above this line.
   - { type: host, database: all, user: all, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "192.168.1.88/32", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: grafana, user: grafana, address: "192.168.1.121/32", method: "{{ postgresql_auth_method }}" }
@@ -39,11 +51,23 @@ postgresql_hba_entries:
 # Databases to create (list of dicts with name, owner)
 postgresql_databases:
   - { name: grafana, owner: grafana }
+  # claude-bridge HITL approval store. Owned by claude_bridge_migrate so the
+  # deploy-time role can DDL freely; the runtime role (claude_bridge_app) is
+  # granted least-privilege per table by the bridge's Alembic migrations.
+  # See k8s-argocd/docs/plans/2026-04-26-001-feat-claude-bridge-hitl-discord-plan.md
+  - { name: claude_bridge, owner: claude_bridge_migrate }
 
 # Users to create (list of dicts with name, password_var)
 # password_var references an Ansible Vault variable
 postgresql_users:
   - { name: grafana, password_var: vault_postgresql_grafana_password }
+  # claude-bridge runtime role: connects from the K8s cluster, INSERT and
+  # SELECT on audit_log only (enforced by Alembic migration grants), full
+  # CRUD on other bridge tables. Never runs DDL.
+  - { name: claude_bridge_app, password_var: vault_postgresql_claude_bridge_app_password }
+  # claude-bridge deploy-time role: runs Alembic migrations, owns the
+  # claude_bridge database. Not used by the running pod.
+  - { name: claude_bridge_migrate, password_var: vault_postgresql_claude_bridge_migrate_password }
 
 # Backup configuration
 postgresql_backup_enabled: true
