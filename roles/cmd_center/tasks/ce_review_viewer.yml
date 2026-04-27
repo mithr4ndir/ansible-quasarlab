@@ -1,0 +1,59 @@
+---
+# Enable and start the ce-review-viewer systemd user service.
+#
+# The unit file itself ships in the claude-config repo at
+# tools/ce-review-viewer/ce-review-viewer.service and is symlinked
+# into ~/.config/systemd/user/ by claude_bootstrap.yml's run of
+# bin/bootstrap.sh. This task only ensures the service is enabled +
+# started so the dashboard survives reboots and re-provisioning.
+#
+# The viewer binds on 0.0.0.0:8765 (homelab LAN reach). It walks up
+# from CWD looking for .context/compound-engineering/ce-review/, so
+# operators run ce:review from the relevant repo and the viewer
+# auto-discovers the runs. Override via CE_REVIEW_ARTIFACTS or by
+# `systemctl --user edit ce-review-viewer.service`.
+#
+# Depends on:
+#   - claude_bootstrap.yml  symlinks the unit file into systemd user dir
+#   - linger.yml            so the service survives logout / starts at boot
+
+- name: Check ce-review-viewer unit was linked by claude-config bootstrap
+  ansible.builtin.stat:
+    path: "/home/{{ ansible_user }}/.config/systemd/user/ce-review-viewer.service"
+  register: cmd_center_ce_review_unit_stat
+  tags:
+    - ce_review_viewer
+
+- name: Fail if ce-review-viewer unit symlink is missing
+  ansible.builtin.fail:
+    msg: >
+      ce-review-viewer.service is not linked into ~/.config/systemd/user/.
+      Run claude_bootstrap.yml first; bin/bootstrap.sh creates the
+      symlink from claude-config/tools/ce-review-viewer/.
+  when: not cmd_center_ce_review_unit_stat.stat.exists
+  tags:
+    - ce_review_viewer
+
+- name: Enable and start ce-review-viewer
+  ansible.builtin.systemd:
+    name: ce-review-viewer
+    scope: user
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid | default(1000) }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid | default(1000) }}/bus"
+  tags:
+    - ce_review_viewer
+
+- name: Confirm ce-review-viewer is listening on 8765
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8765
+    timeout: 10
+    state: started
+  tags:
+    - ce_review_viewer

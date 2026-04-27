@@ -33,3 +33,6 @@
 
 - name: Spec Workflow MCP dashboard systemd user service
   ansible.builtin.import_tasks: spec_workflow.yml
+
+- name: ce:review run viewer systemd user service
+  ansible.builtin.import_tasks: ce_review_viewer.yml
