@@ -59,19 +59,20 @@ finish() {
     exit 0
 }
 
-# Ensure the kill-switch library is present and source it. If it is not
-# available we cannot safely call op, since we cannot detect a rate-limit
-# trip. Bail out as a collector failure rather than risk pinning 1P.
+# Ensure the kill-switch library is present and source it. We do NOT
+# gate the actual op call behind op_killswitch_is_active here because
+# `op service-account ratelimit` is a free control-plane call (verified
+# 2026-04-19, see memory feedback_op_rate_limit_care). Gating it would
+# blind the dashboard during exactly the incidents the collector exists
+# to observe. We still load the lib so op_killswitch_scan_file can trip
+# the lock on the response if a "Too many requests" marker appears,
+# protecting OTHER callers (wrappers, vault-pass) that do make billable
+# calls.
 if [[ -f "$KILLSWITCH_LIB" ]]; then
     # shellcheck source=/dev/null
     source "$KILLSWITCH_LIB"
 else
     finish "killswitch_lib_missing" 0
-fi
-
-# Kill switch already tripped? Skip the op call entirely.
-if op_killswitch_is_active; then
-    finish "killswitch" 0
 fi
 
 # Load the op service account token from the standard location used by
