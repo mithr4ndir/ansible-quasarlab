@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Managed by Ansible — do not edit manually
+# Managed by Ansible. Do not edit manually.
 # Writes Prometheus metrics for unattended-upgrades status.
 # Called via apt post-invoke hook after every apt operation.
 set -euo pipefail
@@ -17,8 +17,16 @@ else
     reboot_required=0
 fi
 
-# Pending security updates
+# Pending security updates (Ubuntu/Debian -security pocket only).
+# Note: third-party repos (Kubernetes, HashiCorp, Wazuh, etc.) do not have
+# a -security suffix and are intentionally NOT counted here.
 pending=$(apt list --upgradable 2>/dev/null | grep -c "\-security" || true)
+
+# Total pending upgrades, including third-party repos. Mirrors the count
+# that the MOTD apt-check shows on SSH login. tail -n +2 strips the
+# "Listing..." header. || true preserves set -e under pipefail when apt
+# is locked or empty.
+total_pending=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l || true)
 
 # Last unattended-upgrades result (parse most recent run from log)
 last_success=1
@@ -48,6 +56,9 @@ unattended_upgrades_success ${last_success}
 # HELP unattended_upgrades_pending_security Number of pending security updates.
 # TYPE unattended_upgrades_pending_security gauge
 unattended_upgrades_pending_security ${pending}
+# HELP apt_upgrades_pending_total Total pending apt upgrades across all sources, including third-party repos.
+# TYPE apt_upgrades_pending_total gauge
+apt_upgrades_pending_total ${total_pending}
 # HELP unattended_upgrades_last_run_timestamp_seconds Unix timestamp of last unattended-upgrades run.
 # TYPE unattended_upgrades_last_run_timestamp_seconds gauge
 unattended_upgrades_last_run_timestamp_seconds ${last_timestamp}
