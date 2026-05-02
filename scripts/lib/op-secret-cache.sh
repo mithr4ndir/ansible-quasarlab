@@ -10,7 +10,7 @@
 #
 # Usage (sourced):
 #     source "${SCRIPT_DIR}/lib/op-secret-cache.sh"
-#     value=$(cached_op_read proxmox_token "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret")
+#     value=$(cached_op_read wazuh_password "op://Infrastructure/Wazuh SIEM/password")
 #
 # Cache file layout:
 #     /var/lib/ansible-quasarlab/secrets/<slug>     mode 0600, ladino-owned
@@ -127,9 +127,13 @@ cached_op_read() {
 #
 # Example:
 #     load_cached_secrets <<'EOF'
-#     PROXMOX_TOKEN_SECRET   proxmox_token           op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
+#     WAZUH_PASSWORD         wazuh_password          op://Infrastructure/Wazuh SIEM/password
 #     AUTHENTIK_PG_PASSWORD  authentik_pg_password   op://Infrastructure/Authentik/PostgreSQL Password
 #     EOF
+# Note: the Proxmox API token used to live here. It is now in
+# ansible-vault and loaded via scripts/lib/proxmox-vault.sh, since
+# the dynamic inventory plugin loads in subprocess scope outside the
+# env-cache path (see issue #124).
 load_cached_secrets() {
     local env_name slug op_path value
     while read -r env_name slug op_path; do

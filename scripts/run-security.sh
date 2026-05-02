@@ -17,16 +17,27 @@ mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
 # shellcheck source=lib/op-secret-cache.sh
 source "${REPO_DIR}/scripts/lib/op-secret-cache.sh"
+# shellcheck source=lib/proxmox-vault.sh
+source "${REPO_DIR}/scripts/lib/proxmox-vault.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
 op_killswitch_check_or_exit
 
-# Source 1Password service account token for dynamic inventory + vault
+# Source 1Password service account token for the remaining op-cached
+# secrets (and for vault-pass.sh's own op read of the vault password).
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
 
-# Pre-populate secrets. See run-proxmox.sh for the rationale.
+# Decrypt the Proxmox API token from ansible-vault before any
+# inventory resolution. Same pattern as run-proxmox.sh, see issue #124.
+if ! load_proxmox_token_from_vault; then
+    echo "ERROR: failed to decrypt Proxmox API token from ansible-vault." >&2
+    echo "       See docs/vault.md for recovery steps." >&2
+    exit 1
+fi
+
+# Pre-populate the remaining op-cached secrets. See run-proxmox.sh
+# for the rationale. Proxmox token intentionally moved to vault.
 load_cached_secrets <<'SECRETS'
-PROXMOX_TOKEN_SECRET             proxmox_token                       op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
 WAZUH_PASSWORD                   wazuh_password                      op://Infrastructure/Wazuh SIEM/password
 WAZUH_API_PASSWORD               wazuh_api_password                  op://Infrastructure/Wazuh SIEM/API Credentials/api_password
 WAZUH_INDEXER_ADMIN_PASSWORD     wazuh_indexer_admin_password        op://Infrastructure/Wazuh SIEM/Indexer/indexer_admin_password
