@@ -14,20 +14,36 @@ mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
 # shellcheck source=lib/op-secret-cache.sh
 source "${REPO_DIR}/scripts/lib/op-secret-cache.sh"
+# shellcheck source=lib/proxmox-vault.sh
+source "${REPO_DIR}/scripts/lib/proxmox-vault.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
+# Note: the Proxmox token is now in ansible-vault, so the inventory
+# plugin no longer needs op. We still honor the kill switch for the
+# remaining op-cached secrets (Authentik, Grafana, Claude Bridge).
 op_killswitch_check_or_exit
 
-# Source 1Password service account token for dynamic inventory + vault
+# Source 1Password service account token for the remaining op-cached
+# secrets (and for vault-pass.sh's own op read of the vault password).
 export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
 
-# Pre-populate all secrets the downstream playbooks need. Each
-# cached_op_read call returns the cache value if it is fresh (TTL
-# default 12h), otherwise calls `op` once and updates the cache. This
-# collapses what used to be ~13 `op read` calls per run into 0 (all
-# cache hits) or ~8 (all cache misses, once per TTL window).
+# Decrypt the Proxmox API token from ansible-vault and export
+# PROXMOX_TOKEN_SECRET. This MUST happen before resolve-inventory.sh
+# and before any ansible-playbook invocation that resolves the
+# dynamic Proxmox inventory, since the plugin loads in subprocess
+# scope and reads the env var at fork time. Closes issue #124.
+if ! load_proxmox_token_from_vault; then
+    echo "ERROR: failed to decrypt Proxmox API token from ansible-vault." >&2
+    echo "       See docs/vault.md for recovery steps." >&2
+    exit 1
+fi
+
+# Pre-populate the remaining op-cached secrets the downstream
+# playbooks need. Each cached_op_read call returns the cache value if
+# it is fresh (TTL default 12h), otherwise calls `op` once and
+# updates the cache. The Proxmox token is intentionally NOT in this
+# list anymore (it is in ansible-vault, see above).
 load_cached_secrets <<'SECRETS'
-PROXMOX_TOKEN_SECRET                proxmox_token                          op://Infrastructure/Proxmox API/Ansible Inventory/token_secret
 AUTHENTIK_PG_PASSWORD               authentik_pg_password                  op://Infrastructure/Authentik/PostgreSQL Password
 AUTHENTIK_SECRET_KEY                authentik_secret_key                   op://Infrastructure/Authentik/Secret Key
 AUTHENTIK_ADMIN_BOOTSTRAP_TOKEN     authentik_admin_bootstrap_token        op://Infrastructure/Authentik/Admin Bootstrap Token

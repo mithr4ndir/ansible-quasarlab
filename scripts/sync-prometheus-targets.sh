@@ -12,32 +12,22 @@ LOG_PREFIX="[sync-prometheus-targets]"
 MIN_EXPECTED_TARGETS=10
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/op-killswitch.sh
 source "${SCRIPT_DIR}/lib/op-killswitch.sh"
-# Skip this run entirely if 1P is rate-limited; dynamic inventory will
-# fall back to the cached Proxmox snapshot, so Prometheus targets stay
-# roughly correct while we wait out the window.
+# shellcheck source=lib/proxmox-vault.sh
+source "${SCRIPT_DIR}/lib/proxmox-vault.sh"
+# Killswitch still gates the run because vault-pass.sh may itself
+# call op for the vault password. If the killswitch is tripped, skip
+# the run, dynamic inventory falls back to the cached Proxmox snapshot
+# so Prometheus targets stay roughly correct while we wait out the window.
 op_killswitch_check_or_exit
 
-# Source 1Password service account token for dynamic inventory
-export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN:-$(cat ~/.config/op/service-account-token 2>/dev/null || true)}"
-if [[ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]]; then
-    echo "${LOG_PREFIX} WARNING: OP_SERVICE_ACCOUNT_TOKEN is empty, dynamic inventory will not work" >&2
-fi
-
-if [[ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]] && command -v op &>/dev/null; then
-    op_err=$(mktemp)
-    token_value=$(op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret" 2>"$op_err" || true)
-    if [[ -n "$token_value" ]]; then
-        export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-$token_value}"
-    else
-        op_killswitch_scan_file "$op_err" || true
-    fi
-    rm -f "$op_err"
-fi
-
-if [[ -z "${PROXMOX_TOKEN_SECRET:-}" ]]; then
-    echo "${LOG_PREFIX} WARNING: PROXMOX_TOKEN_SECRET is empty — only static inventory hosts will be discovered" >&2
+# Decrypt the Proxmox API token from ansible-vault. Replaces the
+# previous direct `op read` here, which was the second-largest 1P
+# rate-limit consumer in the repo (issue #124).
+if ! load_proxmox_token_from_vault; then
+    echo "${LOG_PREFIX} ERROR: failed to decrypt Proxmox token from ansible-vault, only static inventory hosts will be discovered" >&2
 fi
 
 NAMESPACE="monitoring"
