@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# NUT secondary monitoring the UPS served by the TrueNAS primary.
+RUN_AS_USER root
+
+MONITOR {{ nut_ups_name }}@{{ nut_primary_host }} 1 {{ nut_monitor_user }} {{ nut_monitor_password }} secondary
+
+MINSUPPLIES 1
+SHUTDOWNCMD "{{ nut_shutdown_cmd }}"
+POLLFREQ {{ nut_poll_freq }}
+POLLFREQALERT {{ nut_poll_freq_alert }}
+HOSTSYNC {{ nut_hostsync }}
+DEADTIME {{ nut_deadtime }}
+
+# Hand events to upssched so we can run an on-battery delay timer.
+NOTIFYCMD /sbin/upssched
+
+NOTIFYFLAG ONLINE   SYSLOG+EXEC
+NOTIFYFLAG ONBATT   SYSLOG+EXEC
+NOTIFYFLAG LOWBATT  SYSLOG+EXEC
+NOTIFYFLAG FSD      SYSLOG+EXEC
+NOTIFYFLAG COMMOK   SYSLOG
+NOTIFYFLAG COMMBAD  SYSLOG
+NOTIFYFLAG SHUTDOWN SYSLOG
+NOTIFYFLAG REPLBATT SYSLOG
+NOTIFYFLAG NOCOMM   SYSLOG

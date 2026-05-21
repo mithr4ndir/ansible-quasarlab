@@ -1,0 +1,19 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Invoked by upssched when a timer fires or an immediate event occurs.
+# {{ nut_shutdown_cmd }} triggers a graceful systemd poweroff, which stops the
+# pve-guests service (gracefully shutting each VM) before the host powers off.
+
+case "$1" in
+  onbatt-shutdown)
+    logger -t upssched-cmd "UPS on battery for {{ nut_onbatt_shutdown_delay }}s - initiating graceful shutdown (guests first)"
+    {{ nut_shutdown_cmd }}
+    ;;
+  forced-shutdown)
+    logger -t upssched-cmd "UPS low battery / forced shutdown - powering off now"
+    {{ nut_shutdown_cmd }}
+    ;;
+  *)
+    logger -t upssched-cmd "Unrecognized upssched command: $1"
+    ;;
+esac

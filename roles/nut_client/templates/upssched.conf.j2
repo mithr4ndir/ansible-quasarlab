@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+CMDSCRIPT /etc/nut/upssched-cmd
+PIPEFN /run/nut/upssched.pipe
+LOCKFN /run/nut/upssched.lock
+
+# On battery: start a timer. If utility power returns before it expires, the
+# ONLINE event cancels it and nothing happens (rides through brief flickers).
+AT ONBATT * START-TIMER onbatt-shutdown {{ nut_onbatt_shutdown_delay }}
+AT ONLINE * CANCEL-TIMER onbatt-shutdown
+
+# Battery actually got low, or the primary forced a shutdown: go now.
+AT LOWBATT * EXECUTE forced-shutdown
+AT FSD     * EXECUTE forced-shutdown
