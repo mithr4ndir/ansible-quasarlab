@@ -1,0 +1,80 @@
+---
+- name: Fail early if the NUT monitor password was not provided
+  ansible.builtin.assert:
+    that:
+      - nut_monitor_password is defined
+      - nut_monitor_password | length > 0
+    fail_msg: >-
+      nut_monitor_password is empty. Run via playbooks/ups-shutdown.yml, which
+      sets it from the NUT_MONITOR_PASSWORD env var (export it first, e.g.
+      NUT_MONITOR_PASSWORD="$(op read 'op://Infrastructure/NUT upsmon/password')").
+    quiet: true
+
+- name: Install NUT client
+  ansible.builtin.apt:
+    name: nut-client
+    state: present
+    update_cache: true
+
+- name: Set NUT to netclient mode
+  ansible.builtin.copy:
+    dest: /etc/nut/nut.conf
+    content: |
+      # Managed by Ansible (nut_client role)
+      MODE=netclient
+    owner: root
+    group: nut
+    mode: '0640'
+  notify: Restart nut-monitor
+
+- name: Deploy upsmon.conf
+  ansible.builtin.template:
+    src: upsmon.conf.j2
+    dest: /etc/nut/upsmon.conf
+    owner: root
+    group: nut
+    mode: '0640'
+  no_log: true  # contains the monitor password
+  notify: Restart nut-monitor
+
+- name: Deploy upssched.conf
+  ansible.builtin.template:
+    src: upssched.conf.j2
+    dest: /etc/nut/upssched.conf
+    owner: root
+    group: nut
+    mode: '0640'
+  notify: Restart nut-monitor
+
+- name: Deploy upssched command script
+  ansible.builtin.template:
+    src: upssched-cmd.j2
+    dest: /etc/nut/upssched-cmd
+    owner: root
+    group: nut
+    mode: '0750'
+  notify: Restart nut-monitor
+
+- name: Enable and start nut-monitor
+  ansible.builtin.systemd:
+    name: nut-monitor
+    enabled: true
+    state: started
+
+# --- Proxmox HA: prevent guest relocation during a coordinated power-down ---
+- name: Read current Proxmox cluster options
+  ansible.builtin.command: pvesh get /cluster/options --output-format json
+  register: pve_cluster_options
+  run_once: true
+  changed_when: false
+  check_mode: false
+  when: nut_set_ha_shutdown_policy | bool
+
+- name: Set HA shutdown policy to freeze
+  ansible.builtin.command: >-
+    pvesh set /cluster/options --ha shutdown_policy={{ nut_ha_shutdown_policy }}
+  run_once: true
+  when:
+    - nut_set_ha_shutdown_policy | bool
+    - ((pve_cluster_options.stdout | default('{}') | from_json).ha | default({})).shutdown_policy | default('conditional') != nut_ha_shutdown_policy
+  changed_when: true

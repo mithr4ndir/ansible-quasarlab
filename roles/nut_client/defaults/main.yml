@@ -1,0 +1,31 @@
+---
+# NUT (Network UPS Tools) secondary client for coordinated UPS shutdown.
+#
+# Topology: the CyberPower CP1500AVRLCD3 USB cable plugs into the TrueNAS NAS,
+# which runs as the NUT *primary* (upsd + upsmon, dies LAST). These Proxmox
+# hosts run as *secondaries*: after nut_onbatt_shutdown_delay seconds on
+# battery they gracefully power off, which stops their guests first. Because
+# the primary (NAS) uses a longer on-battery timer, it powers off last, after
+# its only storage consumers are already down. This is the shutdown-side
+# counterpart to roles/pve/freenas_iscsi's boot-side pve-guests wait-for-NAS.
+nut_primary_host: 192.168.1.15
+nut_ups_name: ups
+nut_monitor_user: pvemon
+# nut_monitor_password is NOT defaulted. playbooks/ups-shutdown.yml sets it as
+# a fact from the NUT_MONITOR_PASSWORD env var, matching this repo's secret
+# convention (env vars populated by op-secret-cache; see scripts/lib).
+
+# Seconds on battery before THIS host begins its graceful shutdown.
+nut_onbatt_shutdown_delay: 60
+
+nut_poll_freq: 5
+nut_poll_freq_alert: 5
+nut_hostsync: 15
+nut_deadtime: 15
+nut_shutdown_cmd: /sbin/poweroff
+
+# Proxmox HA: with HA active, a node powering off can make HA relocate guests
+# onto the surviving node, which is pointless and risky during a whole-rack
+# power-down. "freeze" tells HA the node is going down on purpose.
+nut_set_ha_shutdown_policy: true
+nut_ha_shutdown_policy: freeze

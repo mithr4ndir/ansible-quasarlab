@@ -1,0 +1,7 @@
+---
+- name: Restart nut-monitor
+  ansible.builtin.systemd:
+    name: nut-monitor
+    state: restarted
+    enabled: true
+    daemon_reload: true
