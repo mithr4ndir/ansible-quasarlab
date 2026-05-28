@@ -19,4 +19,17 @@ pve_gpu_blacklist:
 
 # IOMMU settings
 pve_iommu_type: "amd"  # amd or intel
-pve_grub_cmdline: "quiet {{ pve_iommu_type }}_iommu=on iommu=pt"
+
+# Base kernel cmdline applied on every pve node (passthrough or not).
+pve_grub_cmdline_base: "quiet {{ pve_iommu_type }}_iommu=on iommu=pt"
+
+# Extra cmdline args applied only when pve_gpu_passthrough is true.
+# vfio-pci.ids: kept on cmdline (in addition to /etc/modprobe.d/vfio.conf)
+# so vfio binds the device before any host driver can claim it during boot.
+# pcie_aspm=off: required for consumer NVIDIA cards under vfio passthrough
+# to avoid D3cold wake failures that drop the GPU off the PCI bus until a
+# host cold reboot (incident 2026-05-27 on pve2).
+pve_grub_cmdline_passthrough_extra: "vfio-pci.ids={{ pve_vfio_pci_ids }} pcie_aspm=off"
+
+# Final cmdline rendered into /etc/default/grub.
+pve_grub_cmdline: "{{ pve_grub_cmdline_base }}{% if pve_gpu_passthrough %} {{ pve_grub_cmdline_passthrough_extra }}{% endif %}"
