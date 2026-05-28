@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# GPU watchdog — detects GPU failure and auto-recovers
-# Managed by Ansible — do not edit manually
+# GPU watchdog: detects GPU failure and auto-recovers.
+# Managed by Ansible, do not edit manually.
 set -euo pipefail
 
 INTERVAL=30
@@ -8,8 +8,16 @@ SMI_TIMEOUT=10
 LOG_TAG="gpu-watchdog"
 FAIL_COUNT=0
 MAX_SOFT_RETRIES=2
+EXPECTED_GPU={{ gpu_watchdog_expected_gpu_substring | quote }}
 PROM_FILE="{{ node_exporter_textfile_dir }}/gpu_watchdog.prom"
 TMPFILE="${PROM_FILE}.tmp"
+
+# Passive mode: probe and emit metrics but never perform destructive recovery
+# (kill ffmpeg, stop jellyfin, rmmod nvidia). Activated when the detected GPU
+# does not match EXPECTED_GPU, e.g. when HA fails the VM over to a fallback
+# node with a different card. Prevents 2080 Ti-tuned recovery logic from
+# crash-looping on a K620 and SIGTERMing every transcode (incident 2026-05-27).
+PASSIVE=0
 
 # Load persisted counters from existing prom file
 failures_total=0
@@ -42,6 +50,28 @@ METRICS
 # Write initial metrics
 write_metrics
 
+# Decide active vs passive mode based on the GPU currently present.
+# Retry a few times because the nvidia driver can take a moment after VM boot.
+for attempt in 1 2 3 4 5; do
+    detected_gpu=$(timeout "$SMI_TIMEOUT" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | tr -d '\r')
+    if [[ -n "$detected_gpu" ]]; then
+        break
+    fi
+    sleep 5
+done
+
+if [[ -z "$EXPECTED_GPU" ]]; then
+    log "EXPECTED_GPU not configured, running in active mode regardless of detected card"
+elif [[ -z "$detected_gpu" ]]; then
+    log "Initial GPU probe returned no device after retries; entering PASSIVE mode (metrics only)"
+    PASSIVE=1
+elif [[ "$detected_gpu" != *"$EXPECTED_GPU"* ]]; then
+    log "Detected GPU '$detected_gpu' does not match expected '$EXPECTED_GPU'; entering PASSIVE mode (metrics only)"
+    PASSIVE=1
+else
+    log "Detected expected GPU: $detected_gpu"
+fi
+
 while true; do
     if timeout "$SMI_TIMEOUT" nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
         FAIL_COUNT=0
@@ -51,8 +81,14 @@ while true; do
 
     failures_total=$((failures_total + 1))
     FAIL_COUNT=$((FAIL_COUNT + 1))
-    log "GPU failure detected (attempt ${FAIL_COUNT}/${MAX_SOFT_RETRIES}) — total failures: ${failures_total}"
+    log "GPU failure detected (attempt ${FAIL_COUNT}/${MAX_SOFT_RETRIES}), total failures: ${failures_total}"
     write_metrics
+
+    if [[ "$PASSIVE" -eq 1 ]]; then
+        # Skip destructive recovery on fallback GPU; just probe and wait.
+        sleep "$INTERVAL"
+        continue
+    fi
 
     # Stop Jellyfin to release GPU references
     log "Stopping Jellyfin..."
