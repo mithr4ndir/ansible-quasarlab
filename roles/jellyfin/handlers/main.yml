@@ -1,30 +1,8 @@
 ---
-- name: Reload NVIDIA driver
-  ansible.builtin.shell:
-    cmd: |
-      systemctl stop jellyfin
-      rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
-      modprobe nvidia
-      systemctl start jellyfin
-  notify: Verify GPU
-
 - name: Restart Jellyfin
   ansible.builtin.systemd:
     name: jellyfin
     state: restarted
-
-- name: Verify GPU
-  ansible.builtin.command:
-    cmd: nvidia-smi --query-gpu=name --format=csv,noheader
-  register: gpu_check
-  failed_when: gpu_check.rc != 0
-  changed_when: false
-
-- name: Restart GPU watchdog
-  ansible.builtin.systemd:
-    name: gpu-watchdog.service
-    state: restarted
-    daemon_reload: true
 
 - name: Reload systemd
   ansible.builtin.systemd:
