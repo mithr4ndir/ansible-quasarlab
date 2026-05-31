@@ -1,16 +1,13 @@
 ---
-# VMs with GPU failover hookscripts
-# Each entry maps a VMID to its GPU PCI addresses per node
-pve_gpu_vms:
-  115:  # jellyfin
-    pve2:
-      - "0000:0a:00.0,pcie=1,x-vga=0"
-      - "0000:0a:00.1,pcie=1"
-      - "0000:0a:00.2,pcie=1"
-      - "0000:0a:00.3,pcie=1"
-    pve:
-      - "0000:03:00.0,pcie=1,x-vga=0"
-      - "0000:03:00.1,pcie=1"
+# VMs with GPU failover hookscripts.
+# Each entry maps a VMID to its GPU PCI addresses per node.
+#
+# Emptied 2026-05-31: Jellyfin (VM 115) was the only GPU passthrough VM. It was
+# moved to CPU transcoding and the RTX 2080 Ti repurposed for LLM, so the GPU
+# failover hookscript and the gpu-vm-monitor PCI-reset recovery are no longer
+# needed. When this dict is empty the role tears down the monitor instead of
+# deploying it. Re-add an entry here to bring passthrough failover back.
+pve_gpu_vms: {}
 
 # Snippets storage location
 pve_snippets_dir: "/var/lib/vz/snippets"

@@ -12,9 +12,9 @@
   <ThrottleDelaySeconds>180</ThrottleDelaySeconds>
   <EnableSegmentDeletion>false</EnableSegmentDeletion>
   <SegmentKeepSeconds>720</SegmentKeepSeconds>
-  <HardwareAccelerationType>nvenc</HardwareAccelerationType>
-  <EncoderAppPathDisplay>/usr/local/bin/ffmpeg-wrapper.sh</EncoderAppPathDisplay>
-  <VaapiDevice>/dev/dri/renderD128</VaapiDevice>
+  <HardwareAccelerationType>none</HardwareAccelerationType>
+  <EncoderAppPathDisplay>{{ jellyfin_ffmpeg_path }}</EncoderAppPathDisplay>
+  <VaapiDevice />
   <QsvDevice />
   <EnableTonemapping>false</EnableTonemapping>
   <EnableVppTonemapping>false</EnableVppTonemapping>
@@ -37,20 +37,14 @@
   <EnableDecodingColorDepth10HevcRext>false</EnableDecodingColorDepth10HevcRext>
   <EnableDecodingColorDepth12HevcRext>false</EnableDecodingColorDepth12HevcRext>
   <EnableEnhancedNvdecDecoder>false</EnableEnhancedNvdecDecoder>
-  <PreferSystemNativeHwDecoder>true</PreferSystemNativeHwDecoder>
+  <PreferSystemNativeHwDecoder>false</PreferSystemNativeHwDecoder>
   <EnableIntelLowPowerH264HwEncoder>false</EnableIntelLowPowerH264HwEncoder>
   <EnableIntelLowPowerHevcHwEncoder>false</EnableIntelLowPowerHevcHwEncoder>
-  <EnableHardwareEncoding>true</EnableHardwareEncoding>
-  <AllowHevcEncoding>true</AllowHevcEncoding>
+  <EnableHardwareEncoding>false</EnableHardwareEncoding>
+  <AllowHevcEncoding>false</AllowHevcEncoding>
   <AllowAv1Encoding>false</AllowAv1Encoding>
   <EnableSubtitleExtraction>true</EnableSubtitleExtraction>
-  <HardwareDecodingCodecs>
-    <string>h264</string>
-    <string>hevc</string>
-    <string>mpeg2video</string>
-    <string>vc1</string>
-    <string>vp9</string>
-  </HardwareDecodingCodecs>
+  <HardwareDecodingCodecs />
   <AllowOnDemandMetadataBasedKeyframeExtractionForExtensions>
     <string>mkv</string>
   </AllowOnDemandMetadataBasedKeyframeExtractionForExtensions>

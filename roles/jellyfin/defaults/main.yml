@@ -7,14 +7,9 @@ jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"
 jellyfin_http_port: 8096
 jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
-nvidia_driver_version: "570"
 
-# Watchdog only performs destructive recovery (kill ffmpeg, stop jellyfin,
-# rmmod/modprobe nvidia) when the detected GPU name contains this substring.
-# On any other GPU (e.g. K620 failover path) the watchdog enters passive mode:
-# probes and emits metrics but never restarts services or reloads modules.
-# Set to empty string to disable the gate (always run in active mode).
-gpu_watchdog_expected_gpu_substring: "GeForce RTX 2080 Ti"
+# Transcoding is CPU (software) only. GPU passthrough was removed 2026-05-31
+# after recurring "fell off the bus" hangs on the RTX 2080 Ti under VFIO.
 
 # Monitoring
 node_exporter_textfile_dir: /var/lib/node_exporter/textfiles

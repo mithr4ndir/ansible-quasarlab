@@ -1,4 +1,11 @@
 ---
+# GPU failover + monitor are only deployed when there are GPU passthrough VMs
+# (pve_gpu_vms is non-empty). With none, the role tears the machinery down.
+- name: Determine whether any GPU passthrough VMs are configured
+  ansible.builtin.set_fact:
+    pve_gpu_enabled: "{{ (pve_gpu_vms | length) > 0 }}"
+
+# --- Deploy path (only when GPU passthrough VMs exist) ---
 - name: Create snippets directory
   ansible.builtin.file:
     path: "{{ pve_snippets_dir }}"
@@ -6,6 +13,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: pve_gpu_enabled
 
 - name: Deploy GPU failover hookscript
   ansible.builtin.template:
@@ -14,6 +22,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: pve_gpu_enabled
 
 - name: Check current hookscript on GPU VMs
   ansible.builtin.command:
@@ -30,20 +39,22 @@
   failed_when: >-
     (rc | default(0)) != 0
     and 'does not exist' not in (stderr | default(''))
-  when: inventory_hostname == 'pve2'
+  when:
+    - pve_gpu_enabled
+    - inventory_hostname == 'pve2'
 
 - name: Attach hookscript to GPU VMs
   ansible.builtin.command:
     cmd: "qm set {{ item.item.key }} -hookscript local:snippets/gpu-failover.sh"
-  loop: "{{ vm_configs.results }}"
+  loop: "{{ vm_configs.results | default([]) }}"
   when:
+    - pve_gpu_enabled
     - inventory_hostname == 'pve2'
     - item.rc is defined and item.rc == 0
     - item.stdout is defined
     - "'hookscript: local:snippets/gpu-failover.sh' not in item.stdout"
   changed_when: true
 
-# --- GPU VM Health Monitor ---
 - name: Deploy GPU VM monitor script
   ansible.builtin.template:
     src: gpu-vm-monitor.sh.j2
@@ -51,6 +62,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: pve_gpu_enabled
 
 - name: Deploy GPU VM monitor systemd units
   ansible.builtin.template:
@@ -63,6 +75,7 @@
     - gpu-vm-monitor.service.j2
     - gpu-vm-monitor.timer.j2
   notify: Reload systemd
+  when: pve_gpu_enabled
 
 - name: Enable GPU VM monitor timer
   ansible.builtin.systemd:
@@ -70,3 +83,32 @@
     enabled: true
     state: started
     daemon_reload: true
+  when: pve_gpu_enabled
+
+# --- Teardown path (when no GPU passthrough VMs are configured) ---
+# Removes the gpu-vm-monitor that performed PCI-reset recovery. Its in-VM
+# health check also had a bug (grep matched nvidia-smi's own error string),
+# so leaving it running was worse than useless.
+- name: Decommission GPU VM monitor timer/service
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - gpu-vm-monitor.timer
+    - gpu-vm-monitor.service
+  failed_when: false
+  when: not pve_gpu_enabled
+
+- name: Remove obsolete GPU monitor + failover files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/gpu-vm-monitor.timer
+    - /etc/systemd/system/gpu-vm-monitor.service
+    - /usr/local/bin/gpu-vm-monitor.sh
+    - "{{ pve_snippets_dir }}/gpu-failover.sh"
+    - /var/lib/node_exporter/textfiles/gpu_vm_monitor.prom
+  notify: Reload systemd
+  when: not pve_gpu_enabled
