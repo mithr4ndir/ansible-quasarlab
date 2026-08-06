@@ -1,0 +1,58 @@
+---
+# Exports "is the SIEM actually receiving data" as Prometheus metrics.
+# See the header comment in templates/wazuh-indexer-metrics.sh.j2 for the
+# incident that motivated this.
+
+- name: Install collector dependencies
+  ansible.builtin.apt:
+    name:
+      - jq
+      - curl
+    state: present
+
+- name: Ensure node_exporter textfile directory exists
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Deploy Wazuh Indexer metrics collector
+  ansible.builtin.template:
+    src: wazuh-indexer-metrics.sh.j2
+    dest: /usr/local/bin/wazuh-indexer-metrics.sh
+    mode: '0750'
+    owner: root
+    group: root
+
+- name: Deploy collector systemd service
+  ansible.builtin.template:
+    src: wazuh-indexer-metrics.service.j2
+    dest: /etc/systemd/system/wazuh-indexer-metrics.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Deploy collector systemd timer
+  ansible.builtin.template:
+    src: wazuh-indexer-metrics.timer.j2
+    dest: /etc/systemd/system/wazuh-indexer-metrics.timer
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Flush handlers so the timer starts against current unit files
+  ansible.builtin.meta: flush_handlers
+
+# Skipped under --check: the unit files are not actually written in check mode,
+# so systemd cannot find the timer and the task would fail on a preview run.
+- name: Enable and start the collector timer
+  ansible.builtin.systemd:
+    name: wazuh-indexer-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
+
+- name: Run the collector once so metrics exist immediately
+  ansible.builtin.command:
+    cmd: /usr/local/bin/wazuh-indexer-metrics.sh
+    creates: "{{ node_exporter_textfile_dir }}/wazuh_indexer.prom"
+  when: not ansible_check_mode

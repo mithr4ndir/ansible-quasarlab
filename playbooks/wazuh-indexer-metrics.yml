@@ -1,0 +1,14 @@
+---
+# Deploys only the Wazuh Indexer freshness collector.
+#
+# Deliberately separate from wazuh.yml: that playbook runs the full manager role
+# (packages, certificate generation, password rotation) and needs 1Password
+# secrets. This one installs a script, a systemd timer, and nothing else, so it
+# is safe to run against a live SIEM and needs no credentials. The collector
+# authenticates to the indexer with the admin client certificate already on the
+# host.
+- name: Deploy Wazuh Indexer freshness metrics collector
+  hosts: security
+  become: true
+  roles:
+    - wazuh_indexer_metrics

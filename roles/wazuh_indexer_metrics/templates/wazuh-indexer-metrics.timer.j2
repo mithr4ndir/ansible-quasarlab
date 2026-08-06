@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Wazuh Indexer freshness collector periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ wazuh_indexer_metrics_interval }}
+# Without this, every host firing on the same wall-clock second is a thundering herd.
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

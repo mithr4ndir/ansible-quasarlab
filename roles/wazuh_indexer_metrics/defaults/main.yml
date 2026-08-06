@@ -1,0 +1,15 @@
+---
+node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
+
+# The indexer is queried with the admin client certificate that already exists on
+# the manager, so no credential is introduced or stored for this collector.
+wazuh_indexer_metrics_url: "https://127.0.0.1:9200"
+wazuh_indexer_metrics_cert: /etc/wazuh-indexer/certs/admin.pem
+wazuh_indexer_metrics_key: /etc/wazuh-indexer/certs/admin-key.pem
+
+# Lookback for the distinct-agent count. Wide enough that a quiet agent does not
+# look absent, narrow enough that a real enrollment failure shows within an hour.
+wazuh_indexer_metrics_agent_window: "1h"
+
+# Collector cadence. Alert thresholds are hours, so a tight interval buys nothing.
+wazuh_indexer_metrics_interval: "5min"
