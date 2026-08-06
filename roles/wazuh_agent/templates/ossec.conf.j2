@@ -139,6 +139,6 @@
 
   <!-- Active response -->
   <active-response>
-    <disabled>no</disabled>
+    <disabled>{{ 'yes' if wazuh_agent_disable_active_response else 'no' }}</disabled>
   </active-response>
 </ossec_config>
