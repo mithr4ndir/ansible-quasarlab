@@ -1,0 +1,10 @@
+[Unit]
+Description=Export Wazuh Indexer freshness metrics for node_exporter
+Documentation=https://github.com/mithr4ndir/ansible-quasarlab
+After=wazuh-indexer.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wazuh-indexer-metrics.sh
+# Reads the indexer admin cert, which is root-owned and mode 400.
+User=root

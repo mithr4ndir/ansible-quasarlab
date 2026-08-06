@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Managed by Ansible. Do not edit manually.
+#
+# Exports Wazuh Indexer freshness metrics for node_exporter's textfile collector.
+#
+# Why this exists: on 2026-08-06 the SIEM was found to have been collecting
+# nothing for months. Two independent failures, neither of which touched service
+# liveness:
+#
+#   1. No agent could enroll (manager was missing the agent groups the agents
+#      requested), so client.keys stayed empty.
+#   2. Filebeat had been auto-upgraded past 7.10.2 and could no longer talk to
+#      OpenSearch, so no alert reached the indexer after 2026-04-10.
+#
+# Throughout both, wazuh-manager, wazuh-indexer and wazuh-dashboard all reported
+# `active`. Liveness checks proved nothing. The only observable symptom was an
+# absence of data, which is exactly what these metrics measure.
+set -euo pipefail
+
+TEXTFILE_DIR="{{ node_exporter_textfile_dir }}"
+PROM_FILE="${TEXTFILE_DIR}/wazuh_indexer.prom"
+TMP_FILE="$(mktemp "${PROM_FILE}.XXXXXX")"
+INDEXER="{{ wazuh_indexer_metrics_url }}"
+CERT="{{ wazuh_indexer_metrics_cert }}"
+KEY="{{ wazuh_indexer_metrics_key }}"
+AGENT_WINDOW="{{ wazuh_indexer_metrics_agent_window }}"
+
+# Always leave a complete file behind, never a half-written one that node_exporter
+# might scrape mid-update.
+cleanup() { rm -f "$TMP_FILE"; }
+trap cleanup EXIT
+
+mkdir -p "$TEXTFILE_DIR"
+
+q() {
+  curl -s --max-time 15 --cert "$CERT" --key "$KEY" -k \
+    -H 'Content-Type: application/json' "$@"
+}
+
+up=0
+last_doc=0
+docs_total=0
+agents=0
+
+# Newest alert document. This is the metric that matters: it goes flat the moment
+# anything in manager -> filebeat -> indexer breaks, regardless of which link failed.
+# track_total_hits is required: OpenSearch caps hits.total at 10000 by default,
+# which silently reports a flat 10000 instead of the real document count.
+resp="$(q -X POST "${INDEXER}/wazuh-alerts-*/_search?size=0" -d '{
+  "track_total_hits": true,
+  "aggs": { "newest": { "max": { "field": "@timestamp" } } }
+}' 2>/dev/null || true)"
+
+if [[ -n "$resp" ]] && ! grep -q '"error"' <<<"$resp"; then
+  up=1
+  # OpenSearch returns epoch milliseconds; Prometheus convention is seconds.
+  last_doc="$(jq -r '(.aggregations.newest.value // 0) / 1000 | floor' <<<"$resp" 2>/dev/null || echo 0)"
+  docs_total="$(jq -r '.hits.total.value // 0' <<<"$resp" 2>/dev/null || echo 0)"
+fi
+
+# Distinct agents that reported recently. Catches the enrollment failure mode
+# specifically: alerts can keep flowing from the manager itself (agent 000) while
+# every real agent is silently locked out.
+if [[ "$up" -eq 1 ]]; then
+  aresp="$(q -X POST "${INDEXER}/wazuh-alerts-*/_search?size=0" -d "{
+    \"query\": { \"range\": { \"@timestamp\": { \"gte\": \"now-${AGENT_WINDOW}\" } } },
+    \"aggs\": { \"agents\": { \"cardinality\": { \"field\": \"agent.id\" } } }
+  }" 2>/dev/null || true)"
+  if [[ -n "$aresp" ]] && ! grep -q '"error"' <<<"$aresp"; then
+    agents="$(jq -r '.aggregations.agents.value // 0' <<<"$aresp" 2>/dev/null || echo 0)"
+  fi
+fi
+
+cat > "$TMP_FILE" <<EOF
+# HELP wazuh_indexer_up Whether the Wazuh Indexer answered a query (1) or not (0).
+# TYPE wazuh_indexer_up gauge
+wazuh_indexer_up ${up}
+
+# HELP wazuh_indexer_alerts_last_document_timestamp_seconds Unix timestamp of the newest alert document.
+# TYPE wazuh_indexer_alerts_last_document_timestamp_seconds gauge
+wazuh_indexer_alerts_last_document_timestamp_seconds ${last_doc}
+
+# HELP wazuh_indexer_alerts_documents_total Total alert documents across all wazuh-alerts indices.
+# TYPE wazuh_indexer_alerts_documents_total gauge
+wazuh_indexer_alerts_documents_total ${docs_total}
+
+# HELP wazuh_indexer_agents_reporting Distinct agents that produced an alert within the lookback window.
+# TYPE wazuh_indexer_agents_reporting gauge
+wazuh_indexer_agents_reporting ${agents}
+
+# HELP wazuh_indexer_metrics_last_run_timestamp_seconds Unix timestamp of the last collector run.
+# TYPE wazuh_indexer_metrics_last_run_timestamp_seconds gauge
+wazuh_indexer_metrics_last_run_timestamp_seconds $(date +%s)
+EOF
+
+chmod 644 "$TMP_FILE"
+mv "$TMP_FILE" "$PROM_FILE"
+trap - EXIT
