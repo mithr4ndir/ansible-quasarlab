@@ -78,6 +78,20 @@ transforms:
     inputs:
       - wazuh_alerts
     source: |
+      # alerts.json is one JSON object per line, but the `file` source delivers
+      # it as a raw string in .message. Without parsing it here, `.rule` and
+      # `.agent` never exist, so every enrichment below silently no-ops and the
+      # Loki sink (codec: json) re-wraps the string, emitting the alert
+      # double-encoded as {"message":"{\"timestamp\":...}"}. Queries then need
+      # `| json | line_format "{{ '{{' }}.message{{ '}}' }}" | json` to reach any
+      # field, which is why this is parsed rather than passed through.
+      alert = parse_json(string!(.message)) ?? null
+      if alert != null && is_object(alert) {
+        # Promote the alert to the event root so the Loki line IS the alert JSON
+        # and `{log_type="security"} | json | rule_level > 10` works directly.
+        . = object!(alert)
+      }
+
       .job = "wazuh"
       .host = "{{ inventory_hostname }}"
       .log_type = "security"
