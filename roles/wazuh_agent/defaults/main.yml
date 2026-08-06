@@ -1,3 +1,21 @@
 ---
 wazuh_manager_ip: "192.168.1.171"
 wazuh_agent_groups: "linux"
+
+# Detection-lab hosts set this true so Wazuh active response cannot fire during
+# an Atomic Red Team run. Every other host keeps active response enabled, and
+# renders byte-identical to before this variable existed.
+#
+# Why it matters: the manager runs firewall-drop with a 1800s timeout on rules
+# 5763 (sshd brute force) and 2502 (repeated auth failures), both at
+# location=local, meaning the agent executes the response. Those are exactly the
+# rules an Atomic Red Team T1110.001 test trips. Left enabled on a lab host, the
+# response blocks the source partway through a validation run, the event count
+# stops short, and the detection looks like it undercounts. That reads as a
+# tuning problem, so the tempting fix is to lower the threshold, which is wrong.
+#
+# Disabling agent-side leaves the manager config, and therefore every other
+# agent's behaviour, completely untouched.
+#
+# Set for the detlab group in group_vars/detlab.yml.
+wazuh_agent_disable_active_response: false

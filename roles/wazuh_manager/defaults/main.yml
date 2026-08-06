@@ -1,6 +1,18 @@
 ---
+# NOTE: this is config-template drift, not the installed version. The host
+# actually runs Wazuh 4.14.5 (packages come from the 4.x repo, which floats).
+# Both 4.9 and 4.14 template URLs currently resolve, so this is not breaking, but
+# it should be reconciled deliberately rather than left to drift further.
 wazuh_version: "4.9"
 wazuh_manager_ip: "192.168.1.171"
+
+# Filebeat is pinned and held. Wazuh 4.x requires the OSS build at exactly
+# 7.10.2; 8.x cannot talk to OpenSearch and silently stops indexing alerts.
+# Not available from any configured apt repo, so it installs from this .deb.
+# Filebeat disappears entirely in Wazuh 5.0, which replaces it with the built-in
+# indexer connector. Revisit this pin as part of that migration, not before.
+wazuh_filebeat_version: "7.10.2"
+wazuh_filebeat_deb_url: "https://packages.wazuh.com/4.x/apt/pool/main/f/filebeat/filebeat-oss-{{ wazuh_filebeat_version }}-amd64.deb"
 
 # Ports
 wazuh_manager_port: 1514
@@ -14,3 +26,19 @@ wazuh_indexer_node_name: "wazuh-indexer"
 
 # Dashboard
 wazuh_dashboard_node_name: "wazuh-dashboard"
+
+# Agent groups that must exist on the manager before agents can enroll.
+# authd rejects an entire enrollment if any requested group is missing, and the
+# agent-side error says only "Unable to connect to any server", so a mismatch
+# here is silent and fleet-wide.
+#
+# This list must be a superset of every wazuh_agent_groups value:
+#   roles/wazuh_agent/defaults/main.yml  -> linux
+#   group_vars/k8s.yml                   -> linux,kubernetes
+#   group_vars/proxmox/vars.yml          -> linux,proxmox
+#   group_vars/detlab.yml                -> detlab
+wazuh_manager_agent_groups:
+  - linux
+  - kubernetes
+  - proxmox
+  - detlab

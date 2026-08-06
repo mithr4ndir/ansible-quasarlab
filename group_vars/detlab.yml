@@ -1,0 +1,27 @@
+---
+# Detection-lab hosts. Populated automatically by the Proxmox dynamic inventory
+# from the `detlab` VM tag (see keyed_groups in inventory.proxmox.yml).
+#
+# These hosts run Atomic Red Team tests. They report to the same Wazuh manager as
+# everything else, so they need to be separable from real telemetry and they must
+# not trigger active response.
+#
+# Repo: /home/ladino/code/detection-lab (see lab/shared-instance/README.md)
+
+# Own agent group so detonation alerts can be filtered out of real dashboards
+# with `NOT agent.group: detlab`, and filtered *for* when reviewing a run.
+wazuh_agent_groups: "detlab"
+
+# Wazuh active response executes on the agent. The manager runs firewall-drop
+# with a 1800s timeout on rules 5763 (sshd brute force) and 2502 (repeated auth
+# failures) at location=local, which is exactly what a T1110.001 atomic test
+# trips. Left enabled, the response cuts the test off partway through and the
+# detection looks like it undercounts, which invites the wrong fix.
+#
+# Disabling agent-side leaves the manager, and therefore every other agent,
+# untouched.
+wazuh_agent_disable_active_response: true
+
+# Beats group_vars/linux.yml if one is ever added; without this, alphabetical
+# ordering would let `linux` override `detlab` for hosts carrying both tags.
+ansible_group_priority: 20

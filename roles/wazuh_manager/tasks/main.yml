@@ -171,10 +171,55 @@
     group: wazuh
   failed_when: false
 
-- name: Install Filebeat for Wazuh
+# The ELK decommission (2026-03-15) left the Elastic 8.x apt repo behind on this
+# host with no elasticsearch/kibana/logstash package still installed. It kept
+# offering newer Filebeat, and a routine `apt upgrade` walked 7.10.2 -> 8.19.14 on
+# 2026-04-10 01:34. Wazuh 4.x requires Filebeat OSS 7.10.2; 8.x cannot talk to
+# OpenSearch (it probes `_license`, which OpenSearch rejects with a 400). Alert
+# indexing stopped that minute and stayed broken for ~4 months while every
+# service kept reporting `active`.
+- name: Remove orphaned Elastic apt repository
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/artifacts_elastic_co_packages_8_x_apt.list
+    state: absent
+  register: elastic_repo_removed
+
+- name: Refresh apt cache after removing Elastic repository
   ansible.builtin.apt:
+    update_cache: true
+  when: elastic_repo_removed.changed
+
+- name: Check installed Filebeat version
+  ansible.builtin.command:
+    cmd: dpkg-query -W -f=${Version} filebeat
+  register: filebeat_installed
+  changed_when: false
+  failed_when: false
+
+# Installed from a pinned .deb rather than apt: Wazuh 4.x needs the OSS build at
+# exactly this version and it is not carried in any repo configured here.
+- name: Download pinned Filebeat OSS package
+  ansible.builtin.get_url:
+    url: "{{ wazuh_filebeat_deb_url }}"
+    dest: /tmp/filebeat-oss-{{ wazuh_filebeat_version }}.deb
+    mode: '0644'
+  when: filebeat_installed.stdout != wazuh_filebeat_version
+
+- name: Install pinned Filebeat OSS
+  ansible.builtin.apt:
+    deb: /tmp/filebeat-oss-{{ wazuh_filebeat_version }}.deb
+    force: true
+  when: filebeat_installed.stdout != wazuh_filebeat_version
+  notify: Restart filebeat
+
+# Without this, any `apt upgrade` re-breaks alert indexing. Note that
+# unattended-upgrades was never the culprit: its Allowed-Origins is distro-only
+# and it already blacklists the wazuh-* packages. A routine manual upgrade is
+# enough, so the hold is the control that actually matters.
+- name: Hold Filebeat at the pinned version
+  ansible.builtin.dpkg_selections:
     name: filebeat
-    state: present
+    selection: hold
 
 - name: Download Wazuh Filebeat config
   ansible.builtin.get_url:
@@ -298,3 +343,39 @@
   no_log: true
   when: wazuh_api_password is defined
   failed_when: false
+
+# Agents declare their groups at enrollment via <groups> in the agent ossec.conf.
+# authd validates every name against groups that already exist on the manager and
+# rejects the whole enrollment if any one is missing, with
+# "wazuh-authd: ERROR: Invalid group: <name>".
+#
+# The agent then logs only "Unable to connect to any server", which reads like a
+# network or firewall problem and says nothing about groups. The manager keeps
+# running and the dashboard keeps working, so nothing looks broken while no host
+# telemetry is collected at all. That is exactly what happened on 2026-08-06:
+# 13 agents had been retrying with an empty client.keys on the manager.
+#
+# Creating the groups here keeps agent-side and manager-side definitions from
+# drifting apart again.
+- name: Ensure agent groups exist on the manager
+  ansible.builtin.command:
+    cmd: /var/ossec/bin/agent_groups -a -g {{ item }} -q
+    creates: /var/ossec/etc/shared/{{ item }}
+  loop: "{{ wazuh_manager_agent_groups }}"
+
+- name: Verify no agent enrollment is being rejected for a missing group
+  ansible.builtin.command:
+    cmd: grep -c 'Invalid group' /var/ossec/logs/ossec.log
+  register: wazuh_invalid_group_count
+  changed_when: false
+  failed_when: false
+
+- name: Warn when agents are still failing to enroll
+  ansible.builtin.debug:
+    msg: >-
+      {{ wazuh_invalid_group_count.stdout }} 'Invalid group' rejections in
+      ossec.log. Agents are failing to enroll. Compare wazuh_manager_agent_groups
+      against every wazuh_agent_groups value in group_vars.
+  when:
+    - wazuh_invalid_group_count.stdout is defined
+    - wazuh_invalid_group_count.stdout | int > 0
