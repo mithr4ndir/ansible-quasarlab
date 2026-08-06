@@ -14,3 +14,19 @@ wazuh_indexer_node_name: "wazuh-indexer"
 
 # Dashboard
 wazuh_dashboard_node_name: "wazuh-dashboard"
+
+# Agent groups that must exist on the manager before agents can enroll.
+# authd rejects an entire enrollment if any requested group is missing, and the
+# agent-side error says only "Unable to connect to any server", so a mismatch
+# here is silent and fleet-wide.
+#
+# This list must be a superset of every wazuh_agent_groups value:
+#   roles/wazuh_agent/defaults/main.yml  -> linux
+#   group_vars/k8s.yml                   -> linux,kubernetes
+#   group_vars/proxmox/vars.yml          -> linux,proxmox
+#   group_vars/detlab.yml                -> detlab
+wazuh_manager_agent_groups:
+  - linux
+  - kubernetes
+  - proxmox
+  - detlab

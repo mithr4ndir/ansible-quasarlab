@@ -298,3 +298,39 @@
   no_log: true
   when: wazuh_api_password is defined
   failed_when: false
+
+# Agents declare their groups at enrollment via <groups> in the agent ossec.conf.
+# authd validates every name against groups that already exist on the manager and
+# rejects the whole enrollment if any one is missing, with
+# "wazuh-authd: ERROR: Invalid group: <name>".
+#
+# The agent then logs only "Unable to connect to any server", which reads like a
+# network or firewall problem and says nothing about groups. The manager keeps
+# running and the dashboard keeps working, so nothing looks broken while no host
+# telemetry is collected at all. That is exactly what happened on 2026-08-06:
+# 13 agents had been retrying with an empty client.keys on the manager.
+#
+# Creating the groups here keeps agent-side and manager-side definitions from
+# drifting apart again.
+- name: Ensure agent groups exist on the manager
+  ansible.builtin.command:
+    cmd: /var/ossec/bin/agent_groups -a -g {{ item }} -q
+    creates: /var/ossec/etc/shared/{{ item }}
+  loop: "{{ wazuh_manager_agent_groups }}"
+
+- name: Verify no agent enrollment is being rejected for a missing group
+  ansible.builtin.command:
+    cmd: grep -c 'Invalid group' /var/ossec/logs/ossec.log
+  register: wazuh_invalid_group_count
+  changed_when: false
+  failed_when: false
+
+- name: Warn when agents are still failing to enroll
+  ansible.builtin.debug:
+    msg: >-
+      {{ wazuh_invalid_group_count.stdout }} 'Invalid group' rejections in
+      ossec.log. Agents are failing to enroll. Compare wazuh_manager_agent_groups
+      against every wazuh_agent_groups value in group_vars.
+  when:
+    - wazuh_invalid_group_count.stdout is defined
+    - wazuh_invalid_group_count.stdout | int > 0
