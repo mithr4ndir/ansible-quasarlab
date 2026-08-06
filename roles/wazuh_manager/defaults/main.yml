@@ -1,6 +1,18 @@
 ---
+# NOTE: this is config-template drift, not the installed version. The host
+# actually runs Wazuh 4.14.5 (packages come from the 4.x repo, which floats).
+# Both 4.9 and 4.14 template URLs currently resolve, so this is not breaking, but
+# it should be reconciled deliberately rather than left to drift further.
 wazuh_version: "4.9"
 wazuh_manager_ip: "192.168.1.171"
+
+# Filebeat is pinned and held. Wazuh 4.x requires the OSS build at exactly
+# 7.10.2; 8.x cannot talk to OpenSearch and silently stops indexing alerts.
+# Not available from any configured apt repo, so it installs from this .deb.
+# Filebeat disappears entirely in Wazuh 5.0, which replaces it with the built-in
+# indexer connector. Revisit this pin as part of that migration, not before.
+wazuh_filebeat_version: "7.10.2"
+wazuh_filebeat_deb_url: "https://packages.wazuh.com/4.x/apt/pool/main/f/filebeat/filebeat-oss-{{ wazuh_filebeat_version }}-amd64.deb"
 
 # Ports
 wazuh_manager_port: 1514
