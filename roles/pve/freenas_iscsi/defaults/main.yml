@@ -1,6 +1,12 @@
 ---
 # KSATechnologies freenas-proxmox package
-freenas_proxmox_version: "2.2.0-1"
+# Must match what is actually installed on the nodes. This pin sat at 2.2.0-1
+# while both nodes ran 2.4.0-1 (held), so `apt` was asked to downgrade a held
+# package and refused, which aborted playbooks/proxmox.yml partway through every
+# run. The git branch below stays at 2.0: that is the long-lived 2.x maintenance
+# branch and its patches still apply cleanly against PVE 8.4.21, there is simply
+# no v2.4 tag in the repo.
+freenas_proxmox_version: "2.4.0-1"
 freenas_proxmox_repo: "deb [signed-by=/usr/share/keyrings/ksatechnologies-truenas-proxmox-keyring.gpg] https://dl.cloudsmith.io/public/ksatechnologies/truenas-proxmox/deb/debian any-version main"
 freenas_proxmox_keyring_url: "https://dl.cloudsmith.io/public/ksatechnologies/truenas-proxmox/gpg.A43FE7D559F44CDC.key"
 
