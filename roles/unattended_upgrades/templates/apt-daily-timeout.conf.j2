@@ -1,0 +1,9 @@
+# Managed by Ansible. Do not edit manually.
+#
+# Debian ships apt-daily.service and apt-daily-upgrade.service with
+# TimeoutStartUSec=infinity. A hung fetch therefore pins the oneshot in
+# "activating" forever, and systemd will not re-trigger a timer whose service
+# is still activating, so the host silently stops patching entirely.
+# See roles/unattended_upgrades/defaults/main.yml for the 2026-08-12 incident.
+[Service]
+TimeoutStartSec={{ unattended_upgrades_apt_daily_timeout }}

@@ -1,0 +1,7 @@
+// Managed by Ansible. Do not edit manually.
+// Bound apt's own fetch so it fails fast instead of relying on systemd's
+// TimeoutStartSec backstop. See defaults/main.yml for the 2026-08-12 incident.
+Acquire::http::Timeout "{{ unattended_upgrades_apt_acquire_timeout }}";
+Acquire::https::Timeout "{{ unattended_upgrades_apt_acquire_timeout }}";
+Acquire::ftp::Timeout "{{ unattended_upgrades_apt_acquire_timeout }}";
+Acquire::Retries "{{ unattended_upgrades_apt_acquire_retries }}";

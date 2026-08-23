@@ -30,7 +30,11 @@ total_pending=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l || true)
 
 # Last unattended-upgrades result (parse most recent run from log)
 last_success=1
-last_timestamp=$(date +%s)
+# 0 means "never ran / could not determine", NOT "ran just now". This used to
+# default to $(date +%s), which reported perpetual freshness on any host whose
+# log was missing or unparseable and would silently blind the staleness alert
+# on exactly the hosts that need it most.
+last_timestamp=0
 if [[ -f "$LOG" ]]; then
     # Check for actual upgrade failures in the last run
     # Avoid false positives from informational warnings (distro-info-data outdated,

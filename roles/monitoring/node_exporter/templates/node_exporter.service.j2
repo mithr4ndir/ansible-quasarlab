@@ -11,7 +11,7 @@ ExecStart={{ node_exporter_install_dir }}/node_exporter \
     --web.listen-address=:{{ node_exporter_port }} \
     --collector.textfile.directory={{ node_exporter_textfile_dir }}{% if node_exporter_systemd_enabled | default(false) %} \
     --collector.systemd \
-    --collector.systemd.unit-include="{{ node_exporter_systemd_units | join('|') }}"{% endif %}
+    --collector.systemd.unit-include="{{ (node_exporter_systemd_units + node_exporter_systemd_units_baseline) | unique | join('|') }}"{% endif %}
 
 [Install]
 WantedBy=multi-user.target

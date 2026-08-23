@@ -29,3 +29,25 @@ unattended_upgrades_download_interval: 1
 # a reboot clears /var/run/reboot-required). 10 minutes keeps the
 # lag small without scraping apt metadata too often.
 unattended_upgrades_metric_refresh_interval: "10min"
+
+# --- apt fetch/run hardening (added after the 2026-08-12 pve apt-daily hang) ---
+#
+# apt-daily.service and apt-daily-upgrade.service ship from Debian with
+# TimeoutStartUSec=infinity. On 2026-08-12 a routine apt-daily run on pve wedged
+# with all seven of its fetch workers stuck in CLOSE-WAIT (peers had sent FIN,
+# the methods never noticed). systemd had no timeout to enforce, so the oneshot
+# sat in "activating" for 10 days. While a oneshot is activating systemd refuses
+# to re-trigger it, so BOTH apt timers went to NEXT=n/a and the host received no
+# updates at all for 11 days. The stuck run also held /var/lib/apt/lists/lock,
+# which made every interactive `apt update` fail.
+#
+# This bounds the run so a single hung fetch can never again take the timers
+# down with it. 15m is comfortably above a slow-but-healthy update (observed
+# 5s on pve) while still clearing well inside one daily cycle.
+unattended_upgrades_apt_daily_timeout: "15min"
+
+# Bound the fetch itself, so apt gives up before systemd has to kill it.
+# apt has a compiled-in 120s default but nothing was set explicitly here, and
+# the compiled default did not cover the half-closed-socket case above.
+unattended_upgrades_apt_acquire_timeout: 30
+unattended_upgrades_apt_acquire_retries: 3

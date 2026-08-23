@@ -32,14 +32,17 @@
     group: root
     mode: '0644'
 
-- name: Configure Elastic repo
-  ansible.builtin.copy:
-    dest: /etc/apt/sources.list.d/artifacts_elastic_co_packages_8_x_apt.list
-    content: |
-      deb https://artifacts.elastic.co/packages/8.x/apt stable main
-    owner: root
-    group: root
-    mode: '0644'
+# The Elastic 8.x repo used to be created here. Nothing on either PVE node
+# consumes it: the only Elastic-origin package on pve and pve2 is filebeat
+# 8.19.12 in "rc" state (removed, config files only), left over from the ELK
+# decom. Keeping an unused vendor repo enabled is how the Wazuh host silently
+# walked filebeat 7.10.2 -> 8.x during a routine apt upgrade on 2026-04-10 and
+# blinded the SIEM for four months. That host was remediated in PR #135, but
+# pve/pve2 kept the repo because this task actively re-created it on every run.
+- name: Remove Elastic repo (unused, and an unpinned major-version upgrade risk)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/artifacts_elastic_co_packages_8_x_apt.list
+    state: absent
 
 - name: Load kernel modules
   ansible.builtin.modprobe:

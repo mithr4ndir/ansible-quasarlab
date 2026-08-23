@@ -18,6 +18,45 @@
     dest: /etc/apt/apt.conf.d/20auto-upgrades
     mode: '0644'
 
+- name: Configure apt fetch timeouts
+  ansible.builtin.template:
+    src: 80-timeouts.j2
+    dest: /etc/apt/apt.conf.d/80-timeouts
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Ensure systemd drop-in directories exist for apt daily units
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ item }}.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - apt-daily.service
+    - apt-daily-upgrade.service
+
+# Without this drop-in a single hung fetch pins the oneshot in "activating"
+# forever and takes both apt timers down with it, silently ending all patching
+# on the host. See defaults/main.yml for the 2026-08-12 pve incident.
+- name: Deploy TimeoutStartSec drop-in for apt daily units
+  ansible.builtin.template:
+    src: apt-daily-timeout.conf.j2
+    dest: /etc/systemd/system/{{ item }}.d/override.conf
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - apt-daily.service
+    - apt-daily-upgrade.service
+  register: apt_daily_dropin
+
+- name: Reload systemd if apt drop-ins changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: apt_daily_dropin.changed
+
 - name: Enable unattended-upgrades service
   ansible.builtin.systemd:
     name: unattended-upgrades
