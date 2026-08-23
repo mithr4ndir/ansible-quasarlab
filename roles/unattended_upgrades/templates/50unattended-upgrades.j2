@@ -1,6 +1,6 @@
 // Managed by Ansible — do not edit manually
-Unattended-Upgrade::Allowed-Origins {
-{% for origin in unattended_upgrades_origins %}
+Unattended-Upgrade::Origins-Pattern {
+{% for origin in unattended_upgrades_origins_pattern %}
     "{{ origin }}";
 {% endfor %}
 };
