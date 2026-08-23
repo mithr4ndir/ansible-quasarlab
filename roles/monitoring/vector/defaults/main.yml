@@ -1,2 +1,22 @@
 ---
 loki_endpoint: "http://192.168.1.231:3100"
+
+# Vector is pinned because it is an unpinned vendor package feeding a
+# vendor repo, which is the same shape as the filebeat 7.10.2 -> 8.x walk that
+# blinded the SIEM for four months.
+#
+# It already bit us once here. command-center1 drifted to 0.57.0 and Vector has
+# been dead there ever since: 0.57 added template confinement and now rejects
+# the Loki sink's fully-dynamic label templates with
+#   Sink "loki": template references event fields (["log_type"]) but has no
+#   literal string prefix to derive a confinement base from
+# The config is valid on 0.56.0 and unchanged since April. Every other host is
+# still on 0.56.0 purely by luck, so any blanket `apt upgrade` would have taken
+# out log shipping fleet-wide the same way.
+#
+# Pinning is the stopgap that restores service and stops the bleeding. The real
+# fix is to make the Loki sink templates 0.57-compatible and then move the pin
+# forward deliberately, which is deliberately not bundled with an incident fix
+# because it changes label values in Loki and would break existing queries and
+# dashboards if done carelessly.
+vector_version: "0.56.0-1"
