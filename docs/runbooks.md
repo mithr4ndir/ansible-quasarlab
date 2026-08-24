@@ -4,11 +4,12 @@
 
 ### Automated Timers
 
-Two system-scoped timers on cmd_center1 enforce config on a schedule.
+Two system-scoped timers on cmd_center1 enforce config on a schedule. They run
+at different cadences; check the unit rather than assuming.
 
 | | `ansible-proxmox` | `ansible-security` |
 |---|---|---|
-| Cadence | `OnUnitActiveSec=1h`, `OnBootSec=5min` | hourly |
+| Cadence | `OnUnitActiveSec=1h`, `OnBootSec=5min` | `OnUnitActiveSec=30min`, `OnBootSec=2min` |
 | Script | `scripts/run-proxmox.sh` | `scripts/run-security.sh` |
 | Playbooks | `proxmox`, `vm_baseline`, `monitoring`, `grafana_config`, `jellyfin`, `authentik`, `lb_setup`, `deploy-ha` | `wazuh`, `crowdsec` |
 | Logs | `/var/log/ansible-quasarlab/ansible-*.log` (last 50) | `.../security-*.log` |
@@ -27,10 +28,22 @@ At the start of every run each checkout is force-synced to its remote ref
 (`scripts/lib/sync-repo.sh`), and the run **aborts** if that sync fails. A tree
 the runner cannot verify is a tree it will not deploy from.
 
-!!! danger "Only merged code is deployed"
-    Because the runner pins to `origin/main`, anything unmerged is never
-    applied, and anything applied from an unmerged branch is **reverted** on the
-    next run. Merge before you expect a change to stick.
+!!! danger "Only merged code is deployed. Reverting is not automatic."
+    Because the runner pins to `origin/main`, unmerged work is never applied.
+    Merge before you expect a change to stick.
+
+    The reverse is weaker than it sounds. The next run re-applies whatever
+    `main` **declares**, so a templated file that an unmerged branch changed
+    does get reconciled back. Anything imperative or destructive does not:
+    tasks absent from `main` have no inverse. From the 2026-08-24 accidental
+    deploy, running `main` afterwards would have restored `encoding.xml`, but
+    **not** reinstalled the purged NVIDIA packages, **not** recreated the
+    deleted `/opt/jellyfin/config.migrated`, and obviously not un-restarted
+    Jellyfin.
+
+    After an accidental deploy, read the `changed:` lines in
+    `/var/log/ansible-quasarlab/ansible-*.log` and remediate the irreversible
+    parts by hand. Do not assume the next run cleaned up.
 
 This replaced an older arrangement where the timers ran directly out of
 `~/code/ansible-quasarlab` and tried to freshen it with
