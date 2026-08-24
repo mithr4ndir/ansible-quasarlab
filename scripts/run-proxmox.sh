@@ -4,7 +4,6 @@ set -uo pipefail
 # Automation checkout, NOT the operator working tree. Force-synced to
 # origin/main below so scheduled runs only ever apply merged code.
 REPO_DIR="${ANSIBLE_AUTOMATION_REPO_DIR:-/var/lib/ansible-quasarlab/repo}"
-OBSERVABILITY_REPO_DIR="${OBSERVABILITY_AUTOMATION_REPO_DIR:-/var/lib/ansible-quasarlab/observability}"
 LOG_DIR="/var/log/ansible-quasarlab"
 LOGFILE="${LOG_DIR}/ansible-$(date +%Y%m%d-%H%M%S).log"
 TEXTFILE_DIR="/var/lib/node_exporter/textfiles"
@@ -21,7 +20,7 @@ source "${REPO_DIR}/scripts/lib/sync-repo.sh"
 # run-staleness alert an hour later.
 write_sync_failure_metric() {
     {
-        echo '# HELP ansible_run_repo_sync_success Whether the automation checkouts synced to their pinned ref (1=success, 0=failure).'
+        echo '# HELP ansible_run_repo_sync_success Whether the automation checkout synced to its pinned ref (1=success, 0=failure).'
         echo '# TYPE ansible_run_repo_sync_success gauge'
         echo "ansible_run_repo_sync_success{repo=\"$1\"} 0"
     } > "${PROM_FILE}.tmp"
@@ -29,19 +28,13 @@ write_sync_failure_metric() {
     chmod 644 "$PROM_FILE"
 }
 
-# Pin both automation checkouts to their remote ref. This replaces an older
+# Pin the automation checkout to its remote ref. This replaces an older
 # `git pull --ff-only` whose return code was never checked: run from a working
 # tree parked on a feature branch, the fast-forward failed and the run applied
 # the unmerged branch to the whole fleet.
 if ! sync_repo_to_remote_ref "$REPO_DIR" main >> "$LOGFILE" 2>&1; then
     echo "FATAL: could not pin ${REPO_DIR} to origin/main; refusing to run." | tee -a "$LOGFILE" >&2
     write_sync_failure_metric ansible-quasarlab
-    exit 1
-fi
-
-if ! sync_repo_to_remote_ref "$OBSERVABILITY_REPO_DIR" master >> "$LOGFILE" 2>&1; then
-    echo "FATAL: could not pin ${OBSERVABILITY_REPO_DIR} to origin/master; refusing to run." | tee -a "$LOGFILE" >&2
-    write_sync_failure_metric observability-quasarlab
     exit 1
 fi
 
@@ -109,7 +102,7 @@ declare -A playbook_changed_hosts
 declare -A playbook_total_changed
 
 # Run playbooks (don't exit on failure — we still need to rotate logs and write metrics)
-for playbook in proxmox.yml vm_baseline.yml monitoring.yml grafana_config.yml jellyfin.yml authentik.yml lb_setup.yml deploy-ha.yml; do
+for playbook in proxmox.yml vm_baseline.yml monitoring.yml jellyfin.yml authentik.yml lb_setup.yml deploy-ha.yml; do
     echo "=== Running ${playbook} ===" >> "$LOGFILE"
     tmpfile=$(mktemp)
     ansible-playbook "playbooks/${playbook}" $INVENTORY_ARGS --diff > "$tmpfile" 2>&1
@@ -170,10 +163,9 @@ ansible_run_timestamp_seconds ${end_time}
 # HELP ansible_run_duration_seconds Duration of the last ansible timer run in seconds.
 # TYPE ansible_run_duration_seconds gauge
 ansible_run_duration_seconds ${duration}
-# HELP ansible_run_repo_sync_success Whether the automation checkouts synced to their pinned ref (1=success, 0=failure).
+# HELP ansible_run_repo_sync_success Whether the automation checkout synced to its pinned ref (1=success, 0=failure).
 # TYPE ansible_run_repo_sync_success gauge
 ansible_run_repo_sync_success{repo="ansible-quasarlab"} 1
-ansible_run_repo_sync_success{repo="observability-quasarlab"} 1
 # HELP ansible_playbook_success Whether the last run of each playbook succeeded (1=success, 0=failure).
 # TYPE ansible_playbook_success gauge
 METRICS
