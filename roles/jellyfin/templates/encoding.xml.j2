@@ -10,8 +10,8 @@
   <MaxMuxingQueueSize>2048</MaxMuxingQueueSize>
   <EnableThrottling>true</EnableThrottling>
   <ThrottleDelaySeconds>180</ThrottleDelaySeconds>
-  <EnableSegmentDeletion>false</EnableSegmentDeletion>
-  <SegmentKeepSeconds>720</SegmentKeepSeconds>
+  <EnableSegmentDeletion>{{ jellyfin_enable_segment_deletion | lower }}</EnableSegmentDeletion>
+  <SegmentKeepSeconds>{{ jellyfin_segment_keep_seconds }}</SegmentKeepSeconds>
   <HardwareAccelerationType>none</HardwareAccelerationType>
   <EncoderAppPathDisplay>{{ jellyfin_ffmpeg_path }}</EncoderAppPathDisplay>
   <VaapiDevice />

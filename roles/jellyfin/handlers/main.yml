@@ -7,3 +7,8 @@
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted

@@ -11,6 +11,29 @@ jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
 # Transcoding is CPU (software) only. GPU passthrough was removed 2026-05-31
 # after recurring "fell off the bus" hangs on the RTX 2080 Ti under VFIO.
 
+# HLS segment retention.
+#
+# Jellyfin remuxes to HLS with `-hls_playlist_type vod -hls_list_size 0`, so
+# with segment deletion off every session writes the WHOLE title to the local
+# disk and keeps it until the session ends. On 2026-08-24 seven concurrent
+# sessions on one 96-minute 1080p title wrote 33GB into the transcode cache and
+# took / from 33% to 99% in 90 minutes, roughly two minutes from wedging
+# jellyfin.db on a full filesystem. Segment deletion bounds each session to
+# jellyfin_segment_keep_seconds of video instead of the entire runtime.
+jellyfin_enable_segment_deletion: true
+jellyfin_segment_keep_seconds: 720
+
+# journald was uncapped and had grown to 4.1GB on a 51GB root. Cap it so log
+# volume cannot compete with the transcode cache for the same filesystem.
+jellyfin_journald_max_use: 500M
+jellyfin_journald_max_file_size: 50M
+
+# Rotated logs above this size are treated as NVRM-spam fallout and dropped.
+jellyfin_oversized_log_bytes: 104857600
+jellyfin_oversized_log_candidates:
+  - /var/log/kern.log.1
+  - /var/log/syslog.1
+
 # Monitoring
 node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
 jellyfin_monitoring_api_key: ""
