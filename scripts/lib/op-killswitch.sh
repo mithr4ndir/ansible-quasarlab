@@ -27,12 +27,28 @@ OP_KILLSWITCH_STATE_DIR="${OP_KILLSWITCH_STATE_DIR:-/var/lib/ansible-quasarlab}"
 OP_KILLSWITCH_LOCK="${OP_KILLSWITCH_LOCK:-${OP_KILLSWITCH_STATE_DIR}/1p-killswitch}"
 OP_KILLSWITCH_TTL_SECS="${OP_KILLSWITCH_TTL_SECS:-86400}"
 OP_KILLSWITCH_METRIC_FILE="${OP_KILLSWITCH_METRIC_FILE:-/var/lib/node_exporter/textfiles/onepassword_killswitch.prom}"
+# Headroom required before the lock auto-clears. Set well above the
+# pre-flight threshold (50) so releasing the lock does not immediately hand
+# the next run a quota that re-trips it.
+OP_KILLSWITCH_RECOVER_MIN_REMAINING="${OP_KILLSWITCH_RECOVER_MIN_REMAINING:-200}"
 
 # Ensure the state dir exists with sane perms. Best-effort; failures do
 # not abort the caller because permission issues should be surfaced
 # explicitly, not swallowed by killswitch plumbing.
 op_killswitch_init() {
     mkdir -p "$OP_KILLSWITCH_STATE_DIR" 2>/dev/null || true
+}
+
+# Returns 0 when the 1Password account quota has real headroom again.
+# Deliberately strict: anything unreadable returns 1 (not recovered) so an
+# op outage can never be mistaken for recovery and release the lock early.
+# Requires more than a bare pass of the pre-flight threshold, so a lock is
+# not released straight into a window that would immediately re-trip it.
+op_killswitch_quota_recovered() {
+    local remaining
+    remaining=$(op_preflight_remaining)
+    [[ -n "$remaining" ]] || return 1
+    (( remaining > OP_KILLSWITCH_RECOVER_MIN_REMAINING ))
 }
 
 # Returns 0 if the killswitch is currently active, 1 otherwise.
@@ -49,6 +65,22 @@ op_killswitch_is_active() {
         if (( age < OP_KILLSWITCH_TTL_SECS )); then
             active=1
         fi
+    fi
+
+    # A fixed 24h TTL is a proxy for the real condition, which is "the quota
+    # came back". Those are not the same: the account window can reset hours
+    # before the TTL expires, and until someone remembers to remove the lock
+    # by hand the whole lab stays frozen with the staleness alerts firing.
+    # That manual step has been missed before.
+    #
+    # Now that the quota can be read for free, check it directly and release
+    # the lock once there is real headroom. Only ever clears on a positively
+    # read healthy value; an unreadable quota leaves the lock exactly as it is.
+    if (( active == 1 )) && op_killswitch_quota_recovered; then
+        rm -f "$OP_KILLSWITCH_LOCK" 2>/dev/null || true
+        logger -t op-killswitch "1Password quota recovered; kill-switch lock auto-cleared."
+        active=0
+        tripped_at=0
     fi
 
     op_killswitch_write_metric "$active" "$tripped_at"
