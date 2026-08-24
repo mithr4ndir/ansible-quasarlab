@@ -1,5 +1,26 @@
 ---
+# Operator working tree. Humans edit this; scheduled runs must NOT use it.
 ansible_repo_path: /home/{{ ansible_user }}/code/ansible-quasarlab
+
+# Automation checkouts. Dedicated to the systemd timers, never edited by hand,
+# and force-synced to their remote ref at the start of every run. Keeping these
+# separate is what lets the operator leave any branch checked out under
+# ~/code without that branch being deployed to the fleet.
+# Bound the oneshot runtime. systemd will not re-trigger a timer whose service
+# is still `activating`, so an unbounded run that hangs silently ends ALL future
+# runs -- the same failure that stopped apt patching for 11 days (PR #138).
+ansible_timer_timeout_start_sec: 3600
+
+ansible_automation_root: /var/lib/ansible-quasarlab
+ansible_automation_repo_path: "{{ ansible_automation_root }}/repo"
+observability_automation_repo_path: "{{ ansible_automation_root }}/observability"
+ansible_automation_repos:
+  - name: repo
+    url: "git@github.com:mithr4ndir/ansible-quasarlab.git"
+    version: main
+  - name: observability
+    url: "git@github.com:mithr4ndir/observability-quasarlab.git"
+    version: master
 
 # Architecture for binary downloads. Used by helm, yq, and apt repo
 # entries. Override for ARM hosts if ever needed.

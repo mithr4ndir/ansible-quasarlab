@@ -5,13 +5,37 @@
 #
 set -uo pipefail
 
-REPO_DIR="/home/ladino/code/ansible-quasarlab"
+# Automation checkout, NOT the operator working tree. Force-synced to
+# origin/main below so scheduled runs only ever apply merged code.
+REPO_DIR="${ANSIBLE_AUTOMATION_REPO_DIR:-/var/lib/ansible-quasarlab/repo}"
 LOG_DIR="/var/log/ansible-quasarlab"
 LOGFILE="${LOG_DIR}/security-$(date +%Y%m%d-%H%M%S).log"
 TEXTFILE_DIR="/var/lib/node_exporter/textfiles"
 PROM_FILE="${TEXTFILE_DIR}/ansible_security.prom"
 
 mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
+
+# shellcheck source=lib/sync-repo.sh
+source "${REPO_DIR}/scripts/lib/sync-repo.sh"
+
+# Publish a repo-sync failure and bail out rather than running playbooks from an
+# untrusted tree. See scripts/lib/sync-repo.sh for why this replaced the old
+# unchecked `git pull --ff-only`.
+write_sync_failure_metric() {
+    {
+        echo '# HELP ansible_security_run_repo_sync_success Whether the automation checkout synced to its pinned ref (1=success, 0=failure).'
+        echo '# TYPE ansible_security_run_repo_sync_success gauge'
+        echo "ansible_security_run_repo_sync_success{repo=\"$1\"} 0"
+    } > "${PROM_FILE}.tmp"
+    mv "${PROM_FILE}.tmp" "$PROM_FILE"
+    chmod 644 "$PROM_FILE"
+}
+
+if ! sync_repo_to_remote_ref "$REPO_DIR" main >> "$LOGFILE" 2>&1; then
+    echo "FATAL: could not pin ${REPO_DIR} to origin/main; refusing to run." | tee -a "$LOGFILE" >&2
+    write_sync_failure_metric ansible-quasarlab
+    exit 1
+fi
 
 # shellcheck source=lib/op-killswitch.sh
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
@@ -50,10 +74,6 @@ SECRETS
 if [[ -f /etc/profile.d/ara-ansible-env.sh ]]; then
     source /etc/profile.d/ara-ansible-env.sh
 fi
-
-# Pull latest
-cd "$REPO_DIR"
-git pull --ff-only origin main >> "$LOGFILE" 2>&1
 
 # Resolve inventory with fallback to cache
 source "${REPO_DIR}/scripts/resolve-inventory.sh"
@@ -124,6 +144,9 @@ ansible_security_run_success ${success}
 # HELP ansible_security_run_timestamp_seconds Unix timestamp of the last security timer run completion.
 # TYPE ansible_security_run_timestamp_seconds gauge
 ansible_security_run_timestamp_seconds ${end_time}
+# HELP ansible_security_run_repo_sync_success Whether the automation checkout synced to its pinned ref (1=success, 0=failure).
+# TYPE ansible_security_run_repo_sync_success gauge
+ansible_security_run_repo_sync_success{repo="ansible-quasarlab"} 1
 # HELP ansible_security_run_duration_seconds Duration of the last security timer run in seconds.
 # TYPE ansible_security_run_duration_seconds gauge
 ansible_security_run_duration_seconds ${duration}
