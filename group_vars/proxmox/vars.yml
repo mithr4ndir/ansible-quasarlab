@@ -23,3 +23,16 @@ unattended_upgrades_blacklist:
   - linux-headers-*
   - pve-kernel-*
   - pve-firmware
+
+# Never let a hypervisor reboot itself. Until 2026-08-23 this was true (from the
+# role default) but harmless, because the suite-vs-codename origin mismatch meant
+# unattended-upgrades installed nothing at all on these nodes, so nothing ever
+# set /var/run/reboot-required. Fixing the origins makes these nodes actually
+# apply updates, which would have quietly armed a 03:00 self-reboot on both
+# cluster members while they were running VMs.
+#
+# Kernel packages are already blacklisted above, but plenty of ordinary packages
+# still request a reboot. Reboots here are a scheduled, HA-aware operation: the
+# 2026-04-13 outage started with pve going down unexpectedly and HA fencing.
+# The RebootRequired alert surfaces pending reboots so they can be planned.
+unattended_upgrades_auto_reboot: false

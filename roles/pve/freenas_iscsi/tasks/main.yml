@@ -40,11 +40,30 @@
     update_cache: true
   when: repo_changed.changed
 
+# The hold below is what actually protects ZFS-over-iSCSI, so it has to be
+# lifted before this role can move the version and re-applied afterwards.
+- name: Unhold freenas-proxmox so this role can set the pinned version
+  ansible.builtin.dpkg_selections:
+    name: freenas-proxmox
+    selection: install
+
 - name: Install freenas-proxmox package
   ansible.builtin.apt:
     name: "freenas-proxmox={{ freenas_proxmox_version }}"
     state: present
+    allow_downgrade: true
     update_cache: true
+
+# Codifying a hold that already existed by hand on both nodes and earned its
+# keep on 2026-08-23: a manual `apt upgrade` on pve pulled 64 packages including
+# pve-manager 8.4.19 -> 8.4.21, and this hold is why the storage plugin was not
+# replaced along with them. unattended-upgrades cannot reach this package anyway
+# (it is o=cloudsmith, not an allowed origin), but a human running apt upgrade
+# can, and that is exactly the path that hit us.
+- name: Hold freenas-proxmox against blanket apt upgrades
+  ansible.builtin.dpkg_selections:
+    name: freenas-proxmox
+    selection: hold
 
 - name: Ensure freenas-proxmox git repo exists
   ansible.builtin.git:

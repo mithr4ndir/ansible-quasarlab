@@ -1,10 +1,41 @@
 ---
 # Apply all package updates (security + regular)
 # Service-specific packages are protected via per-host/group blacklists
-unattended_upgrades_origins:
-  - "${distro_id}:${distro_codename}"
-  - "${distro_id}:${distro_codename}-updates"
-  - "${distro_id}:${distro_codename}-security"
+#
+# These are Origins-Pattern (key=value) entries, NOT the legacy Allowed-Origins
+# "Origin:Suite" shorthand. Allowed-Origins only parses the shorthand and throws
+# ValueError on a key=value string, so the two are not interchangeable.
+#
+# The distro split is not cosmetic. Each distro has exactly one field that is
+# both stable over time and distinct per pocket, and they are different fields:
+#
+#   Debian   Suite drifts. bookworm-security advertised a=bookworm-security
+#            while bookworm was stable and now advertises a=oldstable-security,
+#            because Debian renames suites when a release ages. Codename does
+#            not drift and is distinct per pocket (bookworm, bookworm-updates,
+#            bookworm-security), so Debian must match on codename.
+#
+#   Ubuntu   Codename is NOT distinct per pocket. noble, noble-updates,
+#            noble-security AND noble-backports all advertise Codename: noble,
+#            so matching on codename would silently start auto-installing
+#            backports. Suite is distinct per pocket and Ubuntu does not rename
+#            suites as releases age, so Ubuntu must match on archive.
+#
+# Matching Debian on suite is what silently broke patching on pve and pve2:
+# every candidate got pinned to -32768 and every run ended with "No packages
+# found that can be upgraded unattended" while pending security updates piled
+# up. See the 2026-08-23 investigation.
+unattended_upgrades_origins_pattern_debian:
+  - "origin=Debian,codename=${distro_codename},label=Debian"
+  - "origin=Debian,codename=${distro_codename}-updates"
+  - "origin=Debian,codename=${distro_codename}-security,label=Debian-Security"
+
+unattended_upgrades_origins_pattern_ubuntu:
+  - "origin=Ubuntu,archive=${distro_codename}"
+  - "origin=Ubuntu,archive=${distro_codename}-updates"
+  - "origin=Ubuntu,archive=${distro_codename}-security"
+
+unattended_upgrades_origins_pattern: "{{ unattended_upgrades_origins_pattern_debian if ansible_facts['distribution'] == 'Debian' else unattended_upgrades_origins_pattern_ubuntu }}"
 
 # Packages to never auto-update (extended per host via host_vars/group_vars)
 unattended_upgrades_blacklist: []
@@ -29,3 +60,25 @@ unattended_upgrades_download_interval: 1
 # a reboot clears /var/run/reboot-required). 10 minutes keeps the
 # lag small without scraping apt metadata too often.
 unattended_upgrades_metric_refresh_interval: "10min"
+
+# --- apt fetch/run hardening (added after the 2026-08-12 pve apt-daily hang) ---
+#
+# apt-daily.service and apt-daily-upgrade.service ship from Debian with
+# TimeoutStartUSec=infinity. On 2026-08-12 a routine apt-daily run on pve wedged
+# with all seven of its fetch workers stuck in CLOSE-WAIT (peers had sent FIN,
+# the methods never noticed). systemd had no timeout to enforce, so the oneshot
+# sat in "activating" for 10 days. While a oneshot is activating systemd refuses
+# to re-trigger it, so BOTH apt timers went to NEXT=n/a and the host received no
+# updates at all for 11 days. The stuck run also held /var/lib/apt/lists/lock,
+# which made every interactive `apt update` fail.
+#
+# This bounds the run so a single hung fetch can never again take the timers
+# down with it. 15m is comfortably above a slow-but-healthy update (observed
+# 5s on pve) while still clearing well inside one daily cycle.
+unattended_upgrades_apt_daily_timeout: "15min"
+
+# Bound the fetch itself, so apt gives up before systemd has to kill it.
+# apt has a compiled-in 120s default but nothing was set explicitly here, and
+# the compiled default did not cover the half-closed-socket case above.
+unattended_upgrades_apt_acquire_timeout: 30
+unattended_upgrades_apt_acquire_retries: 3

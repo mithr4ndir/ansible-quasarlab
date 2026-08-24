@@ -18,10 +18,26 @@
     filename: vector
     state: present
 
+- name: Pin Vector to the tested version
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/vector
+    content: |
+      # Managed by Ansible. Do not edit manually.
+      # See roles/monitoring/vector/defaults/main.yml for why this is pinned.
+      Package: vector
+      Pin: version {{ vector_version }}
+      Pin-Priority: 1001
+    owner: root
+    group: root
+    mode: '0644'
+
+# allow_downgrade so a host that has already drifted forward is brought back to
+# the pinned version rather than silently staying broken.
 - name: Install Vector
   ansible.builtin.apt:
-    name: vector
+    name: "vector={{ vector_version }}"
     state: present
+    allow_downgrade: true
     update_cache: true
 
 - name: Add vector user to adm group for log access

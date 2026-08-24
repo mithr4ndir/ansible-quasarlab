@@ -7,3 +7,23 @@ node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
 # Systemd service monitoring (disabled by default)
 node_exporter_systemd_enabled: false
 node_exporter_systemd_units: []
+
+# Units every host gets on top of its per-group/per-host list. The group lists
+# fully override rather than merge, so anything fleet-wide has to live here or
+# it silently drops off most hosts. The apt units are here because on
+# 2026-08-12 pve's apt-daily.service sat in "activating" for 10 days with no
+# alert: the unit was simply not in any scrape list, so a state-based rule
+# would have been vacuous.
+#
+# vector and wazuh-agent are here for the same reason. Vector was found dead on
+# k8cluster1 and k8cluster3 on 2026-08-23, failed since 2026-07-29: a transient
+# Loki outage failed its startup healthcheck, it burned its restart budget, and
+# systemd gave up. Logs stopped reaching Loki for 3.5 weeks with nothing firing,
+# because vector.service was in no scrape list either. wazuh-agent is included
+# so the 2026-08-06 "SIEM quietly stopped collecting" class of failure is
+# visible by default rather than only after someone goes looking.
+node_exporter_systemd_units_baseline:
+  - apt-daily.service
+  - apt-daily-upgrade.service
+  - vector.service
+  - wazuh-agent.service
