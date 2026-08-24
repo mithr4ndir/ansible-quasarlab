@@ -13,14 +13,10 @@ ansible_timer_timeout_start_sec: 3600
 
 ansible_automation_root: /var/lib/ansible-quasarlab
 ansible_automation_repo_path: "{{ ansible_automation_root }}/repo"
-observability_automation_repo_path: "{{ ansible_automation_root }}/observability"
 ansible_automation_repos:
   - name: repo
     url: "git@github.com:mithr4ndir/ansible-quasarlab.git"
     version: main
-  - name: observability
-    url: "git@github.com:mithr4ndir/observability-quasarlab.git"
-    version: master
 
 # Architecture for binary downloads. Used by helm, yq, and apt repo
 # entries. Override for ARM hosts if ever needed.

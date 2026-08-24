@@ -11,8 +11,15 @@ at different cadences; check the unit rather than assuming.
 |---|---|---|
 | Cadence | `OnUnitActiveSec=1h`, `OnBootSec=5min` | `OnUnitActiveSec=30min`, `OnBootSec=2min` |
 | Script | `scripts/run-proxmox.sh` | `scripts/run-security.sh` |
-| Playbooks | `proxmox`, `vm_baseline`, `monitoring`, `grafana_config`, `jellyfin`, `authentik`, `lb_setup`, `deploy-ha` | `wazuh`, `crowdsec` |
+| Playbooks | `proxmox`, `vm_baseline`, `monitoring`, `jellyfin`, `authentik`, `lb_setup`, `deploy-ha` | `wazuh`, `crowdsec` |
 | Logs | `/var/log/ansible-quasarlab/ansible-*.log` (last 50) | `.../security-*.log` |
+
+!!! note "Grafana is not managed here"
+    Grafana runs in Kubernetes as a `kube-prometheus-stack` subchart. Its
+    dashboards are ConfigMaps in
+    [k8s-argocd](https://github.com/mithr4ndir/k8s-argocd/tree/main/infrastructure/monitoring/grafana-dashboards)
+    loaded by the Grafana sidecar. The `grafana_config` role and playbook that
+    used to deploy them were removed once Grafana left its VM.
 
 ### Where the timers run from, and why it matters
 
