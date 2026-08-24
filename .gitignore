@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 .mcp.json
 .claude/worktrees/
+callback_plugins/__pycache__/

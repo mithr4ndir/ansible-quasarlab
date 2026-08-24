@@ -7,3 +7,7 @@ ara_server_host: "0.0.0.0"
 ara_server_port: 8000
 ara_database_dir: "{{ ara_home }}/.ara/server"
 ara_log_dir: "/var/log/ara"
+
+# Checkout the run-*.sh wrappers and the callback plugins live in. Used to put
+# this repo's callback_plugins on ANSIBLE_CALLBACK_PLUGINS alongside ara's.
+quasarlab_repo_dir: "{{ ara_home }}/code/ansible-quasarlab"
