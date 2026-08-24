@@ -22,6 +22,9 @@ source "${REPO_DIR}/scripts/lib/proxmox-vault.sh"
 # plugin no longer needs op. We still honor the kill switch for the
 # remaining op-cached secrets (Authentik, Grafana, Claude Bridge).
 op_killswitch_check_or_exit
+# Proactive check: refuse to start when the account quota is already spent,
+# rather than waiting to be told "Too many requests" and pinning the window.
+op_preflight_check_or_exit
 
 # Source 1Password service account token for the remaining op-cached
 # secrets (and for vault-pass.sh's own op read of the vault password).

@@ -127,3 +127,67 @@ op_killswitch_check_or_exit() {
         exit 0
     fi
 }
+
+# ---------------------------------------------------------------------------
+# Proactive pre-flight quota check.
+#
+# The kill switch above is reactive: it only trips once 1Password has already
+# answered "Too many requests". By then the 24h window is pinned. This check
+# runs BEFORE any op call and refuses to start when the account quota is
+# already spent.
+#
+# `op service-account ratelimit` does not itself count against the quota
+# (verified 2026-04-19), so this is free to call on every run.
+#
+# This duplicates callback_plugins/op_quota_gate.py on purpose. The callback
+# covers interactive `ansible-playbook` runs but only takes effect once the
+# ara role has re-templated /etc/profile.d/ara-ansible-env.sh, because
+# ANSIBLE_CALLBACK_PLUGINS overrides ansible.cfg. This shell guard needs no
+# deploy step, so scheduled timer runs are protected immediately.
+# ---------------------------------------------------------------------------
+
+OP_PREFLIGHT_MIN_REMAINING="${OP_PREFLIGHT_MIN_REMAINING:-50}"
+
+# Echo the account read_write REMAINING value, or nothing if undeterminable.
+op_preflight_remaining() {
+    command -v op >/dev/null 2>&1 || return 0
+    local out
+    out=$(timeout 20 op service-account ratelimit 2>/dev/null) || return 0
+    # Match the account/read_write row and sanity check that used+remaining
+    # equals limit, so a future column reorder fails closed to "unknown"
+    # rather than silently gating on the wrong number.
+    awk '
+        tolower($1) == "account" && tolower($2) == "read_write" {
+            limit = $3 + 0; used = $4 + 0; remaining = $5 + 0
+            if (used + remaining == limit) { print remaining }
+            exit
+        }
+    ' <<< "$out"
+}
+
+# Exit non-zero (and log) when the quota is at or below the threshold.
+# Fails OPEN: an unreadable quota lets the run proceed with a warning, because
+# blocking all automation is worse than the overspend this prevents.
+op_preflight_check_or_exit() {
+    if [[ "${OP_QUOTA_GATE_BYPASS:-}" == "1" ]]; then
+        logger -t op-preflight "pre-flight quota gate BYPASSED via OP_QUOTA_GATE_BYPASS=1"
+        return 0
+    fi
+
+    local remaining
+    remaining=$(op_preflight_remaining)
+
+    if [[ -z "$remaining" ]]; then
+        logger -t op-preflight "could not read 1P account quota; proceeding anyway"
+        return 0
+    fi
+
+    if (( remaining <= OP_PREFLIGHT_MIN_REMAINING )); then
+        logger -t op-preflight "1P account quota at ${remaining} (threshold ${OP_PREFLIGHT_MIN_REMAINING}); skipping $(basename "${0:-unknown}")"
+        echo "1Password account quota is down to ${remaining} (threshold ${OP_PREFLIGHT_MIN_REMAINING})." >&2
+        echo "Skipping this run so the 24h window is not kept pinned." >&2
+        echo "  Check status: op service-account ratelimit" >&2
+        echo "  Run anyway  : OP_QUOTA_GATE_BYPASS=1 $0" >&2
+        exit 0
+    fi
+}

@@ -22,6 +22,9 @@ source "${REPO_DIR}/scripts/lib/proxmox-vault.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
 op_killswitch_check_or_exit
+# Proactive check: refuse to start when the account quota is already spent,
+# rather than waiting to be told "Too many requests" and pinning the window.
+op_preflight_check_or_exit
 
 # Source 1Password service account token for the remaining op-cached
 # secrets (and for vault-pass.sh's own op read of the vault password).
