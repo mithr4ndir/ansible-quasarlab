@@ -1,7 +1,11 @@
 .vscode/
 .venv/
 .vault_pass
-group_vars/vault.yml
+# group_vars/vault.yml is intentionally NOT ignored: it is ansible-vault
+# encrypted like group_vars/all/vault.yml and group_vars/proxmox/vault.yml,
+# and four playbooks load it via vars_files, so an automation checkout that
+# lacks it cannot run vm_baseline.yml, monitoring.yml, postgresql.yml or
+# wazuh.yml at all.
 inventory-cache.ini
 __pycache__/
 *.pyc

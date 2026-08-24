@@ -8,6 +8,63 @@
 # Both units are system-scoped (not user) because they run playbooks
 # that require root access across the fleet.
 
+# --- Automation checkouts ---
+# These exist so scheduled runs never execute out of the operator's working
+# tree. On 2026-08-24 a timer ran playbooks/jellyfin.yml straight from
+# ~/code/ansible-quasarlab while it sat on an unmerged feature branch and
+# deployed that branch fleet-wide, Jellyfin restart included. The runner now
+# force-syncs these to their remote ref and aborts if it cannot.
+#
+# Created before the units are templated so the new ExecStart path is valid the
+# first time the timer fires.
+- name: Create automation checkout root
+  ansible.builtin.file:
+    path: "{{ ansible_automation_root }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - ansible_timers
+
+- name: Clone automation checkouts
+  ansible.builtin.git:
+    repo: "{{ item.url }}"
+    dest: "{{ ansible_automation_root }}/{{ item.name }}"
+    version: "{{ item.version }}"
+    # The runner hard-resets these every run, so local state is disposable.
+    force: true
+  become: true
+  become_user: "{{ ansible_user }}"
+  loop: "{{ ansible_automation_repos }}"
+  loop_control:
+    label: "{{ item.name }} @ {{ item.version }}"
+  tags:
+    - ansible_timers
+
+# vault-pass.sh prefers 1Password and falls back to a local .vault_pass. That
+# fallback is what keeps runs working during a 1P rate-limit episode, which this
+# lab hits often enough to matter, so the automation checkout needs its own copy.
+# It is gitignored (it is the password in the clear), hence the remote copy.
+- name: Check for an operator .vault_pass to seed the automation checkout
+  ansible.builtin.stat:
+    path: "{{ ansible_repo_path }}/.vault_pass"
+  register: cmd_center_operator_vault_pass
+  tags:
+    - ansible_timers
+
+- name: Seed .vault_pass into the automation checkout
+  ansible.builtin.copy:
+    src: "{{ ansible_repo_path }}/.vault_pass"
+    dest: "{{ ansible_automation_repo_path }}/.vault_pass"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+  when: cmd_center_operator_vault_pass.stat.exists
+  tags:
+    - ansible_timers
+
 - name: Deploy ansible-proxmox systemd service
   ansible.builtin.template:
     src: ansible-proxmox.service.j2
@@ -88,7 +145,7 @@
 
 - name: Make run scripts executable
   ansible.builtin.file:
-    path: "{{ ansible_repo_path }}/scripts/{{ item }}"
+    path: "{{ ansible_automation_repo_path }}/scripts/{{ item }}"
     mode: '0755'
   loop:
     - run-proxmox.sh

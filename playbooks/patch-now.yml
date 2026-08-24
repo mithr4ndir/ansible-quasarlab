@@ -1,0 +1,93 @@
+---
+# On-demand, install-only fleet patching.
+#
+# Applies all pending apt updates (security + regular + Proxmox repo)
+# across the fleet WITHOUT rebooting. New kernels and libraries stage
+# until the next reboot, which is handled by the unattended_upgrades
+# 03:00 window or a manual maintenance window. This complements the
+# unattended_upgrades role, which only covers Debian-origin packages and
+# leaves Proxmox-repo packages (kernel, pve-manager) to accumulate.
+#
+# Safety:
+#   - No reboots. NEEDRESTART_MODE=l so needrestart only lists services
+#     using outdated libraries rather than restarting them.
+#   - TrueNAS (nas group) is excluded: apt is locked down on the appliance.
+#   - Proxmox hosts run serial: 1 so a failure on the first hypervisor
+#     stops the play before touching the second.
+#
+# Usage (resolves dynamic inventory + vault via the standard env):
+#   ansible-playbook playbooks/patch-now.yml $INVENTORY_ARGS
+
+- name: Install pending updates on guest VMs (no reboot)
+  hosts: linux:!proxmox:!nas
+  become: true
+  gather_facts: false
+  serial: "50%"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    NEEDRESTART_MODE: l
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Apply all pending package upgrades (dist-upgrade)
+      ansible.builtin.apt:
+        upgrade: dist
+        force_apt_get: true
+      register: apt_upgrade
+
+    - name: Autoremove unused dependencies
+      ansible.builtin.apt:
+        autoremove: true
+        purge: false
+
+    - name: Report whether a reboot is now required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          upgrade_changed={{ apt_upgrade.changed }},
+          reboot_required={{ reboot_required.stat.exists }}
+
+- name: Install pending updates on Proxmox hypervisors (no reboot)
+  hosts: proxmox
+  become: true
+  gather_facts: false
+  serial: 1
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    NEEDRESTART_MODE: l
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Apply all pending package upgrades (dist-upgrade)
+      ansible.builtin.apt:
+        upgrade: dist
+        force_apt_get: true
+      register: apt_upgrade
+
+    - name: Autoremove unused dependencies
+      ansible.builtin.apt:
+        autoremove: true
+        purge: false
+
+    - name: Report whether a reboot is now required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          upgrade_changed={{ apt_upgrade.changed }},
+          reboot_required={{ reboot_required.stat.exists }}
