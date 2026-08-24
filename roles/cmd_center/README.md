@@ -12,9 +12,10 @@ management + spec-workflow dashboard workstation). Applied by
 | Ansible collections | kubernetes.core |
 | CLI tools | jq (apt), gh (cli.github.com apt repo), terraform (hashicorp apt repo), helm (pinned binary), yq (pinned binary) |
 | Kubeconfig | Fetched from first k8s control plane, installed at `~/.kube/config` |
-| Systemd timers (system) | `ansible-proxmox.timer`, `ansible-security.timer` with their service units |
+| Systemd timers (system) | `ansible-proxmox.timer`, `ansible-security.timer` with their service units. Both run `TimeoutStartSec` bounded, from the automation checkout. |
+| Automation checkouts | `/var/lib/ansible-quasarlab/{repo,observability}`, cloned here and force-synced to `origin/main` / `origin/master` by the runners on every run. Never edit these by hand. |
 | Systemd linger | Enabled for `ansible_user` so user services survive logout |
-| Git repos | All lab repos cloned under `~/code/` |
+| Git repos | All lab repos cloned under `~/code/`. This is the **operator** tree: humans edit it, timers do not read it. |
 | Claude Code | `claude-config/bin/bootstrap.sh` run to set up `~/.claude` symlinks |
 | Node runtime | Standalone Node 22 at `~/.local/lib/nodejs/current/` (isolated from system apt node) |
 | Spec-workflow dashboard | systemd user service on port 5000, bound to 0.0.0.0 for LAN reach |

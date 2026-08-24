@@ -94,6 +94,12 @@ If 1Password is unavailable, fall back to a `.vault_pass` file at the repo root 
 read -rs ANSIBLE_VAULT_PASSWORD
 printf '%s' "$ANSIBLE_VAULT_PASSWORD" > /home/ladino/code/ansible-quasarlab/.vault_pass
 chmod 0600 /home/ladino/code/ansible-quasarlab/.vault_pass
+
+# The scheduled timers run from the automation checkout, not this tree. The
+# cmd_center role seeds .vault_pass across for you, but only once that checkout
+# exists -- see "Bootstrapping the automation checkout" in runbooks.md. Until
+# then, scheduled runs fall back to 1Password only, which fails during a
+# rate-limit episode.
 unset ANSIBLE_VAULT_PASSWORD
 ```
 
