@@ -2,17 +2,89 @@
 
 ## Ansible Automation
 
-### Automated Timer
-Both playbooks run on a 30-minute systemd timer on cmd_center1:
+### Automated Timers
 
-- **Service**: `ansible-proxmox.service`
-- **Timer**: `ansible-proxmox.timer` (OnBootSec=5min, OnUnitActiveSec=30min)
-- **Script**: `scripts/run-proxmox.sh` — pulls latest from git, runs `proxmox.yml` then `monitoring.yml`
-- **Logs**: `/var/log/ansible-quasarlab/ansible-*.log` (last 50 retained)
+Two system-scoped timers on cmd_center1 enforce config on a schedule.
+
+| | `ansible-proxmox` | `ansible-security` |
+|---|---|---|
+| Cadence | `OnUnitActiveSec=1h`, `OnBootSec=5min` | hourly |
+| Script | `scripts/run-proxmox.sh` | `scripts/run-security.sh` |
+| Playbooks | `proxmox`, `vm_baseline`, `monitoring`, `grafana_config`, `jellyfin`, `authentik`, `lb_setup`, `deploy-ha` | `wazuh`, `crowdsec` |
+| Logs | `/var/log/ansible-quasarlab/ansible-*.log` (last 50) | `.../security-*.log` |
+
+### Where the timers run from, and why it matters
+
+Timers execute from a **dedicated automation checkout**, not from anyone's
+working tree:
+
+```
+/var/lib/ansible-quasarlab/repo           <- pinned to origin/main
+/var/lib/ansible-quasarlab/observability  <- pinned to origin/master
+```
+
+At the start of every run each checkout is force-synced to its remote ref
+(`scripts/lib/sync-repo.sh`), and the run **aborts** if that sync fails. A tree
+the runner cannot verify is a tree it will not deploy from.
+
+!!! danger "Only merged code is deployed"
+    Because the runner pins to `origin/main`, anything unmerged is never
+    applied, and anything applied from an unmerged branch is **reverted** on the
+    next run. Merge before you expect a change to stick.
+
+This replaced an older arrangement where the timers ran directly out of
+`~/code/ansible-quasarlab` and tried to freshen it with
+`git pull --ff-only origin main`. The return code was never checked and the
+scripts do not use `set -e`, so when that tree sat on a feature branch the
+fast-forward failed silently and the run applied **whatever was checked out**.
+On 2026-08-24 that deployed an unmerged branch fleet-wide, Jellyfin restart
+included. See ansible-quasarlab#144.
+
+The practical upshot: you can leave any branch checked out under `~/code` on
+cmd_center1 or a laptop without it reaching the fleet.
+
+### Bootstrapping the automation checkout
+
+The checkouts and the unit files are created by the `cmd_center` role, which is
+**not** in either timer's playbook list, so this is a one-time manual step after
+a rebuild or after changing the timer units:
+
+```bash
+ansible-playbook playbooks/cmd_center.yml --tags ansible_timers --diff
+```
+
+Verify:
+
+```bash
+git -C /var/lib/ansible-quasarlab/repo rev-parse --short HEAD   # == origin/main
+systemctl cat ansible-proxmox.service | grep -E 'ExecStart|WorkingDirectory'
+```
+
+Both should point at `/var/lib/ansible-quasarlab/repo`. If `ExecStart` still
+points into `~/code`, the bootstrap has not run and the fleet is being
+configured from a mutable tree.
+
+### Monitoring the timers
+
+| Metric | Meaning |
+|---|---|
+| `ansible_run_success` / `ansible_playbook_success` | last run / per-playbook result |
+| `ansible_run_timestamp_seconds` | drives `AnsibleRunStale` (>1h) |
+| `ansible_run_repo_sync_success` | 0 when a run refused to start because it could not pin a checkout |
+| `ansible_security_run_repo_sync_success` | same, for the security timer |
+| `ansible_playbook_changed_tasks` | drives `AnsiblePlaybookMadeChanges` (info) |
+
+`AnsibleRepoSyncFailed` is **critical**: while it fires, no configuration is
+being enforced anywhere. See the k8s-argocd `ansible-automation` rule group.
+
+Both service units set `TimeoutStartSec=3600`. Do not remove it. systemd will
+not re-trigger a timer whose oneshot is still `activating`, so an unbounded run
+that hangs silently ends **all** future enforcement.
 
 ```bash
 # Check timer status
 systemctl status ansible-proxmox.timer
+systemctl list-timers 'ansible-*'
 
 # View latest log
 ls -t /var/log/ansible-quasarlab/ansible-*.log | head -1 | xargs cat
@@ -22,6 +94,9 @@ systemctl start ansible-proxmox.service
 
 # Watch it run
 journalctl -u ansible-proxmox.service -f
+
+# What is the automation checkout actually on?
+git -C /var/lib/ansible-quasarlab/repo log --oneline -1
 ```
 
 ### Dry Runs
@@ -35,6 +110,12 @@ ansible-playbook playbooks/<playbook>.yml --check --diff
 - The node_exporter role handles this by skipping download/extract/install when the binary already exists (`stat` check)
 
 ### Running Playbooks Manually
+
+Manual runs use **your** working tree, so they apply whatever you have checked
+out. That is the point of keeping it separate from the automation checkout, but
+it does mean a manual run can deploy uncommitted work. Never edit
+`/var/lib/ansible-quasarlab/repo` by hand: the next run discards it.
+
 ```bash
 cd /home/ladino/code/ansible-quasarlab
 
