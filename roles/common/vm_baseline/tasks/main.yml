@@ -43,3 +43,39 @@
 - name: Set timezone to UTC
   community.general.timezone:
     name: UTC
+
+# --- Log volume ---
+- name: Ensure journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Cap journald disk usage
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-size-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (roles/common/vm_baseline)
+      [Journal]
+      SystemMaxUse={{ vm_baseline_journald_max_use }}
+      SystemMaxFileSize={{ vm_baseline_journald_max_file_size }}
+  notify: Restart journald
+
+# journald enforces SystemMaxUse on rotation and on restart, so the handler
+# above usually brings an oversized journal down on its own. This vacuum covers
+# the case where the drop-in is already in place (handler does not fire) but the
+# journal is somehow over the cap, and makes enforcement immediate either way.
+#
+# journalctl vacuums each journal path separately and prints one line per path,
+# and /run/log/journal essentially always reports "freed 0B" -- so a plain
+# substring test for "freed 0B" would report unchanged even after freeing GBs.
+# The negative lookahead matches only a line that actually freed something.
+- name: Vacuum the journal down to the cap
+  ansible.builtin.command: "journalctl --vacuum-size={{ vm_baseline_journald_max_use }}"
+  register: vm_baseline_journal_vacuum
+  changed_when: vm_baseline_journal_vacuum.stderr is search('freed (?!0B)')

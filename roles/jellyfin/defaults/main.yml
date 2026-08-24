@@ -6,10 +6,36 @@ jellyfin_nfs_server: "192.168.1.15"
 jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"
 jellyfin_http_port: 8096
+
+# Reverse proxies Jellyfin should trust for X-Forwarded-For. Without this,
+# every remote viewer is logged as the NPM proxy's own IP, so the session list,
+# the user activity log and anything parsing Jellyfin's logs see one client
+# instead of many. Note this does NOT gate brute-force protection: CrowdSec runs
+# on the NPM host and already reads real client IPs straight from nginx logs.
+jellyfin_known_proxies:
+  - 192.168.1.150
 jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
 
 # Transcoding is CPU (software) only. GPU passthrough was removed 2026-05-31
 # after recurring "fell off the bus" hangs on the RTX 2080 Ti under VFIO.
+
+# HLS segment retention.
+#
+# Jellyfin remuxes to HLS with `-hls_playlist_type vod -hls_list_size 0`, so
+# with segment deletion off every session writes the WHOLE title to the local
+# disk and keeps it until the session ends. On 2026-08-24 seven concurrent
+# sessions on one 96-minute 1080p title wrote 33GB into the transcode cache and
+# took / from 33% to 99% in 90 minutes, roughly two minutes from wedging
+# jellyfin.db on a full filesystem. Segment deletion bounds each session to
+# jellyfin_segment_keep_seconds of video instead of the entire runtime.
+jellyfin_enable_segment_deletion: true
+jellyfin_segment_keep_seconds: 720
+
+# Rotated logs above this size are treated as NVRM-spam fallout and dropped.
+jellyfin_oversized_log_bytes: 104857600
+jellyfin_oversized_log_candidates:
+  - /var/log/kern.log.1
+  - /var/log/syslog.1
 
 # Monitoring
 node_exporter_textfile_dir: /var/lib/node_exporter/textfiles

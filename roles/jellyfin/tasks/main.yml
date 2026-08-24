@@ -148,3 +148,73 @@
     - "{{ node_exporter_textfile_dir }}/gpu_watchdog.prom"
     - "{{ node_exporter_textfile_dir }}/gpu.prom"
   notify: Reload systemd
+
+# Leftovers from the 2026-03-09 Docker -> native migration. `config.migrated`
+# is the old container config tree, 2.7GB of metadata and images with nothing
+# written to it since the migration day. Dead weight on a 51GB root that the
+# transcode cache has to share.
+- name: Remove the Docker-era migration leftovers
+  ansible.builtin.file:
+    path: /opt/jellyfin/config.migrated
+    state: absent
+
+# The 2026-05-31 decommission removed the GPU units but left the NVIDIA driver
+# stack installed. On a VM with no GPU that leaves nvidia-cdi-refresh.service
+# stuck in `activating` with TimeoutStartUSec=infinity, restarting forever
+# (192850 restarts by 2026-08-24) and writing "NVRM: No NVIDIA GPU found" to
+# kern.log a couple of times a second. That is the same never-completes oneshot
+# failure mode as the apt-daily hang, and it was a large share of the 5.1GB in
+# /var/log on a 51GB root.
+- name: Mask the NVIDIA CDI refresh units
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop:
+    - nvidia-cdi-refresh.path
+    - nvidia-cdi-refresh.service
+  failed_when: false
+
+# autoremove is deliberately off. The orphan sweep wants to take libvulkan1
+# with it, and /usr/lib/jellyfin-ffmpeg/ffmpeg links libvulkan.so.1 -- removing
+# it breaks every transcode on the box. The handful of leftover orphan libs
+# costs a few MB and is not worth that risk.
+- name: Purge the NVIDIA driver stack
+  ansible.builtin.apt:
+    name:
+      - "nvidia-*"
+      - "libnvidia-*"
+    state: absent
+    purge: true
+    autoremove: false
+  register: jellyfin_nvidia_purge
+
+- name: Verify jellyfin-ffmpeg still resolves every shared library
+  ansible.builtin.shell: >-
+    ldd {{ jellyfin_ffmpeg_path }} | grep -c 'not found' || true
+  register: jellyfin_ffmpeg_missing_libs
+  changed_when: false
+  failed_when: jellyfin_ffmpeg_missing_libs.stdout | trim | int > 0
+
+- name: Reload systemd after NVIDIA purge
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: jellyfin_nvidia_purge.changed
+
+# Size-gated on purpose: a blanket delete would throw away legitimate rotated
+# logs on every run. These only ever got this large because of the NVRM spam,
+# and once the driver stack is gone they will not grow back.
+- name: Stat the rotated logs that the NVRM spam inflated
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ jellyfin_oversized_log_candidates }}"
+  register: jellyfin_rotated_logs
+
+- name: Drop rotated logs only while they are still oversized
+  ansible.builtin.file:
+    path: "{{ item.stat.path }}"
+    state: absent
+  loop: "{{ jellyfin_rotated_logs.results | selectattr('stat.exists') | selectattr('stat.size', 'gt', jellyfin_oversized_log_bytes) | list }}"
+  loop_control:
+    label: "{{ item.stat.path }} ({{ item.stat.size | human_readable }})"

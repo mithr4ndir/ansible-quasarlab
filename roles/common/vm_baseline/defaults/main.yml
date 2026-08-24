@@ -16,3 +16,15 @@ vm_baseline_ntp_package: chrony
 vm_baseline_sysctl:
   net.core.somaxconn: 1024
   net.ipv4.tcp_tw_reuse: 1
+
+# journald disk usage.
+#
+# journald ships uncapped by default, and it shows: on 2026-08-24 a survey of
+# the fleet found every VM unbounded, with jellyfin at 4.0G, k8cluster2 at 3.9G
+# and k8cluster3 at 2.5G -- roughly 14GB of journal across six hosts. On
+# jellyfin, whose root is only 51GB and is shared with the Jellyfin transcode
+# cache, that was headroom the cache needed during a busy watch party.
+#
+# Override per host or group where a bigger journal is genuinely wanted.
+vm_baseline_journald_max_use: 500M
+vm_baseline_journald_max_file_size: 50M
