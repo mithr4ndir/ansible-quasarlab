@@ -5,6 +5,11 @@
   <BaseUrl></BaseUrl>
   <EnableHttps>false</EnableHttps>
   <EnableRemoteAccess>true</EnableRemoteAccess>
+  <KnownProxies>
+{%- for proxy in jellyfin_known_proxies %}
+    <string>{{ proxy }}</string>
+{%- endfor %}
+  </KnownProxies>
   <AutoDiscovery>true</AutoDiscovery>
   <EnableIPv4>true</EnableIPv4>
   <EnableIPv6>false</EnableIPv6>

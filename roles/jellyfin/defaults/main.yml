@@ -6,6 +6,14 @@ jellyfin_nfs_server: "192.168.1.15"
 jellyfin_media_nfs_path: "/mnt/tank/media"
 jellyfin_media_mount: "/mnt/media"
 jellyfin_http_port: 8096
+
+# Reverse proxies Jellyfin should trust for X-Forwarded-For. Without this,
+# every remote viewer is logged as the NPM proxy's own IP, so the session list,
+# the user activity log and anything parsing Jellyfin's logs see one client
+# instead of many. Note this does NOT gate brute-force protection: CrowdSec runs
+# on the NPM host and already reads real client IPs straight from nginx logs.
+jellyfin_known_proxies:
+  - 192.168.1.150
 jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
 
 # Transcoding is CPU (software) only. GPU passthrough was removed 2026-05-31
@@ -22,11 +30,6 @@ jellyfin_ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
 # jellyfin_segment_keep_seconds of video instead of the entire runtime.
 jellyfin_enable_segment_deletion: true
 jellyfin_segment_keep_seconds: 720
-
-# journald was uncapped and had grown to 4.1GB on a 51GB root. Cap it so log
-# volume cannot compete with the transcode cache for the same filesystem.
-jellyfin_journald_max_use: 500M
-jellyfin_journald_max_file_size: 50M
 
 # Rotated logs above this size are treated as NVRM-spam fallout and dropped.
 jellyfin_oversized_log_bytes: 104857600

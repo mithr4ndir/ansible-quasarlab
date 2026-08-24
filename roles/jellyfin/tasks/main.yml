@@ -118,31 +118,6 @@
     state: started
     daemon_reload: true
 
-# --- Log volume ---
-# / is 51GB and shared between the OS, jellyfin.db and the transcode cache.
-# journald had grown to 4.1GB uncapped, which is headroom the transcode cache
-# needs during a busy watch party.
-- name: Ensure journald drop-in directory exists
-  ansible.builtin.file:
-    path: /etc/systemd/journald.conf.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Cap journald disk usage
-  ansible.builtin.copy:
-    dest: /etc/systemd/journald.conf.d/10-size-limits.conf
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      # Managed by Ansible (roles/jellyfin)
-      [Journal]
-      SystemMaxUse={{ jellyfin_journald_max_use }}
-      SystemMaxFileSize={{ jellyfin_journald_max_file_size }}
-  notify: Restart journald
-
 # --- Decommission obsolete GPU artifacts (2026-05-31 CPU transcoding move) ---
 # These were deployed when Jellyfin used the RTX 2080 Ti via passthrough.
 # Removing them stops the crash-looping gpu-watchdog (and its flapping
