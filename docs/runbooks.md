@@ -165,22 +165,130 @@ The role skips download/extract/install if the binary already exists at the conf
 **Root cause**: NVIDIA GPUs retain internal state after faults (Xid 45 errors from ffmpeg/CUDA). Without a PCI bus reset, the GPU enters a dirty state where `RmInitAdapter` fails on the next driver load. The hookscript ensures a clean PCI reset on every VM start cycle.
 
 ### VM Inventory
-**pve2 (192.168.1.11):**
-| VMID | Name | Role |
-|------|------|------|
-| 105 | cmd_center1 | Ansible control node, kubectl access |
-| 106 | palworld | Game server (usually stopped) |
-| 109 | k8cluster2 | K8s node with GPU |
 
-**pve (192.168.1.10):**
-| VMID | Name | Role |
-|------|------|------|
-| 100 | npm | Nginx Proxy Manager |
-| 102 | elastic | Elasticsearch |
-| 103 | grafana | Grafana |
-| 104 | timescaleDB | TimescaleDB |
-| 108 | ad | Active Directory |
-| 110 | k8cluster1 | K8s node |
-| 111 | k8cluster3 | K8s node |
-| 112 | nginx1 | NGINX LB |
-| 113 | nginx2 | NGINX LB |
+Verified against `qm list` on both nodes 2026-08-24. The previous version of
+this table was wrong in ways that matter for maintenance planning: it placed
+k8cluster3 on pve (it is on pve2), and listed `elastic` and `grafana`, which
+no longer exist as VMs.
+
+**pve2 (192.168.1.11)** — 125G RAM, 32 cores:
+| VMID | Name | Status | RAM | Role |
+|------|------|--------|-----|------|
+| 105 | command-center1 | running | 16G | Ansible control node, kubectl access |
+| 106 | palworld | stopped | 32G | Game server |
+| 109 | k8cluster2 | running | 16G | K8s control-plane + etcd member |
+| 111 | k8cluster3 | running | 16G | K8s control-plane + etcd member |
+| 115 | jellyfin | running | 12G | Media server (HA-managed, `vm:115`) |
+| 116 | wazuh | running | 16G | SIEM manager + indexer |
+| 118 | authentik | running | 4G | SSO |
+
+**pve (192.168.1.10)** — 125G RAM, 48 cores:
+| VMID | Name | Status | RAM | Role |
+|------|------|--------|-----|------|
+| 100 | npm | running | 6G | Nginx Proxy Manager |
+| 104 | timescaleDB | running | 6G | TimescaleDB |
+| 107 | musicbot | running | 4G | Discord music bot |
+| 110 | k8cluster1 | running | 16G | K8s control-plane + etcd member |
+| 112 | nginx1 | running | 4G | NGINX LB |
+| 113 | nginx2 | running | 4G | NGINX LB |
+| 117 | uptime-kuma | running | 2G | Uptime monitoring |
+| 119 | postgresql | running | 4G | PostgreSQL |
+| 101, 102, 108, 114, 9000 | templates / stopped | stopped | | Windows, AD, cloud-init templates |
+
+Note: as of 2026-08-24 no VM on pve2 has a `hostpci` entry. The GPU passthrough
+described above is no longer attached to k8cluster2, consistent with the move
+to CPU transcoding (`docs/decisions/2026-05-31-jellyfin-cpu-transcoding.md`).
+Confirm with `grep -l hostpci /etc/pve/qemu-server/*.conf` before assuming
+either way.
+
+### Rebooting a Proxmox node
+
+A PVE host reboot is planned maintenance, never a quick fix for a
+`RebootRequired` alert. Read this section before scheduling one.
+
+#### The constraint that matters: etcd quorum
+
+All three K8s nodes are control-plane members running etcd, and **two of the
+three sit on pve2**:
+
+| etcd member | host | etcd disk |
+|---|---|---|
+| k8cluster1 | pve  | local to pve |
+| k8cluster2 | pve2 | `ssd_1:vm-109-disk-0` (20G, local to pve2) |
+| k8cluster3 | pve2 | `ssd_2:vm-111-disk-0` (20G, local to pve2) |
+
+etcd needs 2 of 3 to stay quorate. Rebooting pve2 takes out two members at
+once, so the K8s control plane goes read-only and then unavailable, taking
+Prometheus, Alertmanager, ArgoCD and External Secrets with it. Rebooting pve
+takes out only one member and the cluster survives.
+
+This is a standing single point of failure, not just a reboot inconvenience.
+Spreading the etcd members across hosts is the real fix and is worth doing
+independently of any reboot.
+
+#### Storage: what can and cannot live-migrate
+
+Root disks are on `truenas-iscsi`, which is shared, so those migrate live.
+The etcd disks are on node-local lvmthin and do not:
+
+- **Live-migratable**: 105 command-center1, 115 jellyfin, 116 wazuh, 118 authentik
+- **Not cleanly live-migratable**: 109 k8cluster2, 111 k8cluster3 (local etcd disk,
+  needs `qm migrate --with-local-disks`, which copies 20G and is offline for
+  part of it)
+
+Capacity is not the blocker: pve had 103G available against pve2's 83G in use
+at the time of writing. Check both before starting.
+
+#### Procedure for rebooting pve2
+
+```bash
+# 1. Confirm quorum is healthy BEFORE touching anything.
+#    Expect "Quorate: Yes" and total votes 3 (2 nodes + QDevice).
+pvecm status
+
+# 2. Move the HA master off the node being rebooted.
+#    pve2 is usually master; check and let it fail over.
+ha-manager status
+
+# 3. Migrate the shared-storage VMs to pve. These are live migrations.
+for v in 105 116 118; do qm migrate $v pve --online; done
+
+# 4. jellyfin (115) is HA-managed. Let HA relocate it rather than migrating
+#    it by hand, so HA state stays consistent.
+ha-manager migrate vm:115 pve
+
+# 5. Deal with the etcd members. Pick ONE of:
+#    (a) Migrate them too, accepting the local-disk copy:
+#        qm migrate 109 pve --online --with-local-disks
+#        qm migrate 111 pve --online --with-local-disks
+#    (b) Accept K8s downtime: drain and shut them down, reboot, bring back.
+#        Only acceptable in a window where losing the control plane is fine.
+#    Option (a) is preferred. Verify etcd is healthy after EACH migration
+#    before starting the next, and never move both at once.
+
+# 6. Verify etcd is fully healthy and all 3 members are up.
+kubectl get nodes
+kubectl -n kube-system get pods | grep etcd
+
+# 7. Reboot.
+ssh root@192.168.1.11 reboot
+
+# 8. After it comes back: confirm quorum, then confirm the new kernel.
+pvecm status
+uname -r
+
+# 9. Migrate the VMs back and re-check quorum and HA.
+ha-manager status
+```
+
+#### Post-reboot checklist
+
+Per the decommissioning and maintenance rules, confirm after any node reboot:
+
+- `pvecm status` shows Quorate with the QDevice contributing its vote
+- all 3 etcd members are healthy, not just all 3 nodes `Ready`
+- Prometheus targets for the node and its VMs are `up`
+- no `NodeDown` or `ServiceInactive` alerts left firing in AlertManager
+- `vector.service` is active on every K8s node (it does not always survive a
+  Loki outage during boot; it exhausts its systemd restart budget and gives
+  up, needing `systemctl reset-failed vector && systemctl start vector`)
