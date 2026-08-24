@@ -174,6 +174,15 @@
     - "{{ node_exporter_textfile_dir }}/gpu.prom"
   notify: Reload systemd
 
+# Leftovers from the 2026-03-09 Docker -> native migration. `config.migrated`
+# is the old container config tree, 2.7GB of metadata and images with nothing
+# written to it since the migration day. Dead weight on a 51GB root that the
+# transcode cache has to share.
+- name: Remove the Docker-era migration leftovers
+  ansible.builtin.file:
+    path: /opt/jellyfin/config.migrated
+    state: absent
+
 # The 2026-05-31 decommission removed the GPU units but left the NVIDIA driver
 # stack installed. On a VM with no GPU that leaves nvidia-cdi-refresh.service
 # stuck in `activating` with TimeoutStartUSec=infinity, restarting forever
