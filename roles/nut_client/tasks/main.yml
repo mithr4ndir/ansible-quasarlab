@@ -62,11 +62,17 @@
     state: started
 
 # --- Proxmox HA: prevent guest relocation during a coordinated power-down ---
-- name: Read current Proxmox cluster options
-  ansible.builtin.command: pvesh get /cluster/options --output-format json
-  register: pve_cluster_options
+- name: Read current HA shutdown policy from datacenter.cfg
+  # Read the policy from the cluster config file rather than parsing
+  # `pvesh get /cluster/options --output-format json`, whose `ha` field
+  # shape varies by Proxmox version (a JSON object on PVE 8, but can be a
+  # `key=value` format-string elsewhere). datacenter.cfg always stores it
+  # as `ha: shutdown_policy=<value>`, so this stays idempotent regardless.
+  ansible.builtin.command: grep -oP '^ha:.*shutdown_policy=\K\w+' /etc/pve/datacenter.cfg
+  register: pve_ha_policy
   run_once: true
   changed_when: false
+  failed_when: false  # grep exits 1 when ha line/policy is absent; empty stdout is the signal to set it
   check_mode: false
   when: nut_set_ha_shutdown_policy | bool
 
@@ -76,5 +82,5 @@
   run_once: true
   when:
     - nut_set_ha_shutdown_policy | bool
-    - ((pve_cluster_options.stdout | default('{}') | from_json).ha | default({})).shutdown_policy | default('conditional') != nut_ha_shutdown_policy
+    - (pve_ha_policy.stdout | default('') | trim) != nut_ha_shutdown_policy
   changed_when: true
