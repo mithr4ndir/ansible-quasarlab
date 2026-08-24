@@ -1,6 +1,14 @@
 # ARA callback plugin environment for Ansible
 # Add ARA venv site-packages to PYTHONPATH so system Ansible can import ara
 export PYTHONPATH="{{ ara_venv_path }}/lib/python3.12/site-packages:${PYTHONPATH:-}"
-export ANSIBLE_CALLBACK_PLUGINS=$({{ ara_venv_path }}/bin/python3 -m ara.setup.callback_plugins 2>/dev/null)
+# ANSIBLE_CALLBACK_PLUGINS REPLACES ansible.cfg's callback_plugins rather
+# than merging with it, so anything set here silently wins. Append the repo's
+# own callback directory so the 1Password pre-flight quota gate actually
+# loads; setting it in ansible.cfg alone leaves the gate inert.
+# The :+ expansion keeps the list from starting with a colon (which would put
+# the current directory on the plugin path) when ara prints nothing.
+_ara_callback_plugins=$({{ ara_venv_path }}/bin/python3 -m ara.setup.callback_plugins 2>/dev/null)
+export ANSIBLE_CALLBACK_PLUGINS="${_ara_callback_plugins:+${_ara_callback_plugins}:}{{ quasarlab_repo_dir }}/callback_plugins"
+unset _ara_callback_plugins
 export ANSIBLE_ACTION_PLUGINS=$({{ ara_venv_path }}/bin/python3 -m ara.setup.action_plugins 2>/dev/null)
 export ARA_SETTINGS={{ ara_database_dir }}/settings.yaml
