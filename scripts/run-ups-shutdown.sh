@@ -14,6 +14,11 @@ set -euo pipefail
 REPO_DIR="${ANSIBLE_AUTOMATION_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$REPO_DIR"
 
+LOG_DIR="/var/log/ansible-quasarlab"
+# shellcheck disable=SC2034 # read by the sourced resolve-inventory.sh, not used directly here
+LOGFILE="${LOG_DIR}/ups-shutdown-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "$LOG_DIR"
+
 # shellcheck source=lib/op-killswitch.sh
 source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
 # shellcheck source=lib/op-secret-cache.sh
