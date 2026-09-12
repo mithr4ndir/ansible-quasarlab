@@ -1,0 +1,13 @@
+# HELP onepassword_op_invocations_total op CLI invocations recorded by the attribution shim.
+# TYPE onepassword_op_invocations_total counter
+onepassword_op_invocations_total{consumer="bash",caller="bash",unit="session",subcommand="item get",slug=""} 1
+onepassword_op_invocations_total{consumer="op-quota-collector",caller="op-quota-collector",unit="op-quota-collector",subcommand="service-account ratelimit",slug=""} 1
+onepassword_op_invocations_total{consumer="other",caller="ok",unit="evil",subcommand="read",slug=""} 1
+onepassword_op_invocations_total{consumer="run-proxmox",caller="run-proxmox",unit="ansible-proxmox",subcommand="read",slug="grafana_pg_password"} 2
+onepassword_op_invocations_total{consumer="run-proxmox",caller="vault-pass",unit="ansible-proxmox",subcommand="read",slug="ansible_vault_password"} 1
+# HELP onepassword_op_shim_malformed_lines_total Unparseable lines in the op shim log.
+# TYPE onepassword_op_shim_malformed_lines_total counter
+onepassword_op_shim_malformed_lines_total 1
+# HELP onepassword_op_shim_last_invocation_timestamp_seconds Unix time of the newest recorded op invocation (0 if none).
+# TYPE onepassword_op_shim_last_invocation_timestamp_seconds gauge
+onepassword_op_shim_last_invocation_timestamp_seconds 1789200500

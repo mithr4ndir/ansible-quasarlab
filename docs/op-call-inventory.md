@@ -2,7 +2,7 @@
 
 Audit of every direct 1Password CLI invocation in this repo, tracked per spec `proxmox-inventory-vault` requirement 3.1. Updated 2026-05-02 as part of issue #124.
 
-The point of this doc is to show that every `op` call either goes through `scripts/lib/op-secret-cache.sh` (which gates with a kill switch and caches values 12h) or has been moved to ansible-vault. No call should bypass both.
+The point of this doc is to show that every `op` call either goes through `scripts/lib/op-secret-cache.sh` (which gates with a kill switch, caches values 48h, and serializes refreshes per slug with flock) or has been moved to ansible-vault. No call should bypass both.
 
 ## Categories
 
@@ -17,11 +17,47 @@ The point of this doc is to show that every `op` call either goes through `scrip
 |---|---|---|---|
 | `scripts/run-proxmox.sh` (`load_cached_secrets`) | CACHED | `op-secret-cache.sh` | Authentik, Grafana, Claude Bridge passwords. Proxmox token removed from this list, see issue #124. |
 | `scripts/run-security.sh` (`load_cached_secrets`) | CACHED | `op-secret-cache.sh` | Wazuh manager / API / indexer passwords. Proxmox token removed from this list. |
-| `scripts/vault-pass.sh` (`cached_op_read ansible_vault_password ...`) | CACHED | `op-secret-cache.sh` | Pulls the vault password itself. Cache TTL 12h, served stale under killswitch. |
+| `scripts/vault-pass.sh` (`cached_op_read ansible_vault_password ...`) | CACHED | `op-secret-cache.sh` | Pulls the vault password itself. Cache TTL 48h, served stale under killswitch. |
 | `scripts/sync-prometheus-targets.sh` | VAULT | `lib/proxmox-vault.sh` | Migrated from direct `op read` to vault decrypt as part of issue #124. |
 | `scripts/lib/proxmox-vault.sh::load_proxmox_token_from_vault` | VAULT | (vault decrypt) | Replaces the direct `op read` for the dynamic inventory plugin. |
+| `/usr/local/bin/op` attribution shim (Ansible role `op_ratelimit_collector`) | PASS-THROUGH | execs `/usr/bin/op` | Logs every invocation for attribution, adds no op call of its own. |
 | `/usr/local/bin/op-quota-collector.sh` (Ansible role `op_ratelimit_collector`) | CONTROL-PLANE | direct `op service-account ratelimit` | Free per the docs and the 2026-04-19 verification. Confirmed 2026-05-02: collector ran every 5 min during the read_write cap exhaustion without changing the USED counter. |
 | `roles/onepassword_cli/tasks/main.yml:94` (`op vault list`) | OUT-OF-SCOPE | direct, manual | Part of the `onepassword_cli` provisioning role on the `feature/1password-vault` branch (not yet merged). One-time setup verification, not on any scheduled path. Will need its own audit when that branch lands. |
+
+## Attribution: who is calling op
+
+On command-center1 every `op` invocation passes through an attribution shim, `/usr/local/bin/op` (source: `roles/op_ratelimit_collector/files/op-shim`), which sits ahead of the real `/usr/bin/op` on PATH. It appends one JSON line to `/var/log/op-shim/op-invocations.log` and then execs the real binary unchanged. It makes no 1Password call of its own, and a logging failure never fails the op call.
+
+Each line records the time, pid, ppid, the systemd unit, the outermost `*.sh` ancestor (`consumer`), the immediate parent (`caller`), the ancestor chain, the parent command line (secret-looking words redacted), an allowlisted subcommand, the cache slug when the call came from `cached_op_read`, and any `op://` reference. Other arguments are never logged because they can carry secrets.
+
+The `op-quota-collector` timer folds the log into `onepassword_op_invocations_total{consumer,caller,unit,subcommand,slug}` in `/var/lib/node_exporter/textfiles/op_invocations.prom` and rotates the log at 5 MiB.
+
+Useful queries:
+
+```promql
+# Billable calls by consumer over the last day (ratelimit is free)
+sum by (consumer, caller, slug) (increase(onepassword_op_invocations_total{subcommand!="service-account ratelimit"}[1d]))
+```
+
+To see a single spike in detail, read the log around its timestamp:
+
+```bash
+jq -c 'select(.ts >= 1789200000 and .ts < 1789200600)' /var/log/op-shim/op-invocations.log
+```
+
+Blind spots: the shim does not see External Secrets Operator in Kubernetes, op calls on other hosts, or anything that runs `/usr/bin/op` by absolute path. All of those draw on the same account quota. If a quota jump has no matching shim lines, the source is one of those.
+
+## Forcing a cache refresh
+
+After changing an item in 1Password, mark the affected slugs stale:
+
+```bash
+scripts/op-secret-refresh.sh --list                 # slugs and ages, never values
+scripts/op-secret-refresh.sh grafana_pg_password    # one or more slugs
+scripts/op-secret-refresh.sh --all                  # everything
+```
+
+This makes no op call. The next reader re-reads each slug once, and keeps serving the old value if that read fails. Start `ansible-proxmox.service` or `ansible-security.service` to pick the change up immediately.
 
 ## Validation
 
