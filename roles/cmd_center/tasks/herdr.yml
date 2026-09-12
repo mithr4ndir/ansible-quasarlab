@@ -1,40 +1,128 @@
 ---
-# Run the Herdr headless terminal workspace server as a systemd user
-# service so long-lived agent sessions come back after a host reboot.
-# Before this unit existed the server only started on demand.
+# Herdr headless terminal workspace server, managed end to end:
+#   1. the pinned herdr binary at ~/.local/bin/herdr
+#   2. the herdr.service systemd user unit, so long-lived agent sessions
+#      come back after a host reboot
+#   3. a user timer that exports the unit state to node_exporter
+# The binary tasks come first so the unit is never enabled pointing at a
+# missing binary.
 #
 # Gated in main.yml on cmd_center_herdr_enabled, which defaults to false and
 # is set true only in host_vars/command-center1, so no other host picks
 # it up even if it lands in the cmd_center group.
 #
-# The herdr binary is installed by hand at ~/.local/bin/herdr and is not
-# managed by this role.
-#
 # Depends on:
-#   - linger.yml  so the user manager, and this unit, start at boot
+#   - linger.yml  so the user manager, and these units, start at boot
 #
-# The unit is enabled but deliberately NOT started or restarted here.
-# herdr hosts the operator's live agent sessions: restarting the server
-# kills every pane, and starting the unit while an on-demand server is
-# already running would collide with it. Cut over by hand once, at a
-# quiet moment:
+# NOTHING here starts, stops, or restarts the herdr server. It hosts the
+# operator's live agent sessions: restarting it kills every pane, and
+# starting the unit while an on-demand server is already running would
+# collide with it. Cut over by hand once, at a quiet moment:
 #   herdr server stop && systemctl --user start herdr
 
-- name: Check herdr binary is installed
+# ---------------------------------------------------------------------------
+# Binary
+#
+# Pinned by version and SHA-256 in defaults/main.yml. A missing binary is
+# installed. A binary that does not match the pin is NEVER replaced
+# silently: the play fails until either the pin is bumped to match it or
+# the run passes -e cmd_center_herdr_upgrade=true. See the README for the
+# upgrade procedure.
+#
+# Binary tasks run without become, as the connection user that owns
+# ~/.local/bin, so root never writes into a user-writable directory.
+# ---------------------------------------------------------------------------
+
+- name: Ensure ~/.local/bin exists for herdr
+  ansible.builtin.file:
+    path: "{{ cmd_center_herdr_bin_path | dirname }}"
+    state: directory
+    mode: '0755'
+  become: false
+  tags:
+    - herdr
+
+- name: Check installed herdr binary
   ansible.builtin.stat:
     path: "{{ cmd_center_herdr_bin_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  become: false
   register: cmd_center_herdr_bin_stat
   tags:
     - herdr
 
-- name: Fail if herdr binary is missing
-  ansible.builtin.fail:
-    msg: >
-      herdr is not installed at {{ cmd_center_herdr_bin_path }}. Install it
-      before running this task, or set cmd_center_herdr_enabled to false.
-  when: not cmd_center_herdr_bin_stat.stat.exists
+- name: Record whether the installed herdr binary matches the pin
+  ansible.builtin.set_fact:
+    cmd_center_herdr_bin_drift: >-
+      {{ cmd_center_herdr_bin_stat.stat.exists
+         and cmd_center_herdr_bin_stat.stat.checksum != cmd_center_herdr_sha256 }}
   tags:
     - herdr
+
+- name: Refuse to replace a herdr binary that does not match the pin
+  ansible.builtin.fail:
+    msg: >-
+      {{ cmd_center_herdr_bin_path }} has sha256
+      {{ cmd_center_herdr_bin_stat.stat.checksum }}, but the pin is herdr
+      {{ cmd_center_herdr_version }} with sha256 {{ cmd_center_herdr_sha256 }}.
+      Refusing to replace a binary that a running server may be using. If
+      the host was updated on purpose, bump cmd_center_herdr_version and
+      cmd_center_herdr_sha256 to match it. To install the pinned release
+      over it instead, rerun with -e cmd_center_herdr_upgrade=true.
+  when:
+    - cmd_center_herdr_bin_drift | bool
+    - not (cmd_center_herdr_upgrade | bool)
+  tags:
+    - herdr
+
+# get_url downloads to a temp file, verifies the pinned checksum, and only
+# then renames it over the destination. The rename gives the path a new
+# inode, so an already running server keeps executing the image it
+# loaded; it only moves to the new binary when deliberately restarted.
+- name: Install pinned herdr binary
+  ansible.builtin.get_url:
+    url: "{{ cmd_center_herdr_url }}"
+    dest: "{{ cmd_center_herdr_bin_path }}"
+    checksum: "sha256:{{ cmd_center_herdr_sha256 }}"
+    mode: '0755'
+    timeout: 120
+  become: false
+  when: >-
+    not cmd_center_herdr_bin_stat.stat.exists
+    or (cmd_center_herdr_bin_drift | bool and cmd_center_herdr_upgrade | bool)
+  tags:
+    - herdr
+
+# The checksum already proves which file is installed. This catches a pin
+# whose version and checksum were bumped out of step with each other.
+- name: Read installed herdr version
+  ansible.builtin.command:
+    argv:
+      - "{{ cmd_center_herdr_bin_path }}"
+      - --version
+  become: false
+  register: cmd_center_herdr_version_out
+  changed_when: false
+  tags:
+    - herdr
+
+- name: Assert installed herdr version matches the pin
+  ansible.builtin.assert:
+    that:
+      - cmd_center_herdr_version_out.stdout | trim == 'herdr ' ~ cmd_center_herdr_version
+    fail_msg: >-
+      {{ cmd_center_herdr_bin_path }} reports
+      '{{ cmd_center_herdr_version_out.stdout | trim }}', expected
+      'herdr {{ cmd_center_herdr_version }}'. cmd_center_herdr_version and
+      cmd_center_herdr_sha256 in defaults/main.yml disagree.
+    quiet: true
+  tags:
+    - herdr
+
+# ---------------------------------------------------------------------------
+# herdr.service user unit
+# ---------------------------------------------------------------------------
 
 - name: Ensure systemd user unit directory exists for herdr
   ansible.builtin.file:
@@ -66,6 +154,53 @@
     name: herdr
     scope: user
     enabled: true
+    daemon_reload: true
+  become: false
+  tags:
+    - herdr
+
+# ---------------------------------------------------------------------------
+# Health collector
+#
+# node_exporter's systemd collector only sees system units, so a user
+# timer writes herdr.service state to {{ cmd_center_herdr_health_prom_file }}.
+# The textfile directory is created by the node_exporter role; until it
+# exists the collector exits non-zero each run and logs why.
+# ---------------------------------------------------------------------------
+
+- name: Install herdr health collector script
+  ansible.builtin.copy:
+    src: herdr-health-collector.sh
+    dest: /usr/local/bin/herdr-health-collector.sh
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - herdr
+
+- name: Deploy herdr health collector user units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+  loop:
+    - herdr-health-collector.service
+    - herdr-health-collector.timer
+  register: cmd_center_herdr_health_units
+  tags:
+    - herdr
+
+# Restarting this timer only reschedules the health check; it never
+# touches the herdr server. It is restarted on unit changes so a new
+# interval takes effect now rather than after the next fire.
+- name: Enable and start herdr health collector timer
+  ansible.builtin.systemd:
+    name: herdr-health-collector.timer
+    scope: user
+    enabled: true
+    state: "{{ 'restarted' if cmd_center_herdr_health_units is changed else 'started' }}"
     daemon_reload: true
   become: false
   tags:

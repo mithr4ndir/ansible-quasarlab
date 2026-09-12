@@ -1,0 +1,9 @@
+[Unit]
+Description=Write herdr.service health to the node_exporter textfile collector
+
+[Service]
+Type=oneshot
+Environment=HERDR_HEALTH_PROM_FILE={{ cmd_center_herdr_health_prom_file }}
+Environment=HERDR_HEALTH_UNIT=herdr.service
+ExecStart=/usr/local/bin/herdr-health-collector.sh
+Nice=10
