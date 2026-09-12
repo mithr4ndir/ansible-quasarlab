@@ -23,3 +23,21 @@ op_quota_killswitch_lib: /usr/local/lib/op-quota-collector/op-killswitch.sh
 # Literal path (not ansible_env.HOME) because the play runs as become=yes and
 # HOME would be /root, not op_quota_user's home.
 op_quota_token_file: "/home/{{ op_quota_user }}/.config/op/service-account-token"
+
+# --- op invocation attribution ---
+# The shim (files/op-shim) is installed ahead of the real op on PATH and logs
+# who calls op; the collector turns that log into
+# onepassword_op_invocations_total{consumer,caller,unit,subcommand,slug}.
+# Set false to remove the shim and restore plain /usr/bin/op.
+op_quota_shim_enabled: true
+op_quota_shim_path: /usr/local/bin/op
+# The shim hard-codes these two paths as defaults. Keep them in sync with
+# files/op-shim (tests/test_op_shim.py checks this).
+op_quota_real_op: /usr/bin/op
+op_quota_shim_log: /var/log/op-shim/op-invocations.log
+# The collector rotates the log to <log>.1 past this size (about 25k lines).
+op_quota_shim_log_max_bytes: 5242880
+op_quota_attribution: /usr/local/lib/op-quota-collector/attribution.py
+op_quota_attribution_state_dir: /var/lib/op-quota-collector
+op_quota_attribution_state: "{{ op_quota_attribution_state_dir }}/attribution-state.json"
+op_quota_attribution_metric_file: /var/lib/node_exporter/textfiles/op_invocations.prom

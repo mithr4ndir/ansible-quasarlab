@@ -1,0 +1,72 @@
+---
+# Run the Herdr headless terminal workspace server as a systemd user
+# service so long-lived agent sessions come back after a host reboot.
+# Before this unit existed the server only started on demand.
+#
+# Gated in main.yml on cmd_center_herdr_enabled, which defaults to false and
+# is set true only in host_vars/command-center1, so no other host picks
+# it up even if it lands in the cmd_center group.
+#
+# The herdr binary is installed by hand at ~/.local/bin/herdr and is not
+# managed by this role.
+#
+# Depends on:
+#   - linger.yml  so the user manager, and this unit, start at boot
+#
+# The unit is enabled but deliberately NOT started or restarted here.
+# herdr hosts the operator's live agent sessions: restarting the server
+# kills every pane, and starting the unit while an on-demand server is
+# already running would collide with it. Cut over by hand once, at a
+# quiet moment:
+#   herdr server stop && systemctl --user start herdr
+
+- name: Check herdr binary is installed
+  ansible.builtin.stat:
+    path: "{{ cmd_center_herdr_bin_path }}"
+  register: cmd_center_herdr_bin_stat
+  tags:
+    - herdr
+
+- name: Fail if herdr binary is missing
+  ansible.builtin.fail:
+    msg: >
+      herdr is not installed at {{ cmd_center_herdr_bin_path }}. Install it
+      before running this task, or set cmd_center_herdr_enabled to false.
+  when: not cmd_center_herdr_bin_stat.stat.exists
+  tags:
+    - herdr
+
+- name: Ensure systemd user unit directory exists for herdr
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  tags:
+    - herdr
+
+- name: Deploy herdr systemd user unit
+  ansible.builtin.template:
+    src: herdr.service.j2
+    dest: "/home/{{ ansible_user }}/.config/systemd/user/herdr.service"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+  tags:
+    - herdr
+
+# Runs WITHOUT become, as the SSH connection user, for the same reason
+# as ce_review_viewer.yml: two-hop sudo strips the user dbus session env.
+# daemon_reload lives here instead of in a handler so it gets the same
+# treatment, and no restart handler is notified on unit changes (see
+# the header comment).
+- name: Enable herdr user service
+  ansible.builtin.systemd:
+    name: herdr
+    scope: user
+    enabled: true
+    daemon_reload: true
+  become: false
+  tags:
+    - herdr

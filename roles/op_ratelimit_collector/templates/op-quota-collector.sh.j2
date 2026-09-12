@@ -12,6 +12,10 @@ set -uo pipefail
 METRIC_FILE="{{ op_quota_metric_file }}"
 PARSER="{{ op_quota_parser }}"
 KILLSWITCH_LIB="{{ op_quota_killswitch_lib }}"
+ATTRIBUTION="{{ op_quota_attribution }}"
+SHIM_LOG="{{ op_quota_shim_log }}"
+ATTRIBUTION_STATE="{{ op_quota_attribution_state }}"
+ATTRIBUTION_METRIC_FILE="{{ op_quota_attribution_metric_file }}"
 TOKEN_FILE="${OP_TOKEN_FILE:-{{ op_quota_token_file }}}"
 LOG_TAG="op-quota-collector"
 
@@ -58,6 +62,26 @@ finish() {
     logger -t "$LOG_TAG" "reason=${reason} success=${success}"
     exit 0
 }
+
+# Attribution: fold the op shim invocation log (who called op) into
+# onepassword_op_invocations_total. Runs before the ratelimit call because
+# finish() exits early on any op failure, and attribution matters most during
+# exactly those incidents. Reads local files only and makes no op call. It
+# writes its own textfile, so a failure here never touches the quota metrics.
+if [[ -f "$ATTRIBUTION" ]]; then
+    attr_err="$(mktemp)"
+    if ! python3 "$ATTRIBUTION" \
+        --log "$SHIM_LOG" \
+        --state "$ATTRIBUTION_STATE" \
+        --out "$ATTRIBUTION_METRIC_FILE" \
+        --max-bytes "{{ op_quota_shim_log_max_bytes }}" 2>"$attr_err"; then
+        logger -t "$LOG_TAG" "reason=attribution_error" || true
+    fi
+    if [[ -s "$attr_err" ]]; then
+        logger -t "$LOG_TAG" < "$attr_err" || true
+    fi
+    rm -f "$attr_err"
+fi
 
 # Ensure the kill-switch library is present and source it. We do NOT
 # gate the actual op call behind op_killswitch_is_active here because

@@ -9,3 +9,13 @@ unattended_upgrades_blacklist:
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:
   - docker.service
+  # node_exporter's systemd collector only sees the SYSTEM manager, so the
+  # herdr.service user unit can never appear in node_systemd_unit_state and
+  # listing it here would make any rule on it vacuous. user@1000.service is
+  # the lingered user manager (ladino) that hosts herdr: it is the closest
+  # system-level signal that user services, herdr included, can run at all.
+  - user@1000.service
+
+# Herdr headless server systemd user service (roles/cmd_center/tasks/herdr.yml).
+# Enabled on this host only.
+cmd_center_herdr_enabled: true

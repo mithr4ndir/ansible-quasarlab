@@ -28,6 +28,59 @@
     group: root
     mode: '0755'
 
+- name: Install attribution.py helper
+  ansible.builtin.copy:
+    src: attribution.py
+    dest: "{{ op_quota_attribution }}"
+    owner: root
+    group: root
+    mode: '0755'
+
+# The shim log and the attribution state are owned by the collector user:
+# the timer rotates the log and rewrites the state as that user. 0750/0640
+# because op:// references and parent command lines are not for every
+# local account.
+- name: Ensure op shim log directory exists
+  ansible.builtin.file:
+    path: "{{ op_quota_shim_log | dirname }}"
+    state: directory
+    owner: "{{ op_quota_user }}"
+    group: "{{ op_quota_user }}"
+    mode: '0750'
+
+- name: Ensure attribution state directory exists
+  ansible.builtin.file:
+    path: "{{ op_quota_attribution_state_dir }}"
+    state: directory
+    owner: "{{ op_quota_user }}"
+    group: "{{ op_quota_user }}"
+    mode: '0750'
+
+# Only shadow op when the real binary is there. Otherwise `command -v op`
+# would find the shim and callers would get exit 127 instead of their
+# "op unavailable" branch.
+- name: Check for the real op binary
+  ansible.builtin.stat:
+    path: "{{ op_quota_real_op }}"
+  register: op_quota_real_op_stat
+
+- name: Install op attribution shim ahead of the real op on PATH
+  ansible.builtin.copy:
+    src: op-shim
+    dest: "{{ op_quota_shim_path }}"
+    owner: root
+    group: root
+    mode: '0755'
+  when:
+    - op_quota_shim_enabled | bool
+    - op_quota_real_op_stat.stat.exists
+
+- name: Remove op attribution shim when disabled
+  ansible.builtin.file:
+    path: "{{ op_quota_shim_path }}"
+    state: absent
+  when: not (op_quota_shim_enabled | bool)
+
 - name: Install collector script
   ansible.builtin.template:
     src: op-quota-collector.sh.j2

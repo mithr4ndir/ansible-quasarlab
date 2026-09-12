@@ -90,7 +90,7 @@ ansible-playbook playbooks/lb_setup.yml         # Load balancer pair
 ## Secrets
 
 - **Ansible Vault** for encrypted variables (password from 1Password via `scripts/vault-pass.sh`). Includes the Proxmox API token (`vault_proxmox_api_token`).
-- **1Password CLI cache** (`scripts/lib/op-secret-cache.sh`) for runtime-fetched secrets like Authentik, Grafana, Wazuh, Claude Bridge passwords. 12h TTL, kill-switched against rate-limit drains.
+- **1Password CLI cache** (`scripts/lib/op-secret-cache.sh`) for runtime-fetched secrets like Authentik, Grafana, Wazuh, Claude Bridge passwords. 48h TTL with per-slug locking, kill-switched against rate-limit drains. Every op call on command-center1 is attributed by a shim, see `docs/op-call-inventory.md`.
 - **`scripts/lib/proxmox-vault.sh`** decrypts and exports `PROXMOX_TOKEN_SECRET` for dynamic inventory. Replaces the previous `op read` path that bypassed the env cache (issue #124).
 - See `docs/vault.md` for variable inventory, rotation runbook, and disaster-recovery bootstrap.
 - See `docs/op-call-inventory.md` for the per-call-site audit of every `op` invocation in the repo.

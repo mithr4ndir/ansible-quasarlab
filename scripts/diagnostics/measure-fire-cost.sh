@@ -118,7 +118,9 @@ delta=$(( remaining_before - remaining_after ))
 #   <pid>  HH:MM:SS.uuuuuu execve("/usr/bin/op", ["op", "read", "..."], ...) = 0
 # We only count calls that actually started (returned 0); failed execves
 # (no such file, etc.) do not consume cap.
-op_lines=$(grep -E 'execve\("[^"]*/op", \["op",' "$TRACE" 2>/dev/null | grep -E '\) = 0$' || true)
+# The op attribution shim (/usr/local/bin/op) execs the real binary, so each
+# call shows up twice. Count only the real exec.
+op_lines=$(grep -E 'execve\("[^"]*/op", \["op",' "$TRACE" 2>/dev/null | grep -E '\) = 0$' | grep -v 'execve("/usr/local/bin/op"' || true)
 op_total=$(printf '%s\n' "$op_lines" | sed '/^$/d' | wc -l | tr -d ' ')
 
 # Subcommand breakdown: pull argv[1] out of each line.
