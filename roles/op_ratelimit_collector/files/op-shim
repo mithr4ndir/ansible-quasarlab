@@ -18,12 +18,15 @@
 #    output discarded and stdin detached, and its status is ignored.
 #
 # SECURITY: argv of an op call can carry secrets (`op item create
-# password=...`), so only an allowlisted subcommand and any op://
-# reference are logged, never the other arguments. Every field is
-# stripped to printable ASCII and length capped before it is JSON encoded.
+# password=...`), so only an allowlisted subcommand and an argument that is
+# itself an op:// reference are logged, never the other arguments. Every
+# field is stripped to printable ASCII and length capped before it is JSON
+# encoded.
 #
-# The parent command line is logged for forensics with secret-looking words
-# redacted (see _op_shim_redact) and capped at 256 characters.
+# The parent command line is logged for forensics through an allowlist (see
+# _op_shim_redact_word): names of name=value assignments survive, their
+# values never do, and any word that is not plainly a path, flag or command
+# word is dropped. Capped at 256 characters.
 #
 # Fields: ts pid ppid unit consumer caller chain parent subcommand slug ref
 #   unit      systemd unit from /proc/self/cgroup (ansible-proxmox.service)
@@ -55,27 +58,112 @@ _op_shim_json_str() {
     printf '"%s"' "$s"
 }
 
-# SECURITY: a parent like `bash -c 'OP_SERVICE_ACCOUNT_TOKEN=ops_... op read'`
-# would put a credential in the log. Blank the value of any word that looks
-# like a secret assignment, the word after a secret-looking flag, and
-# anything carrying a service account token prefix.
-_op_shim_redact() {
-    local w out="" hide_next=0
-    local -a words=()
-    shopt -s nocasematch
-    read -r -a words <<< "$1"
-    for w in "${words[@]}"; do
-        if (( hide_next )); then
-            w="REDACTED"
-            hide_next=0
+# Track shell quoting across the pieces of one word of a `sh -c` script.
+# Updates the caller's q (the open quote character, or empty) and esc (1 when
+# the piece ends in a backslash that escapes the following space).
+_op_shim_quote_scan() {
+    local t="$1" c i
+    esc=0
+    for (( i = 0; i < ${#t}; i++ )); do
+        c="${t:i:1}"
+        if (( esc )); then
+            esc=0
+        elif [[ "$q" == "'" ]]; then
+            [[ "$c" == "'" ]] && q=""
+        elif [[ "$c" == "\\" ]]; then
+            esc=1
+        elif [[ -n "$q" ]]; then
+            [[ "$c" == "$q" ]] && q=""
+        elif [[ "$c" == "'" || "$c" == '"' ]]; then
+            q="$c"
         fi
-        case "$w" in
-            *ops_*|*eyJ*) w="REDACTED" ;;
-            -*token*=*|-*pass*=*|-*secret*=*|-*key*=*) w="${w%%=*}=REDACTED" ;;
+    done
+}
+
+# Append one word of the parent command line to out, as it may be logged.
+# Arguments: <word as written> <word with quotes and backslashes removed>
+#
+# Allowlist, in order: after a secret-looking flag, nothing. An op://
+# reference, in full, since it names a field and holds no value (its
+# `?attribute=` query is a selector). A name=value assignment, the name only:
+# 1Password field names are arbitrary (notesPlain, credential,
+# `My Section.Recovery[concealed]`), so no keyword list can say which values
+# are secret. A word carrying a service account token or JWT prefix, nothing.
+# A plain word (paths, flags, subcommands, shell operators), in full.
+# Anything else, including every quoted string and every base64-looking word
+# ending in `=`, nothing.
+_op_shim_redact_word() {
+    local raw="$1" plain="$2" name value shown="REDACTED"
+    local name_re='^[][A-Za-z0-9_. -]{1,64}$'
+    local plain_re='^[A-Za-z0-9_./@%+,:~;&|<>()-]+$'
+    if (( hide_next )); then
+        hide_next=0
+    elif [[ "$plain" == op://* ]]; then
+        [[ "${plain%%\?*}" == *=* || "$plain" == *ops_* || "$plain" == *eyJ* ]] \
+            || shown="$plain"
+    elif [[ "$plain" == *=* ]]; then
+        name="${plain%%=*}"
+        value="${plain#*=}"
+        if [[ -n "$value" && "$value" != =* && "$name" =~ $name_re \
+              && "$name" != *ops_* && "$name" != *eyJ* ]]; then
+            shown="${name}=REDACTED"
+        fi
+    elif [[ "$plain" == *ops_* || "$plain" == *eyJ* ]]; then
+        :
+    elif [[ "$raw" =~ $plain_re ]]; then
+        shown="$raw"
+        case "$raw" in
             -*token*|-*pass*|-*secret*|-*key*) hide_next=1 ;;
-            *token*=*|*pass*=*|*secret*=*|*key*=*) w="${w%%=*}=REDACTED" ;;
         esac
-        out+="${out:+ }${w}"
+    fi
+    out+="${out:+ }${shown}"
+}
+
+# A `sh -c` script: rebuild shell words from whitespace-separated pieces, so a
+# quoted or backslash-continued value is judged as one word and cannot leak
+# its tail. An unterminated quote redacts everything after it.
+_op_shim_redact_script() {
+    local piece word="" q="" esc=0
+    local -a pieces=()
+    read -r -d '' -a pieces <<< "$1"
+    for piece in "${pieces[@]}"; do
+        (( ${#out} < 512 )) || return 0
+        word="${word:+${word} }${piece}"
+        _op_shim_quote_scan "$piece"
+        if [[ -n "$q" ]] || (( esc )); then
+            continue
+        fi
+        _op_shim_redact_word "$word" "${word//[\'\"\\]/}"
+        word=""
+    done
+    [[ -z "$word" ]] || out+="${out:+ }REDACTED"
+}
+
+# SECURITY: the parent's argv can carry secrets, both as shell assignments
+# (`bash -c 'OP_SERVICE_ACCOUNT_TOKEN=... op read'`) and as 1Password field
+# assignments (`op item create notesPlain=...`). Arguments are the parent's
+# argv elements. The script argument of a shell's -c is split into shell
+# words; every other element is judged whole, so an element with spaces in
+# it is a value and is dropped. See _op_shim_redact_word for what survives.
+_op_shim_redact() {
+    local out="" hide_next=0 shell=0 script_next=0 arg
+    shopt -s nocasematch
+    case "${1##*/}" in
+        bash|sh|dash|zsh|-bash|-sh) shell=1 ;;
+    esac
+    for arg in "$@"; do
+        (( ${#out} < 512 )) || break
+        # Bounds the work; only the first 256 characters are logged anyway.
+        arg="${arg:0:4096}"
+        if (( script_next )) && [[ "$arg" != -* ]]; then
+            script_next=0
+            _op_shim_redact_script "$arg"
+            continue
+        fi
+        if (( shell )) && [[ "$arg" =~ ^-[A-Za-z]*c[A-Za-z]*$ ]]; then
+            script_next=1
+        fi
+        _op_shim_redact_word "$arg" "$arg"
     done
     printf '%s' "$out"
 }
@@ -163,9 +251,11 @@ _op_shim_record() {
     done
     [[ -n "$sub" ]] || sub="none"
 
+    # Only an argument that is itself a reference. `notesPlain=see op://x ...`
+    # is a value that happens to mention one, and must not be logged.
     for a in "$@"; do
-        if [[ "$a" == *op://* ]]; then
-            ref="op://${a#*op://}"
+        if [[ "$a" == op://* ]]; then
+            ref="$a"
             break
         fi
     done
@@ -178,8 +268,9 @@ _op_shim_record() {
 
     # $$ is the shim's own pid even inside this subshell, and op keeps it.
     ppid="$PPID"
-    parent_cmd=$(tr '\0' ' ' < "/proc/${ppid}/cmdline" 2>/dev/null)
-    parent_cmd=$(_op_shim_redact "$parent_cmd")
+    local -a parent_argv=()
+    mapfile -d '' -t parent_argv < "/proc/${ppid}/cmdline" 2>/dev/null
+    parent_cmd=$(_op_shim_redact "${parent_argv[@]}")
     pid="$ppid"
     for (( depth = 0; depth < 16; depth++ )); do
         [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || break

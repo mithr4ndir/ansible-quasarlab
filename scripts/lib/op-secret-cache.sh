@@ -205,8 +205,14 @@ _op_secret_cache_refresh() {
 # still has the old value to fall back on. Makes no op call. Takes the
 # slug lock briefly so it cannot race a refresh that is mid-write.
 # Returns 1 if any slug was invalid or could not be invalidated.
+#
+# Without the lock the slug is left untouched and reported as failed. An
+# in-flight refresh may have read 1Password before the operator's change;
+# marking the file stale under it would let that old value land afterwards
+# and stay fresh for a full TTL, silently undoing the invalidation.
 op_secret_cache_invalidate() {
     local slug cache_file lock_fd rc=0
+    local lock_wait="${OP_SECRET_CACHE_INVALIDATE_LOCK_WAIT_SECS:-10}"
     for slug in "$@"; do
         if ! op_secret_cache_valid_slug "$slug"; then
             echo "op-secret-cache: invalid slug: ${slug//[^A-Za-z0-9_.-]/?}" >&2
@@ -219,11 +225,19 @@ op_secret_cache_invalidate() {
             continue
         fi
         lock_fd=""
-        if command -v flock >/dev/null 2>&1 \
-            && { exec {lock_fd}>>"${OP_SECRET_CACHE_DIR}/.${slug}.lock"; } 2>/dev/null; then
-            flock -w 10 "$lock_fd" || true
-        else
-            lock_fd=""
+        if ! command -v flock >/dev/null 2>&1 \
+            || ! { exec {lock_fd}>>"${OP_SECRET_CACHE_DIR}/.${slug}.lock"; } 2>/dev/null; then
+            echo "op-secret-cache: could not invalidate ${slug}: cannot open its lock" >&2
+            logger -t op-secret-cache "invalidate failed, no lock for slug=${slug}"
+            rc=1
+            continue
+        fi
+        if ! flock -w "$lock_wait" "$lock_fd"; then
+            exec {lock_fd}>&-
+            echo "op-secret-cache: could not invalidate ${slug}: a refresh held its lock for ${lock_wait}s; retry" >&2
+            logger -t op-secret-cache "invalidate failed, lock wait timed out for slug=${slug}"
+            rc=1
+            continue
         fi
         if touch -d @0 "$cache_file" 2>/dev/null; then
             logger -t op-secret-cache "invalidated slug=${slug}"
@@ -231,7 +245,7 @@ op_secret_cache_invalidate() {
             echo "op-secret-cache: could not invalidate ${slug}" >&2
             rc=1
         fi
-        [[ -n "$lock_fd" ]] && exec {lock_fd}>&-
+        exec {lock_fd}>&-
     done
     return "$rc"
 }

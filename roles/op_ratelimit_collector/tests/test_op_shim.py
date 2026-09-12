@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -184,6 +185,91 @@ class LoggingTests(ShimSandbox):
     def test_log_is_not_world_readable(self) -> None:
         self.run_shim(["read", "op://a/b/c"])
         self.assertEqual(self.log.stat().st_mode & 0o007, 0)
+
+
+class ParentRedactionTests(ShimSandbox):
+    """The parent command line is logged, so it must pass an allowlist.
+
+    Every value below is an obviously fake placeholder containing FAKE, so a
+    single assertion proves none of them reached the log.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Callers find the shim as `op` on PATH, as they would on a host.
+        path_dir = self.tmp / "bin"
+        path_dir.mkdir()
+        (path_dir / "op").symlink_to(SHIM)
+        self.env["PATH"] = f"{path_dir}:{self.env['PATH']}"
+
+    def run_via_shell(self, script: str) -> dict:
+        # The trailing `; true` stops bash from exec'ing op in place of itself,
+        # so the shell stays the parent the shim inspects.
+        proc = subprocess.run(["bash", "-c", f"{script}; true"], env=self.env,
+                              capture_output=True, timeout=30, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        events = self.events()
+        self.assertEqual(len(events), 1)
+        return events[0]
+
+    def run_via_python(self, op_args: list[str], parent_args: list[str]) -> dict:
+        code = f"import subprocess; subprocess.run(['op', *{op_args!r}])"
+        proc = subprocess.run([sys.executable, "-c", code, *parent_args], env=self.env,
+                              capture_output=True, timeout=30, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        events = self.events()
+        self.assertEqual(len(events), 1)
+        return events[0]
+
+    def assert_no_fake_values(self) -> None:
+        self.assertNotIn("FAKE", self.log.read_text())
+
+    def test_field_assignments_redacted_in_shell_parent(self) -> None:
+        ev = self.run_via_shell(
+            "op item create --vault Infra notesPlain=FAKE-notes credential=FAKE-cred "
+            "recoveryPhrase=FAKE-phrase 'My Section.Custom Field[concealed]=FAKE custom value' "
+            "apiCred=FAKE\\ escaped\\ spaces")
+        for name in ("notesPlain", "credential", "recoveryPhrase",
+                     "My Section.Custom Field[concealed]", "apiCred"):
+            self.assertIn(f"{name}=REDACTED", ev["parent"])
+        self.assertTrue(ev["parent"].startswith("bash -c op item create --vault Infra"),
+                        ev["parent"])
+        self.assertEqual(ev["subcommand"], "item create")
+        self.assert_no_fake_values()
+
+    def test_field_assignments_redacted_in_direct_argv_parent(self) -> None:
+        ev = self.run_via_python(
+            ["item", "create"],
+            ["notesPlain=FAKE notes with spaces", "credential=FAKE-cred",
+             "recoveryPhrase=FAKE phrase words", "Custom Field=FAKE-custom", "--vault", "Infra"])
+        for name in ("notesPlain", "credential", "recoveryPhrase", "Custom Field"):
+            self.assertIn(f"{name}=REDACTED", ev["parent"])
+        self.assertIn("--vault Infra", ev["parent"])
+        self.assert_no_fake_values()
+
+    def test_non_plain_words_dropped(self) -> None:
+        self.run_via_python(
+            ["read", "op://a/b/c"],
+            ["RkFLRS1iYXNlNjQ=", '{"password":"FAKE-json"}', "--title", "FAKE title words",
+             "--token", "FAKEplainword", "OP_SERVICE_ACCOUNT_TOKEN_ALIAS", "ops_FAKE"])
+        text = self.log.read_text()
+        self.assertNotIn("RkFLRS1iYXNlNjQ", text)
+        self.assert_no_fake_values()
+
+    def test_op_read_references_logged_intact(self) -> None:
+        ev = self.run_via_shell('op read "op://Infrastructure/Wazuh SIEM/password"')
+        self.assertEqual(ev["ref"], "op://Infrastructure/Wazuh SIEM/password")
+        self.assertEqual(ev["parent"], "bash -c op read op://Infrastructure/Wazuh SIEM/password; true")
+        self.log.unlink()
+        ev = self.run_via_shell("op read 'op://Infrastructure/Grafana/one-time password?attribute=otp'")
+        self.assertEqual(ev["ref"], "op://Infrastructure/Grafana/one-time password?attribute=otp")
+        self.assertIn("op://Infrastructure/Grafana/one-time password?attribute=otp", ev["parent"])
+
+    def test_value_mentioning_a_reference_is_not_logged_as_ref(self) -> None:
+        self.run_shim(["item", "edit", "Some Item", "notesPlain=moved to op://FAKE-vault/FAKE-item"])
+        ev = self.events()[0]
+        self.assertEqual(ev["ref"], "")
+        self.assert_no_fake_values()
 
 
 class TransparencyTests(ShimSandbox):
