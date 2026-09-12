@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# 1Password CLI attribution shim, installed as /usr/local/bin/op.
+#
+# Why: the account quota drains in bursts and `op service-account
+# ratelimit` shows how much, never who. This shim sits ahead of the real
+# binary on PATH, appends one JSON line per invocation to a local log,
+# then execs the real op. The op_ratelimit_collector timer folds that log
+# into onepassword_op_invocations_total{consumer,caller,unit,subcommand,slug}.
+#
+# Guarantees, in priority order:
+# 1. No 1Password API calls of its own. It only reads /proc and appends to
+#    a local file.
+# 2. Never changes what the caller gets. The real op is exec'd with the
+#    original arguments, stdin, stdout, stderr and environment, so its
+#    exit status and output reach the caller untouched, and op keeps this
+#    process's pid.
+# 3. Logging cannot fail the read. Recording runs in a subshell with all
+#    output discarded and stdin detached, and its status is ignored.
+#
+# SECURITY: argv of an op call can carry secrets (`op item create
+# password=...`), so only an allowlisted subcommand and any op://
+# reference are logged, never the other arguments. Every field is
+# stripped to printable ASCII and length capped before it is JSON encoded.
+#
+# The parent command line is logged for forensics with secret-looking words
+# redacted (see _op_shim_redact) and capped at 256 characters.
+#
+# Fields: ts pid ppid unit consumer caller chain parent subcommand slug ref
+#   unit      systemd unit from /proc/self/cgroup (ansible-proxmox.service)
+#   caller    the immediate parent (vault-pass, run-proxmox, bash)
+#   consumer  the outermost *.sh ancestor (run-proxmox), else the caller
+#   chain     parent names up the tree, nearest first
+#   slug      OP_SHIM_SLUG, set by cached_op_read for cache refreshes
+#
+# Not seen by this shim: op calls on other hosts, External Secrets Operator
+# in Kubernetes, or anything that execs /usr/bin/op by absolute path. All
+# of those still count against the same account quota.
+#
+# Keep these defaults in sync with roles/op_ratelimit_collector/defaults.
+
+OP_SHIM_REAL_OP="${OP_SHIM_REAL_OP:-/usr/bin/op}"
+OP_SHIM_LOG="${OP_SHIM_LOG:-/var/log/op-shim/op-invocations.log}"
+# The collector rotates the log. This cap only stops unbounded growth if the
+# collector is down; past it, invocations go unrecorded but still run.
+OP_SHIM_LOG_HARD_CAP_BYTES="${OP_SHIM_LOG_HARD_CAP_BYTES:-52428800}"
+
+# Printable ASCII only, capped, then JSON string escaped. Truncate before
+# escaping so a cut can never split an escape sequence.
+_op_shim_json_str() {
+    local s="$1" max="$2"
+    s="${s//[^[:print:]]/}"
+    s="${s:0:max}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '"%s"' "$s"
+}
+
+# SECURITY: a parent like `bash -c 'OP_SERVICE_ACCOUNT_TOKEN=ops_... op read'`
+# would put a credential in the log. Blank the value of any word that looks
+# like a secret assignment, the word after a secret-looking flag, and
+# anything carrying a service account token prefix.
+_op_shim_redact() {
+    local w out="" hide_next=0
+    local -a words=()
+    shopt -s nocasematch
+    read -r -a words <<< "$1"
+    for w in "${words[@]}"; do
+        if (( hide_next )); then
+            w="REDACTED"
+            hide_next=0
+        fi
+        case "$w" in
+            *ops_*|*eyJ*) w="REDACTED" ;;
+            -*token*=*|-*pass*=*|-*secret*=*|-*key*=*) w="${w%%=*}=REDACTED" ;;
+            -*token*|-*pass*|-*secret*|-*key*) hide_next=1 ;;
+            *token*=*|*pass*=*|*secret*=*|*key*=*) w="${w%%=*}=REDACTED" ;;
+        esac
+        out+="${out:+ }${w}"
+    done
+    printf '%s' "$out"
+}
+
+# Short display name for a process: script basename for interpreters,
+# otherwise the program basename. ansible-* gets its playbook appended.
+_op_shim_proc_name() {
+    local pid="$1" first name="" a i
+    local -a argv=()
+    mapfile -d '' -t argv < "/proc/${pid}/cmdline" 2>/dev/null || return 1
+    [[ ${#argv[@]} -gt 0 ]] || return 1
+    first="${argv[0]##*/}"
+    first="${first#-}"
+    case "$first" in
+        bash|sh|dash|zsh|env|perl|python|python[0-9]*)
+            for (( i = 1; i < ${#argv[@]}; i++ )); do
+                a="${argv[i]}"
+                [[ "$a" == "-c" ]] && break
+                [[ "$a" == -* ]] && continue
+                name="${a##*/}"
+                break
+            done
+            ;;
+    esac
+    [[ -n "$name" ]] || name="$first"
+    if [[ "$name" == ansible* ]]; then
+        for a in "${argv[@]}"; do
+            if [[ "$a" == *.yml || "$a" == *.yaml ]]; then
+                name="${name}:${a##*/}"
+                break
+            fi
+        done
+    fi
+    printf '%s' "$name"
+}
+
+_op_shim_parent_pid() {
+    local stat
+    read -r stat < "/proc/$1/stat" 2>/dev/null || return 1
+    # comm (field 2) may contain spaces and parens; fields after the last ')'
+    # are fixed: state ppid ...
+    stat="${stat##*) }"
+    stat="${stat#* }"
+    printf '%s' "${stat%% *}"
+}
+
+_op_shim_record() {
+    local LC_ALL=C
+    local ts line size unit="" cg sub ref="" a skip=0 parent_cmd=""
+    local pid ppid name caller="" consumer="" chain="" depth
+
+    [[ -n "$OP_SHIM_LOG" ]] || return 0
+    if [[ -f "$OP_SHIM_LOG" ]]; then
+        size=$(stat -c %s "$OP_SHIM_LOG" 2>/dev/null) || size=0
+        (( size < OP_SHIM_LOG_HARD_CAP_BYTES )) || return 0
+    fi
+
+    printf -v ts '%(%s)T' -1
+
+    # Subcommand, from allowlists only, so a flag value or item name can never
+    # land in the log. Global flags and their values are skipped.
+    sub=""
+    for a in "$@"; do
+        if (( skip )); then skip=0; continue; fi
+        case "$a" in
+            --account|--config|--session|--encoding|--format|--cache-dir) skip=1; continue ;;
+            -*) continue ;;
+        esac
+        if [[ -z "$sub" ]]; then
+            case "$a" in
+                account|connect|document|events-api|group|item|plugin|service-account|user|vault)
+                    sub="$a" ;;
+                completion|help|inject|read|run|signin|signout|update|whoami)
+                    sub="$a"; break ;;
+                *)
+                    sub="other"; break ;;
+            esac
+        else
+            case "$a" in
+                add|clean|confirm|create|delete|edit|forget|get|grant|init|inspect|list|ls|manage|move|provision|ratelimit|reactivate|revoke|server|share|suspend|template|token|use)
+                    sub="${sub} ${a}" ;;
+            esac
+            break
+        fi
+    done
+    [[ -n "$sub" ]] || sub="none"
+
+    for a in "$@"; do
+        if [[ "$a" == *op://* ]]; then
+            ref="op://${a#*op://}"
+            break
+        fi
+    done
+
+    while IFS= read -r cg; do
+        case "$cg" in
+            0::*|*:name=systemd:*) unit="${cg##*/}" ;;
+        esac
+    done < /proc/self/cgroup 2>/dev/null
+
+    # $$ is the shim's own pid even inside this subshell, and op keeps it.
+    ppid="$PPID"
+    parent_cmd=$(tr '\0' ' ' < "/proc/${ppid}/cmdline" 2>/dev/null)
+    parent_cmd=$(_op_shim_redact "$parent_cmd")
+    pid="$ppid"
+    for (( depth = 0; depth < 16; depth++ )); do
+        [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || break
+        name=$(_op_shim_proc_name "$pid") || break
+        [[ -n "$caller" ]] || caller="${name%.sh}"
+        [[ "$name" == *.sh ]] && consumer="${name%.sh}"
+        chain="${chain:+${chain}<}${name}"
+        pid=$(_op_shim_parent_pid "$pid") || break
+    done
+    [[ -n "$consumer" ]] || consumer="$caller"
+
+    line="{\"ts\":${ts},\"pid\":$$,\"ppid\":${PPID}"
+    line+=",\"unit\":$(_op_shim_json_str "$unit" 128)"
+    line+=",\"consumer\":$(_op_shim_json_str "$consumer" 64)"
+    line+=",\"caller\":$(_op_shim_json_str "$caller" 64)"
+    line+=",\"chain\":$(_op_shim_json_str "$chain" 512)"
+    line+=",\"parent\":$(_op_shim_json_str "$parent_cmd" 256)"
+    line+=",\"subcommand\":$(_op_shim_json_str "$sub" 64)"
+    line+=",\"slug\":$(_op_shim_json_str "${OP_SHIM_SLUG:-}" 128)"
+    line+=",\"ref\":$(_op_shim_json_str "$ref" 256)}"
+
+    # One write of a short line to an O_APPEND fd, so concurrent shims do
+    # not interleave. 0640: refs and parent command lines are not secrets
+    # but are not for every local user either.
+    umask 0027
+    printf '%s\n' "$line" >> "$OP_SHIM_LOG"
+}
+
+( _op_shim_record "$@" ) </dev/null >/dev/null 2>&1
+
+self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)
+real=$(readlink -f "$OP_SHIM_REAL_OP" 2>/dev/null)
+if [[ ! -x "$OP_SHIM_REAL_OP" || -z "$real" || "$real" == "$self" ]]; then
+    echo "op shim: real 1Password CLI not found at ${OP_SHIM_REAL_OP}" >&2
+    exit 127
+fi
+
+exec -a op "$OP_SHIM_REAL_OP" "$@"
