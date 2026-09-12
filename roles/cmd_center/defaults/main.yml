@@ -59,3 +59,9 @@ spec_workflow_port: 5000
 spec_workflow_bind_address: "0.0.0.0"
 spec_workflow_allow_external_access: true
 spec_workflow_cors_enabled: false
+
+# Herdr headless server systemd user service. Off by default; enabled
+# only for command-center1 in its host_vars. cmd_center_herdr_bin_path
+# must match the %h/.local/bin/herdr path hard-coded in herdr.service.j2.
+cmd_center_herdr_enabled: false
+cmd_center_herdr_bin_path: "/home/{{ ansible_user }}/.local/bin/herdr"

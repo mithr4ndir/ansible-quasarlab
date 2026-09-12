@@ -1,7 +1,7 @@
 ---
 # Enable systemd linger for the ansible_user so user services start
 # at boot without a login session. Required for the spec-workflow
-# dashboard systemd user service to survive reboots.
+# dashboard and herdr systemd user services to survive reboots.
 #
 # Idempotency: checks for the linger marker file before running
 # loginctl, so re-runs report ok without calling loginctl again.

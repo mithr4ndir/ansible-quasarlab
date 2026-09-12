@@ -1,0 +1,22 @@
+[Unit]
+Description=Herdr headless terminal workspace server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# herdr server stays in the foreground, so exec is correct: systemd marks
+# the unit active only once the binary has actually been executed.
+Type=exec
+Environment=TERM=xterm-256color
+ExecStart=%h/.local/bin/herdr server
+ExecStop=%h/.local/bin/herdr server stop
+Restart=on-failure
+RestartSec=5
+# Agent panes are children of the server. mixed sends SIGTERM to the main
+# process only, giving herdr the chance to shut its panes down cleanly
+# instead of systemd reaping every pane process at once.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

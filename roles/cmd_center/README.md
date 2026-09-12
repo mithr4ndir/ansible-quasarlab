@@ -19,6 +19,7 @@ management + spec-workflow dashboard workstation). Applied by
 | Claude Code | `claude-config/bin/bootstrap.sh` run to set up `~/.claude` symlinks |
 | Node runtime | Standalone Node 22 at `~/.local/lib/nodejs/current/` (isolated from system apt node) |
 | Spec-workflow dashboard | systemd user service on port 5000, bound to 0.0.0.0 for LAN reach |
+| Herdr server | `herdr.service` systemd user unit, enabled (not started) when `cmd_center_herdr_enabled` is true. Only command-center1 sets it. The herdr binary itself is installed by hand. |
 
 `op` (1Password CLI) is installed by the separate `onepassword_cli` role,
 which is already listed in `playbooks/cmd_center.yml`.
@@ -48,6 +49,9 @@ ansible-playbook playbooks/cmd_center.yml --tags spec_workflow
 
 # Only refresh the kubeconfig
 ansible-playbook playbooks/cmd_center.yml --tags kubeconfig
+
+# Only redeploy and enable the herdr unit (never restarts a running server)
+ansible-playbook playbooks/cmd_center.yml --tags herdr
 ```
 
 Available tags per task file:
@@ -61,6 +65,8 @@ Available tags per task file:
 - `claude_bootstrap`
 - `node`
 - `spec_workflow`
+- `ce_review_viewer`
+- `herdr`
 
 ## Idempotency
 
@@ -90,6 +96,7 @@ See `defaults/main.yml` for the full list. Key ones to override in inventory:
 - `spec_workflow_bind_address` set to `127.0.0.1` for localhost-only
 - `spec_workflow_cors_enabled` set to `true` and configure allowed origins if exposing beyond LAN
 - `lab_repos` add or remove repos cloned onto the host
+- `cmd_center_herdr_enabled` set to `true` in host_vars to install the herdr user unit (command-center1 only today)
 
 ## Disaster recovery runbook
 
@@ -103,7 +110,13 @@ command center.
    - `kubectl get nodes` works (kubeconfig installed)
    - `ls -la ~/.claude/memory` shows symlink to `~/code/claude-config/memory`
    - `systemctl list-timers` shows both ansible-proxmox and ansible-security timers
-4. Reboot the host and re-verify item 3 to confirm services auto-start via linger
+   - `systemctl --user is-enabled herdr` returns `enabled` (on command-center1)
+4. Reboot the host and re-verify item 3 to confirm services auto-start via linger. On command-center1, also confirm `systemctl --user is-active herdr` returns `active`.
+
+On a live command center where herdr was already running on demand, the
+role only enables the unit. Cut over once, at a quiet moment, since
+stopping the server ends every agent pane:
+`herdr server stop && systemctl --user start herdr`.
 
 ## Related spec
 

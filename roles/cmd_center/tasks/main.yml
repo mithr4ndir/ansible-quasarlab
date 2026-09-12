@@ -36,3 +36,7 @@
 
 - name: ce:review run viewer systemd user service
   ansible.builtin.import_tasks: ce_review_viewer.yml
+
+- name: Herdr headless server systemd user service
+  ansible.builtin.import_tasks: herdr.yml
+  when: cmd_center_herdr_enabled | bool
