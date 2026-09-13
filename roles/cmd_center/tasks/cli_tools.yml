@@ -70,27 +70,75 @@
     - cli_tools
 
 # Helm: single binary, no apt repo. Pinned version via defaults.
-- name: Install helm binary
-  ansible.builtin.unarchive:
-    src: "https://get.helm.sh/helm-v{{ helm_version }}-linux-{{ helm_arch }}.tar.gz"
-    dest: /tmp
-    remote_src: true
-    creates: "/usr/local/bin/helm-v{{ helm_version }}"
-  become: true
+#
+# The versioned binary is the only install marker. The download, extract, and
+# copy all hang off one stat of it, so they skip and run together: a host that
+# already has the binary skips all three, even after a reboot has cleared
+# /tmp, instead of copying from a staging directory that no longer exists.
+#
+# The archive is extracted into a fresh root-only (0700) directory from
+# tempfile, never a fixed /tmp path that another user could create or seed
+# first, and with --no-same-owner so extracted files belong to root rather
+# than the uid recorded in the tarball. The directory is removed whether or
+# not the install succeeds.
+- name: Check for the pinned helm binary
+  ansible.builtin.stat:
+    path: "/usr/local/bin/helm-v{{ helm_version }}"
+    get_checksum: false
+  register: cmd_center_helm_bin
   tags:
     - cli_tools
 
-- name: Move helm to /usr/local/bin with versioned name
-  ansible.builtin.copy:
-    src: "/tmp/linux-{{ helm_arch }}/helm"
-    dest: "/usr/local/bin/helm-v{{ helm_version }}"
-    remote_src: true
-    owner: root
-    group: root
-    mode: '0755'
+# Nothing is downloaded under --check, so the pending install is reported
+# here instead of failing on a staging directory that was never filled.
+- name: Report the pending helm install under check mode
+  ansible.builtin.debug:
+    msg: "Would install helm {{ helm_version }} to /usr/local/bin/helm-v{{ helm_version }}"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - not cmd_center_helm_bin.stat.exists
+  tags:
+    - cli_tools
+
+- name: Install the pinned helm binary
+  when:
+    - not ansible_check_mode
+    - not cmd_center_helm_bin.stat.exists
   become: true
   tags:
     - cli_tools
+  block:
+    - name: Create a root-only staging directory for the helm archive
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: helm.
+      register: cmd_center_helm_staging
+
+    - name: Extract helm into the staging directory
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-v{{ helm_version }}-linux-{{ helm_arch }}.tar.gz"
+        dest: "{{ cmd_center_helm_staging.path }}"
+        remote_src: true
+        include:
+          - "linux-{{ helm_arch }}/helm"
+        extra_opts:
+          - --no-same-owner
+
+    - name: Install helm to /usr/local/bin with versioned name
+      ansible.builtin.copy:
+        src: "{{ cmd_center_helm_staging.path }}/linux-{{ helm_arch }}/helm"
+        dest: "/usr/local/bin/helm-v{{ helm_version }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+  always:
+    - name: Remove the helm staging directory
+      ansible.builtin.file:
+        path: "{{ cmd_center_helm_staging.path }}"
+        state: absent
+      when: cmd_center_helm_staging.path is defined
 
 - name: Symlink helm version to /usr/local/bin/helm
   ansible.builtin.file:
