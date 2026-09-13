@@ -1,4 +1,9 @@
 ---
+# Must run before the first update_cache below. See the task file for why this
+# role owns the cleanup.
+- name: Remove apt sources and keys left by decommissioned services
+  ansible.builtin.import_tasks: decommissioned_apt_sources.yml
+
 - name: Install unattended-upgrades
   ansible.builtin.apt:
     name: unattended-upgrades

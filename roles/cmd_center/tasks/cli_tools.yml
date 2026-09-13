@@ -57,25 +57,9 @@
   tags:
     - cli_tools
 
-# HashiCorp Terraform: official apt repo at apt.releases.hashicorp.com
-- name: Download HashiCorp apt signing key
-  ansible.builtin.get_url:
-    url: https://apt.releases.hashicorp.com/gpg
-    dest: /etc/apt/keyrings/hashicorp-archive-keyring.gpg
-    mode: '0644'
-  become: true
-  tags:
-    - cli_tools
-
-- name: Add HashiCorp apt repository
-  ansible.builtin.apt_repository:
-    repo: "deb [arch={{ dpkg_arch }} signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
-    filename: hashicorp
-    state: present
-  become: true
-  tags:
-    - cli_tools
-
+# HashiCorp Terraform. The signing key and the single source definition are
+# owned by hashicorp_apt.yml, which main.yml imports before any apt cache
+# update so a rotated key cannot fail the whole play first.
 - name: Install terraform
   ansible.builtin.apt:
     name: terraform

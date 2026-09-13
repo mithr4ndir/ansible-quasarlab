@@ -23,6 +23,22 @@ ansible_automation_repos:
 dpkg_arch: amd64
 helm_arch: amd64
 
+# HashiCorp apt repository (terraform). See tasks/hashicorp_apt.yml.
+#
+# The fingerprint is the full v4 fingerprint of HashiCorp's Linux package
+# signing key, NOT a short key id. Source: the Linux package signing keys on
+# https://www.hashicorp.com/trust/security, which on 2026-09-13 listed
+#   current:  D55C 0D1A C78A 8D81 26CB 631C FC9C A96A CA02 6560
+#   previous: 798A EC65 4E5C 1542 8C8E 42EE AA16 FCBC A621 E701
+#             (active 2023-01-23 to 2026-09-10)
+# Cross-checked the same day: the key served at hashicorp_apt_key_url has this
+# fingerprint, and gpgv verifies dists/noble/InRelease with it. When HashiCorp
+# rotates again, confirm the new fingerprint on that page before bumping this.
+hashicorp_apt_repo_url: https://apt.releases.hashicorp.com
+hashicorp_apt_key_url: https://apt.releases.hashicorp.com/gpg
+hashicorp_apt_key_fingerprint: D55C0D1AC78A8D8126CB631CFC9CA96ACA026560
+hashicorp_apt_keyring: /etc/apt/keyrings/hashicorp-archive-keyring.gpg
+
 # CLI tool versions. Pinned so upgrades are intentional.
 helm_version: "3.19.0"
 yq_version: "4.47.2"

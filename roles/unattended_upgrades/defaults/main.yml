@@ -82,3 +82,19 @@ unattended_upgrades_apt_daily_timeout: "15min"
 # the compiled default did not cover the half-closed-socket case above.
 unattended_upgrades_apt_acquire_timeout: 30
 unattended_upgrades_apt_acquire_retries: 3
+
+# Apt sources and legacy trusted.gpg keys left by decommissioned services.
+# Removed on every host this role reaches. See tasks/decommissioned_apt_sources.yml.
+#
+# Elastic 8.x: added by the filebeat role deleted in the 2026-03-15 ELK decom.
+# The path is what apt_repository generated for that repo line; it was measured
+# on command-center1 on 2026-09-13 and matches the removal previously carried
+# by wazuh_manager and pve/common.
+unattended_upgrades_decommissioned_apt_sources:
+  - /etc/apt/sources.list.d/artifacts_elastic_co_packages_8_x_apt.list
+
+# Full fingerprints only. Elasticsearch Signing Key <dev_ops@elasticsearch.org>,
+# imported by that role with apt_key and still the only key in
+# /etc/apt/trusted.gpg on command-center1 on 2026-09-13.
+unattended_upgrades_decommissioned_trusted_keys:
+  - 46095ACC8548582C1A2699A9D27D666CD88E42B4

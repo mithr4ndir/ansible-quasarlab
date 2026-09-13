@@ -178,16 +178,11 @@
 # OpenSearch (it probes `_license`, which OpenSearch rejects with a 400). Alert
 # indexing stopped that minute and stayed broken for ~4 months while every
 # service kept reporting `active`.
-- name: Remove orphaned Elastic apt repository
-  ansible.builtin.file:
-    path: /etc/apt/sources.list.d/artifacts_elastic_co_packages_8_x_apt.list
-    state: absent
-  register: elastic_repo_removed
-
-- name: Refresh apt cache after removing Elastic repository
-  ansible.builtin.apt:
-    update_cache: true
-  when: elastic_repo_removed.changed
+#
+# The orphaned repo itself is removed fleet-wide by
+# roles/unattended_upgrades/tasks/decommissioned_apt_sources.yml, which reaches
+# this host through playbooks/vm_baseline.yml and playbooks/monitoring.yml. The
+# pinned install and the hold below stay here because they are Wazuh specific.
 
 - name: Check installed Filebeat version
   ansible.builtin.command:

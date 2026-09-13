@@ -1,0 +1,162 @@
+---
+# HashiCorp apt signing key and source definition.
+#
+# Imported first by main.yml, before packages.yml runs its apt cache update.
+# A stale HashiCorp key fails EVERY apt-get update on the host, so if this ran
+# later (it used to live in cli_tools.yml) the play would die at the first
+# unrelated update_cache and never reach the fix.
+#
+# Key: pinned by full fingerprint (hashicorp_apt_key_fingerprint in defaults).
+# The keyring is checked on every run and re-fetched only when it does not
+# hold exactly that key. A download that does not contain the pinned key fails
+# the play loudly instead of trusting whatever the URL served, and only the
+# pinned key is exported into the keyring. When HashiCorp rotates again the
+# fix is a one-line pin bump, confirmed against their security page.
+#
+# Source: one file, written whole with copy. apt_repository was the wrong
+# tool here: it appends a new line whenever the rendered line differs from an
+# existing one, so a hand-installed hashicorp.list (vendor docs keyring path,
+# no arch=) plus the role's line would give apt two entries for the same URI
+# with conflicting Signed-By, which is a hard error.
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: "{{ hashicorp_apt_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+- name: Check HashiCorp apt keyring holds exactly the pinned signing key
+  ansible.builtin.script:
+    cmd: >-
+      apt_pinned_key.py check
+      --keyring {{ hashicorp_apt_keyring | quote }}
+      --fingerprint {{ hashicorp_apt_key_fingerprint | quote }}
+    executable: python3
+  become: true
+  register: hashicorp_apt_key_check
+  changed_when: false
+  # Read-only, so it is safe (and required) to run under --check too.
+  check_mode: false
+  failed_when: hashicorp_apt_key_check.rc not in [0, 1]
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+- name: Replace missing or stale HashiCorp apt keyring
+  when: hashicorp_apt_key_check.rc == 1
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+  block:
+    - name: Create private scratch directory for the HashiCorp key download
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: hashicorp-apt-key-
+      register: hashicorp_apt_key_tmp
+
+    - name: Download HashiCorp apt signing key
+      ansible.builtin.get_url:
+        url: "{{ hashicorp_apt_key_url }}"
+        dest: "{{ hashicorp_apt_key_tmp.path }}/hashicorp.asc"
+        mode: '0600'
+        force: true
+
+    - name: Install only the pinned HashiCorp key into the keyring
+      ansible.builtin.script:
+        cmd: >-
+          apt_pinned_key.py install
+          --source {{ (hashicorp_apt_key_tmp.path ~ '/hashicorp.asc') | quote }}
+          --keyring {{ hashicorp_apt_keyring | quote }}
+          --fingerprint {{ hashicorp_apt_key_fingerprint | quote }}
+        executable: python3
+      changed_when: true
+
+  always:
+    - name: Remove HashiCorp key scratch directory
+      ansible.builtin.file:
+        path: "{{ hashicorp_apt_key_tmp.path }}"
+        state: absent
+      when: hashicorp_apt_key_tmp.path is defined
+
+- name: Write the single HashiCorp apt source definition
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/hashicorp.list
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (roles/cmd_center/tasks/hashicorp_apt.yml). Local edits are overwritten.
+      deb [arch={{ dpkg_arch }} signed-by={{ hashicorp_apt_keyring }}] {{ hashicorp_apt_repo_url }} {{ ansible_distribution_release }} main
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+# Any other place a HashiCorp source can come from. The vendor docs and older
+# hand installs use their own file name, a deb822 .sources file, an
+# apt_repository generated name, or the monolithic sources.list, and the docs
+# keyring path under /usr/share/keyrings is not owned by any package (checked
+# with dpkg -S on command-center1). Leaving any of them behind would give apt a
+# second, conflicting definition or a stale key that looks authoritative.
+- name: Find other apt source files that define the HashiCorp repo
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns:
+      - '*.list'
+      - '*.sources'
+    # find applies re.match per line, so this only hits active one-line deb
+    # entries and deb822 URIs fields, never a commented-out line.
+    contains: '^\s*(deb(-src)?\s|URIs:).*apt\.releases\.hashicorp\.com'
+    excludes:
+      - hashicorp.list
+  register: hashicorp_apt_other_sources
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+- name: Remove other apt source files that define the HashiCorp repo
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ hashicorp_apt_other_sources.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+- name: Remove HashiCorp entries from the monolithic sources.list
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list
+    regexp: '^\s*deb(-src)?\s.*apt\.releases\.hashicorp\.com'
+    state: absent
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt
+
+- name: Remove stale HashiCorp keyring from the vendor docs path
+  ansible.builtin.file:
+    path: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+    state: absent
+  when: hashicorp_apt_keyring != '/usr/share/keyrings/hashicorp-archive-keyring.gpg'
+  become: true
+  tags:
+    - cli_tools
+    - packages
+    - hashicorp_apt

@@ -8,9 +8,15 @@
 #   ssh_keys.yml            SSH keys from 1P via op
 
 # First on purpose: until it runs, every SSH exec into this host costs a
-# 1Password read (see shell_env.yml).
+# 1Password read (see shell_env.yml). It needs no apt access, so it stays
+# ahead of the apt work below.
 - name: Shell startup without 1Password reads
   ansible.builtin.import_tasks: shell_env.yml
+
+# Must precede packages.yml: a stale third-party apt key fails every apt cache
+# update, including the one there. See hashicorp_apt.yml.
+- name: HashiCorp apt signing key and source definition
+  ansible.builtin.import_tasks: hashicorp_apt.yml
 
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
