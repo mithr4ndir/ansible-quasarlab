@@ -3,10 +3,12 @@
 # The TrueNAS NAS is the NUT primary (UPS USB attached) and is configured
 # separately in the TrueNAS UPS service. See roles/nut_client.
 #
-# Secret convention matches the rest of the repo: the upsmon password comes
-# from the NUT_MONITOR_PASSWORD env var. For a direct run, export it first:
-#   NUT_MONITOR_PASSWORD="$(op read 'op://Infrastructure/NUT upsmon/password')" \
-#     ansible-playbook playbooks/ups-shutdown.yml
+# Run it through scripts/run-ups-shutdown.sh. The upsmon password comes from the
+# NUT_MONITOR_PASSWORD env var, which the wrapper fills from the shared 1Password
+# cache (scripts/lib/op-secret-cache.sh), served stale when 1Password is down or
+# kill-switched. Do not fill it from a live 1Password read by hand: that bypasses
+# the cache and the kill switch. If nothing is cached and 1Password is
+# unavailable, export NUT_MONITOR_PASSWORD yourself and still use the wrapper.
 - name: Configure NUT UPS-triggered shutdown on Proxmox hosts
   hosts: proxmox
   become: true
@@ -19,8 +21,9 @@
         that:
           - lookup('env', 'NUT_MONITOR_PASSWORD') | length > 0
         fail_msg: >-
-          NUT_MONITOR_PASSWORD is empty or unset. Export it first, e.g.
-          NUT_MONITOR_PASSWORD="$(op read 'op://Infrastructure/NUT upsmon/password')".
+          NUT_MONITOR_PASSWORD is empty or unset. Run via
+          scripts/run-ups-shutdown.sh, which resolves it from the shared
+          1Password cache.
         quiet: true
 
     - name: Resolve NUT monitor password from env

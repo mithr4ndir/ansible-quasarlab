@@ -5,9 +5,9 @@
       - nut_monitor_password is defined
       - nut_monitor_password | length > 0
     fail_msg: >-
-      nut_monitor_password is empty. Run via playbooks/ups-shutdown.yml, which
-      sets it from the NUT_MONITOR_PASSWORD env var (export it first, e.g.
-      NUT_MONITOR_PASSWORD="$(op read 'op://Infrastructure/NUT upsmon/password')").
+      nut_monitor_password is empty. Run via scripts/run-ups-shutdown.sh, which
+      resolves NUT_MONITOR_PASSWORD from the shared 1Password cache and passes it
+      to playbooks/ups-shutdown.yml.
     quiet: true
 
 - name: Install NUT client
