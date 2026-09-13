@@ -1,0 +1,10 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following held packages will be changed:
+  kubectl
+The following packages will be upgraded:
+  kubectl
+1 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Inst kubectl [1.33.3-1.1] (1.33.11-1.1 isv:kubernetes:core:stable:v1.33:pkgs.k8s.io [amd64])
+Conf kubectl (1.33.11-1.1 isv:kubernetes:core:stable:v1.33:pkgs.k8s.io [amd64])

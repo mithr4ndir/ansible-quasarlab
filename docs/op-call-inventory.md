@@ -22,7 +22,15 @@ The point of this doc is to show that every `op` call either goes through `scrip
 | `scripts/lib/proxmox-vault.sh::load_proxmox_token_from_vault` | VAULT | (vault decrypt) | Replaces the direct `op read` for the dynamic inventory plugin. |
 | `/usr/local/bin/op` attribution shim (Ansible role `op_ratelimit_collector`) | PASS-THROUGH | execs `/usr/bin/op` | Logs every invocation for attribution, adds no op call of its own. |
 | `/usr/local/bin/op-quota-collector.sh` (Ansible role `op_ratelimit_collector`) | CONTROL-PLANE | direct `op service-account ratelimit` | Free per the docs and the 2026-04-19 verification. Confirmed 2026-05-02: collector ran every 5 min during the read_write cap exhaustion without changing the USED counter. |
-| `roles/onepassword_cli/tasks/main.yml:94` (`op vault list`) | OUT-OF-SCOPE | direct, manual | Part of the `onepassword_cli` provisioning role on the `feature/1password-vault` branch (not yet merged). One-time setup verification, not on any scheduled path. Will need its own audit when that branch lands. |
+| `roles/onepassword_cli/tasks/main.yml` (`op service-account ratelimit`) | CONTROL-PLANE | direct | Token verification. Was `op vault list` (billable) until 2026-09-13; the ratelimit call still authenticates (rc 1 with no token, rc 9 with a bad one) but costs nothing. |
+| `scripts/run-cmd-center.sh` | CACHED | `op-secret-cache.sh` via `vault-pass.sh` | Operator-run wrapper for `cmd_center.yml`. Preloads nothing: the play reads no env secrets, only the vault password. |
+| `/etc/profile.d/op-ansible-env.sh` (`roles/cmd_center/tasks/shell_env.yml`) | VAULT | `lib/proxmox-vault.sh` | Interactive bash only. Replaced an unmanaged file that ran an uncached `op read` of the Proxmox token at shell startup, see below. |
+
+## Shell startup must never call op
+
+Until 2026-09-13, `~/.bashrc` on command-center1 ran `op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret"` above its non-interactive guard whenever `PROXMOX_TOKEN_SECRET` was unset, and an unmanaged `/etc/profile.d/op-ansible-env.sh` did the same for login and interactive shells. Ubuntu's bash sources `~/.bashrc` for commands run over SSH, so every SSH exec Ansible made into command-center1 paid for a read in the remote shell, invisible to the local process tree: measured 2 reads per `ssh command-center1 true` and 88 per `cmd_center.yml` run. `roles/cmd_center/tasks/shell_env.yml` now templates the profile file (vault-sourced, interactive only), strips the block from `~/.bashrc`, and fails the play if any `op read` is left there.
+
+If a quota jump lines up with SSH activity into command-center1 rather than with a wrapper, check the startup files first.
 
 ## Attribution: who is calling op
 

@@ -7,6 +7,11 @@
 #   onepassword_token.yml   1P service account token from vault
 #   ssh_keys.yml            SSH keys from 1P via op
 
+# First on purpose: until it runs, every SSH exec into this host costs a
+# 1Password read (see shell_env.yml).
+- name: Shell startup without 1Password reads
+  ansible.builtin.import_tasks: shell_env.yml
+
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
 
