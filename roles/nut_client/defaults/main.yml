@@ -12,8 +12,8 @@ nut_primary_host: 192.168.1.15
 nut_ups_name: ups
 nut_monitor_user: pvemon
 # nut_monitor_password is NOT defaulted. playbooks/ups-shutdown.yml sets it as
-# a fact from the NUT_MONITOR_PASSWORD env var, matching this repo's secret
-# convention (env vars populated by op-secret-cache; see scripts/lib).
+# a fact from the NUT_MONITOR_PASSWORD env var, which scripts/run-ups-shutdown.sh
+# fills from op-secret-cache (see scripts/lib).
 
 # Seconds on battery before THIS host begins its graceful shutdown.
 nut_onbatt_shutdown_delay: 60

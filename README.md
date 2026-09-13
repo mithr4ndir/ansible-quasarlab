@@ -96,6 +96,14 @@ scripts/run-cmd-center.sh --check                 # defaults to --limit command-
 scripts/run-cmd-center.sh --limit k8cluster1      # override the limit
 ```
 
+`playbooks/ups-shutdown.yml` (NUT upsmon on the Proxmox hosts) has its own wrapper, which
+resolves the upsmon password from the 1Password cache and works with 1Password down:
+
+```bash
+scripts/run-ups-shutdown.sh --check               # all proxmox hosts
+scripts/run-ups-shutdown.sh --limit pve2          # one host
+```
+
 ## Secrets
 
 - **Ansible Vault** for encrypted variables (password from 1Password via `scripts/vault-pass.sh`). Includes the Proxmox API token (`vault_proxmox_api_token`).
