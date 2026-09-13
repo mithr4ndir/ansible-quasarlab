@@ -10,7 +10,7 @@ management + spec-workflow dashboard workstation). Applied by
 |------|---------|
 | Apt packages | curl, python3-pip, python3-kubernetes, python3-openshift, python3-yaml |
 | Ansible collections | kubernetes.core |
-| CLI tools | jq (apt), gh (cli.github.com apt repo), terraform (hashicorp apt repo), helm (pinned binary), yq (pinned binary) |
+| CLI tools | jq (apt), gh (cli.github.com apt repo), terraform (hashicorp apt repo, signing key pinned by fingerprint in `defaults/main.yml`), helm (pinned binary), yq (pinned binary) |
 | Kubeconfig | Fetched from first k8s control plane, installed at `~/.kube/config` |
 | Systemd timers (system) | `ansible-proxmox.timer`, `ansible-security.timer` with their service units. Both run `TimeoutStartSec` bounded, from the automation checkout. |
 | Automation checkouts | `/var/lib/ansible-quasarlab/{repo,observability}`, cloned here and force-synced to `origin/main` / `origin/master` by the runners on every run. Never edit these by hand. |
@@ -57,6 +57,7 @@ ansible-playbook playbooks/cmd_center.yml --tags herdr
 
 Available tags per task file:
 
+- `hashicorp_apt` (also runs under `packages` and `cli_tools`, and always first)
 - `packages`
 - `cli_tools`
 - `kubeconfig`

@@ -1,0 +1,39 @@
+---
+# Remove apt sources and legacy trusted keys left behind by decommissioned
+# services, so no host keeps an upgrade path to packages nothing here manages.
+#
+# Why this lives in unattended_upgrades: it is the one role that reaches every
+# apt-managed host. playbooks/monitoring.yml applies it to `linux` minus `nas`
+# (which includes pve and pve2), and playbooks/vm_baseline.yml applies it to
+# every VM. Both run on the ansible-proxmox timer. It is also the role whose
+# automatic upgrades an orphaned repo would feed.
+#
+# The incident: the ELK decommission (2026-03-15) deleted the filebeat role but
+# not what it installed. That role had run against every `linux` host except
+# nas and security since 2026-01-18, adding the Elastic 8.x repo and importing
+# the Elastic key into /etc/apt/trusted.gpg with apt_key. The same repo was on
+# the Wazuh host, where a routine apt upgrade walked filebeat 7.10.2 to 8.x on
+# 2026-04-10. 8.x cannot talk to OpenSearch, and no alerts were indexed for
+# about four months.
+# The removal was first added only to wazuh_manager and pve/common, which left
+# every other VM (command-center1 confirmed on 2026-09-13) still carrying it.
+#
+# Imported before this role's first apt cache update, so the refresh below it
+# already drops the removed repo from the package lists.
+
+- name: Remove decommissioned apt source files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ unattended_upgrades_decommissioned_apt_sources }}"
+
+- name: Remove decommissioned vendor keys from the legacy apt trusted.gpg
+  ansible.builtin.script:
+    cmd: >-
+      remove_apt_trusted_key.py
+      --keyring /etc/apt/trusted.gpg
+      {% for fpr in unattended_upgrades_decommissioned_trusted_keys %}--fingerprint {{ fpr | quote }} {% endfor %}
+    executable: python3
+  register: unattended_upgrades_trusted_key_cleanup
+  changed_when: unattended_upgrades_trusted_key_cleanup.stdout is search('^(changed|removed):', multiline=True)
+  when: unattended_upgrades_decommissioned_trusted_keys | length > 0
