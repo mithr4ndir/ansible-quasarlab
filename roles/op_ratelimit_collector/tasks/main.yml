@@ -58,10 +58,11 @@
 
 # Only shadow op when the real binary is there. Otherwise `command -v op`
 # would find the shim and callers would get exit 127 instead of their
-# "op unavailable" branch.
+# "op unavailable" branch. follow: a dangling symlink is no binary.
 - name: Check for the real op binary
   ansible.builtin.stat:
     path: "{{ op_quota_real_op }}"
+    follow: true
   register: op_quota_real_op_stat
 
 - name: Install op attribution shim ahead of the real op on PATH
@@ -75,11 +76,14 @@
     - op_quota_shim_enabled | bool
     - op_quota_real_op_stat.stat.exists
 
-- name: Remove op attribution shim when disabled
+# Exactly one of install and remove runs. Removal also covers a real op
+# that has gone away since an earlier run installed the shim, which would
+# otherwise be left behind to fail every call with 127.
+- name: Remove op attribution shim when disabled or the real op is gone
   ansible.builtin.file:
     path: "{{ op_quota_shim_path }}"
     state: absent
-  when: not (op_quota_shim_enabled | bool)
+  when: not (op_quota_shim_enabled | bool) or not op_quota_real_op_stat.stat.exists
 
 - name: Install collector script
   ansible.builtin.template:

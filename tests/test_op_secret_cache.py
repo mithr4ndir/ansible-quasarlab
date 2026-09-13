@@ -307,6 +307,57 @@ class ForcedRefreshTests(CacheSandbox):
         proc = self.read("vault_pw", {"OP_FAKE_VALUE": "", "OP_FAKE_RC": "1"})
         self.assertEqual(proc.stdout, "old")
 
+    def hold_lock(self, slug: str, seconds: int = 5) -> None:
+        holder = subprocess.Popen(
+            [str(self.bin / "flock"), str(self.cache / f".{slug}.lock"),
+             str(self.bin / "sleep"), str(seconds)],
+            env=self.env,
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        deadline = time.time() + 5
+        while not (self.cache / f".{slug}.lock").exists() and time.time() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.3)
+
+    def test_invalidate_fails_loudly_when_lock_is_held(self) -> None:
+        # A refresh holding the lock may have read 1Password before the
+        # operator's change. Invalidating under it would be silently undone.
+        path = self.seed("busy_slug", "old", age_secs=60)
+        mtime_before = path.stat().st_mtime
+        self.hold_lock("busy_slug")
+        proc = subprocess.run(
+            [str(self.bin / "bash"), str(REFRESH), "busy_slug"],
+            env={**self.env, "OP_SECRET_CACHE_INVALIDATE_LOCK_WAIT_SECS": "1"},
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("could not invalidate busy_slug", proc.stderr)
+        self.assertNotIn("Marked", proc.stdout)
+        self.assertEqual(path.stat().st_mtime, mtime_before, "must not touch the file unlocked")
+
+    def test_invalidate_fails_when_lock_cannot_be_opened(self) -> None:
+        path = self.seed("no_lock", "old", age_secs=60)
+        mtime_before = path.stat().st_mtime
+        (self.cache / ".no_lock.lock").mkdir()
+        proc = self.refresh("no_lock")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("could not invalidate no_lock", proc.stderr)
+        self.assertEqual(path.stat().st_mtime, mtime_before)
+        self.assertEqual(self.read("no_lock", {"OP_FAKE_VALUE": "new"}).stdout, "old")
+        self.assertEqual(self.op_calls(), [])
+
+    def test_invalidate_reports_failure_but_still_invalidates_other_slugs(self) -> None:
+        busy = self.seed("busy_one", "old", age_secs=60)
+        free = self.seed("free_one", "old", age_secs=60)
+        busy_mtime = busy.stat().st_mtime
+        self.hold_lock("busy_one")
+        proc = self.bash("op_secret_cache_invalidate busy_one free_one",
+                         {"OP_SECRET_CACHE_INVALIDATE_LOCK_WAIT_SECS": "1"})
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(busy.stat().st_mtime, busy_mtime)
+        self.assertEqual(free.stat().st_mtime, 0)
+
     def test_refresh_rejects_bad_slug(self) -> None:
         self.seed("real", "old", age_secs=60)
         proc = self.refresh("../real")
