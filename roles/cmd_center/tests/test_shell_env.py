@@ -312,7 +312,8 @@ class TaskStructureTests(unittest.TestCase):
                           if re.search(r"\bop\s+(read|item|run|inject|vault|document)\b", ln)])
 
     def test_shell_env_is_imported_first(self) -> None:
-        imports = [t["ansible.builtin.import_tasks"] for t in yaml.safe_load(MAIN.read_text())]
+        imports = [t["ansible.builtin.import_tasks"] for t in yaml.safe_load(MAIN.read_text())
+                   if "ansible.builtin.import_tasks" in t]
         self.assertEqual(imports[0], "shell_env.yml")
 
 

@@ -121,6 +121,35 @@
     - herdr
 
 # ---------------------------------------------------------------------------
+# /usr/local/bin/herdr link
+#
+# `herdr --remote <host>` SSHes in NON-interactively to launch the remote
+# server. That shell never reads ~/.profile, so its PATH is the sshd default
+# (/usr/local/bin, /usr/bin, ...) without ~/.local/bin, herdr is not found,
+# and the client silently falls back to a LOCAL session. A login shell finds
+# it, which is why it looks fine by hand. /usr/local/bin is on the default
+# PATH, so a link there fixes --remote.
+#
+# A symlink, not a second copy: one binary, one pinned checksum to verify.
+# Placed after the binary is installed and verified and before the unit is
+# enabled. Re-running over the existing link is a no-op. force is left off, so
+# a real file someone put at this path makes the task fail instead of being
+# replaced. follow: false keeps any ownership handling on the link itself,
+# never the user-owned binary it points at. Removed again in main.yml when
+# cmd_center_herdr_enabled is false.
+# ---------------------------------------------------------------------------
+
+- name: Link herdr into the non-login SSH PATH for herdr --remote
+  ansible.builtin.file:
+    src: "{{ cmd_center_herdr_bin_path }}"
+    dest: "{{ cmd_center_herdr_link_path }}"
+    state: link
+    follow: false
+  become: true
+  tags:
+    - herdr
+
+# ---------------------------------------------------------------------------
 # herdr.service user unit
 # ---------------------------------------------------------------------------
 
