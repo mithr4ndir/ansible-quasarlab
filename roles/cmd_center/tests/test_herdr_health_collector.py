@@ -168,6 +168,75 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(values["inactive"], "1")
         self.assertEqual(values["active"], "0")
 
+    # --- publish failures (#154) ------------------------------------------
+    #
+    # Each test publishes a good file first, then breaks one step of the next
+    # run. The good file must survive byte for byte, no temp file may be left
+    # behind, and the run must exit non-zero so systemd records the failure.
+
+    def _publish_good_file(self) -> bytes:
+        self._fake_systemctl("active", 0)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self._fake_systemctl("inactive", 3)
+        return self.prom.read_bytes()
+
+    def _fake_mktemp_to_dev_full(self) -> None:
+        # A real mktemp result, except the temp path is a symlink to /dev/full,
+        # so every write through it fails with ENOSPC the way a full
+        # filesystem would.
+        self._write_exe(
+            "mktemp",
+            "#!/bin/sh\n"
+            "p=\"$(printf '%s' \"$1\" | sed 's/XXXXXX$/devfull/')\"\n"
+            'ln -s /dev/full "$p" || exit 1\n'
+            'printf "%s\\n" "$p"\n',
+        )
+
+    def _assert_previous_file_untouched(self, proc, previous: bytes) -> None:
+        self.assertNotEqual(proc.returncode, 0, "a failed publish must exit non-zero")
+        self.assertFalse(self.prom.is_symlink())
+        self.assertEqual(self.prom.read_bytes(), previous)
+        self.assertEqual(stat.S_IMODE(self.prom.stat().st_mode), 0o644)
+        self.assertEqual(sorted(p.name for p in self.textfile_dir.iterdir()), ["herdr.prom"])
+
+    def test_failed_metric_write_keeps_previous_file(self) -> None:
+        previous = self._publish_good_file()
+        self._fake_mktemp_to_dev_full()
+        # chmod succeeds, so only the write fails.
+        self._write_exe("chmod", "#!/bin/sh\nexit 0\n")
+        proc = self._run()
+        self._assert_previous_file_untouched(proc, previous)
+
+    def test_failed_metric_write_on_first_run_publishes_nothing(self) -> None:
+        self._fake_systemctl("active", 0)
+        self._fake_mktemp_to_dev_full()
+        self._write_exe("chmod", "#!/bin/sh\nexit 0\n")
+        proc = self._run()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(list(self.textfile_dir.iterdir()), [])
+
+    def test_failed_chmod_keeps_previous_file(self) -> None:
+        previous = self._publish_good_file()
+        self._write_exe("chmod", "#!/bin/sh\nexit 1\n")
+        proc = self._run()
+        self._assert_previous_file_untouched(proc, previous)
+
+    def test_failed_timestamp_keeps_previous_file(self) -> None:
+        # An empty timestamp would publish an unparseable sample line.
+        previous = self._publish_good_file()
+        self._write_exe("date", "#!/bin/sh\nexit 1\n")
+        proc = self._run()
+        self._assert_previous_file_untouched(proc, previous)
+
+    def test_failed_publish_is_logged(self) -> None:
+        previous = self._publish_good_file()
+        self._write_exe("chmod", "#!/bin/sh\nexit 1\n")
+        self._write_exe("logger", f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.root}/logger.log"\n')
+        proc = self._run()
+        self._assert_previous_file_untouched(proc, previous)
+        self.assertIn("reason=chmod_failed", (self.root / "logger.log").read_text())
+
 
 def _ansible_available() -> bool:
     if not Path(SYSTEM_PYTHON).exists():
