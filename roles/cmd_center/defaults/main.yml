@@ -65,3 +65,24 @@ spec_workflow_cors_enabled: false
 # must match the %h/.local/bin/herdr path hard-coded in herdr.service.j2.
 cmd_center_herdr_enabled: false
 cmd_center_herdr_bin_path: "/home/{{ ansible_user }}/.local/bin/herdr"
+
+# Pinned herdr release (stable channel, linux-x86_64 static-pie binary).
+# The checksum is for that one asset. Recorded 2026-09-12 for 0.9.0, where
+# it matched in three places: the sha256 map in https://herdr.dev/latest.json
+# (what herdr's own installer verifies against), a fresh download of
+# cmd_center_herdr_url, and the binary already installed on command-center1.
+# herdrdev/herdr also holds a GitHub attestation record for this digest,
+# which was seen but not cryptographically verified.
+#
+# Upgrades are explicit, never automatic: bump both values together, then
+# run with -e cmd_center_herdr_upgrade=true. Without the flag, a binary
+# that does not match the pin fails the play rather than being replaced.
+cmd_center_herdr_version: "0.9.0"
+cmd_center_herdr_sha256: "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f"
+cmd_center_herdr_url: "https://github.com/herdrdev/herdr/releases/download/v{{ cmd_center_herdr_version }}/herdr-linux-x86_64"
+cmd_center_herdr_upgrade: false
+
+# herdr.service health exported through the node_exporter textfile
+# collector by a systemd user timer.
+cmd_center_herdr_health_prom_file: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/herdr.prom"
+cmd_center_herdr_health_interval: 1min

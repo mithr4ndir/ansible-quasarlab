@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic herdr.service health check for node_exporter
+
+[Timer]
+# OnBootSec is already in the past when the timer is started on a running
+# host, so it fires straight away and primes the metric file.
+OnBootSec=1min
+OnUnitActiveSec={{ cmd_center_herdr_health_interval }}
+AccuracySec=10s
+Unit=herdr-health-collector.service
+
+[Install]
+WantedBy=timers.target
