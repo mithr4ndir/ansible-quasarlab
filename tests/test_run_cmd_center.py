@@ -112,6 +112,7 @@ JSON
 FAKE_ANSIBLE_PLAYBOOK = "#!/bin/bash\n" + RECORD + r"""
 record "$@"
 scripts/vault-pass.sh > /dev/null || { echo "vault-pass failed"; exit 1; }
+[[ -n "${FAKE_PLAYBOOK_OUTPUT:-}" ]] && cat "$FAKE_PLAYBOOK_OUTPUT"
 echo "PLAY RECAP *********************************************************************"
 if [[ "${FAKE_PLAYBOOK_RC:-0}" -ne 0 ]]; then
     echo "command-center1            : ok=3    changed=0    unreachable=0    failed=1    skipped=0"
@@ -388,6 +389,38 @@ class FailureReportingTests(WrapperSandbox):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("failed to decrypt", proc.stderr)
         self.assertEqual(self.calls("ansible-playbook"), [])
+
+
+class KillSwitchScanTests(WrapperSandbox):
+    """Issue #160: the playbook log scan must not trip on --diff text."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed_vault_cache()
+
+    def run_with_output(self, text: str) -> subprocess.CompletedProcess:
+        out = self.tmp / "playbook-output.txt"
+        out.write_text(text)
+        return self.run_wrapper(env={"FAKE_PLAYBOOK_OUTPUT": str(out)})
+
+    def test_diff_of_the_killswitch_library_does_not_trip(self) -> None:
+        # The exact output that tripped the switch on 2026-09-13 20:46:05.
+        fixture = (REPO / "tests" / "fixtures" / "killswitch_selfdiff_20260913.log").read_text()
+        proc = self.run_with_output(fixture)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Too many requests", proc.stdout)
+        self.assertFalse((self.state / "1p-killswitch").exists(), "kill switch tripped on a diff")
+
+    def test_real_op_rate_limit_error_in_task_output_trips(self) -> None:
+        proc = self.run_with_output(
+            'fatal: [command-center1]: FAILED! => {"cmd": ["op", "item", "list"], "rc": 1, '
+            '"stderr": "[ERROR] 2026/09/13 20:46:05 (429) Too Many Requests: You\'ve reached '
+            'the maximum number of this type of requests this 1Password account is allowed to make."}\n'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lock = self.state / "1p-killswitch"
+        self.assertTrue(lock.exists(), "kill switch did not trip on a real op rate-limit error")
+        self.assertIn("trip_reason=rate_limited", lock.read_text())
 
 
 if __name__ == "__main__":

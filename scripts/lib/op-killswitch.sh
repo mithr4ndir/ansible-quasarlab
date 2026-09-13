@@ -138,12 +138,51 @@ op_killswitch_trip() {
     op_killswitch_write_metric 1 "$(stat -c %Y "$OP_KILLSWITCH_LOCK" 2>/dev/null || date +%s)"
 }
 
-# Scan a tmpfile from a recent op or ansible-playbook run for rate-limit
-# markers. If found, trip the killswitch.
+# Scan output captured from an op process, and nothing else, for rate-limit
+# markers. If found, trip the killswitch. Deliberately broad: every byte of the
+# input came from op, so any mention is op talking about its own rate limit.
+# For an ansible-playbook log use op_killswitch_scan_playbook_output instead.
 op_killswitch_scan_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
     if grep -qiE 'Too many requests|rate[- ]limited|429 Too Many' "$file" 2>/dev/null; then
+        op_killswitch_trip "rate_limited"
+        return 0
+    fi
+    return 1
+}
+
+# The op CLI rate-limit error line, as op writes it to stderr:
+#   [ERROR] <YYYY/MM/DD> <HH:MM:SS> (429) Too Many Requests: You've reached ...
+#   [ERROR] <YYYY/MM/DD> <HH:MM:SS> Too many requests. Your client has been ...
+# The first form is the documented hourly and daily limit error
+# (https://www.1password.dev/service-accounts/rate-limits), the second is
+# embedded in the op 2.39.0 binary, and the level plus timestamp prefix is what
+# op 2.39.0 prints for every error. A dash or T separated timestamp is also
+# accepted in case a later op changes the layout.
+OP_KILLSWITCH_OP_RATELIMIT_ERE='\[ERROR\] [0-9]{4}[/-][0-9]{2}[/-][0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}[^ ]* (\(429\) )?Too many requests'
+
+# Scan a whole ansible-playbook log for an op rate-limit error. If found, trip
+# the killswitch. Returns 0 when tripped, 1 otherwise.
+#
+# Why not op_killswitch_scan_file: playbook logs carry arbitrary text. On
+# 2026-09-13 the --diff of this very file put "Too many requests" in the log
+# and paused all automation while 1Password was refusing nothing (issue #160).
+# So a match needs the op error line format above, and lines starting with
+# `+` or `-` (added or removed lines of a --diff hunk, and its ---/+++ header)
+# are never considered. The error is not anchored to the start of the line
+# because Ansible reports a failed command's stderr inside its result, e.g.
+# `fatal: [host]: FAILED! => {... "stderr": "[ERROR] ..."}`.
+#
+# Not caught here: op calls under no_log (Ansible replaces their stderr with a
+# "censored" notice) and op calls whose stderr never reaches the log. Callers
+# that run op themselves scan its stderr with op_killswitch_scan_file.
+op_killswitch_scan_playbook_output() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    # LC_ALL=C and -a: `.` must match any byte, so invalid UTF-8 or a NUL
+    # earlier on the line cannot hide a real error.
+    if LC_ALL=C grep -qaiE "^([^+-].*)?${OP_KILLSWITCH_OP_RATELIMIT_ERE}" "$file" 2>/dev/null; then
         op_killswitch_trip "rate_limited"
         return 0
     fi
