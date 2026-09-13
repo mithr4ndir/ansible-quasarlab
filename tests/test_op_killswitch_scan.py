@@ -281,9 +281,17 @@ class WrapperWiringTests(unittest.TestCase):
     so check which scanner they hand the playbook log to."""
 
     def test_wrappers_scan_playbook_logs_with_the_anchored_scanner(self) -> None:
-        for rel in ("scripts/run-proxmox.sh", "scripts/run-security.sh", "scripts/run-cmd-center.sh"):
+        # Discover wrappers instead of listing them: a new run-*.sh copied from
+        # an older wrapper would otherwise bring back #160 unnoticed.
+        wrappers = sorted(
+            p for p in (REPO / "scripts").glob("run-*.sh")
+            if "ansible-playbook" in p.read_text()
+        )
+        self.assertGreaterEqual(len(wrappers), 4, [p.name for p in wrappers])
+        for path in wrappers:
+            rel = str(path.relative_to(REPO))
             with self.subTest(wrapper=rel):
-                text = (REPO / rel).read_text()
+                text = path.read_text()
                 self.assertNotRegex(text, r'op_killswitch_scan_file\s+"\$tmpfile"')
                 self.assertRegex(text, r'\n\s*op_killswitch_scan_playbook_output "\$tmpfile" \|\| true\n')
 

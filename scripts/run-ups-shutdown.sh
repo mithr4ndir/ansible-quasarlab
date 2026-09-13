@@ -191,8 +191,9 @@ NUT_MONITOR_PASSWORD="$nut_password" \
     "${passthrough[@]}" 2>&1 | tee "$tmpfile"
 rc=${PIPESTATUS[0]}
 cat "$tmpfile" >> "$LOGFILE"
-# A run that hit the rate limit trips the kill switch for everything else.
-op_killswitch_scan_file "$tmpfile" || true
+# A run that hit the rate limit trips the kill switch for everything else. The
+# anchored scanner matches real op errors only, never diff or comment text (#160).
+op_killswitch_scan_playbook_output "$tmpfile" || true
 
 failed_hosts=""
 if [[ $rc -ne 0 ]]; then
