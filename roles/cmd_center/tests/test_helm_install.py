@@ -34,6 +34,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -41,7 +42,10 @@ import pytest
 
 ROLE = Path(__file__).resolve().parents[1]
 CLI_TOOLS = ROLE / "tasks" / "cli_tools.yml"
-SYSTEM_PYTHON = "/usr/bin/python3"
+# The interpreter running these tests. A hard-coded /usr/bin/python3 bypassed
+# the environment `uv run --with ansible-core` provides, so on a clean host the
+# helpers could not import ansible and every case was silently skipped.
+SYSTEM_PYTHON = sys.executable
 ARCH = "amd64"
 PINNED = "3.19.0"
 TARBALL_UID = 1001
@@ -184,7 +188,11 @@ def _ansible_available() -> bool:
     ).returncode == 0
 
 
-pytestmark = pytest.mark.skipif(not _ansible_available(), reason="system python has no ansible")
+if not _ansible_available():
+    raise RuntimeError(
+        f"{SYSTEM_PYTHON} cannot import ansible-core and pyyaml; run the documented "
+        "command: uv run --with pytest --with pyyaml --with \"ansible-core==2.16.3\" pytest roles/cmd_center/tests"
+    )
 
 
 def load_tasks() -> list[dict]:

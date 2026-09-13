@@ -21,13 +21,17 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROLE = Path(__file__).resolve().parents[1]
 TASKS = ROLE / "tasks"
-SYSTEM_PYTHON = "/usr/bin/python3"
+# The interpreter running these tests. A hard-coded /usr/bin/python3 bypassed
+# the environment `uv run --with ansible-core` provides, so on a clean host the
+# helpers could not import ansible and every case was silently skipped.
+SYSTEM_PYTHON = sys.executable
 COMMAND_MODULES = {
     "ansible.builtin.command",
     "ansible.builtin.shell",
@@ -213,11 +217,17 @@ INSTALL_CASES = [
 ]
 
 
-@pytest.mark.skipif(not _ansible_available(), reason="system python has no ansible")
 @pytest.mark.parametrize("check_mode,install_result,expect_run", INSTALL_CASES)
 def test_herdr_version_read_and_assert_skip_only_when_install_is_pending(
     check_mode, install_result, expect_run, tmp_path
 ) -> None:
+    # Fail, never skip: a skip here let the suite pass without evaluating a single
+    # when: expression on a host whose interpreter lacked ansible-core.
+    if not _ansible_available():
+        pytest.fail(
+            f"{SYSTEM_PYTHON} cannot import ansible-core; run the documented command: "
+            "uv run --with pytest --with pyyaml --with \"ansible-core==2.16.3\" pytest roles/cmd_center/tests"
+        )
     install = herdr_task(HERDR_INSTALL)
     register = install.get("register")
     assert register, f"'{HERDR_INSTALL}' must register its result for the read to key on"

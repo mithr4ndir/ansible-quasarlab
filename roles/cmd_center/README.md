@@ -145,12 +145,20 @@ If the user manager itself dies, the timer dies with it. That shows up as a
 stale timestamp, and directly as `user@1000.service` in node_exporter's
 systemd allowlist for command-center1.
 
-Tests: `uv run --with pytest --with pyyaml --with ansible-core pytest roles/cmd_center/tests`.
+Tests: `uv run --with pytest --with pyyaml --with "ansible-core==2.16.3" pytest roles/cmd_center/tests`.
 
 Use pytest, not `python3 -m unittest discover`. Several test modules are
 pytest-style functions and some drive real Ansible modules, so plain unittest
 imports them as a single failed test and skips every case inside, while still
 reporting the rest of the suite.
+
+Keep `ansible-core` pinned to the version the automation host runs
+(`ansible --version` on command-center1). Some tests drive Ansible's own
+conditional and templating code to evaluate `when:` and check mode exactly as
+production would, and those internals change between releases: an unpinned
+install picked up 2.21.4, which removed `Conditional.evaluate_conditional`.
+A missing or unusable ansible-core fails these tests loudly rather than
+skipping them.
 
 ## Disaster recovery runbook
 
