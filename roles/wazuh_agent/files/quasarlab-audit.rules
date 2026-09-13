@@ -45,6 +45,11 @@
 -w /sbin/modprobe -p x -k kernel_modules
 -w /sbin/rmmod -p x -k kernel_modules
 
+# 1Password CLI execution (traces which process/user burned the account
+# rate limit — the 2026-08-25 exhaustion could not be attributed to a
+# specific caller after the fact because this rule did not exist yet)
+-w /usr/bin/op -p x -k onepassword_exec
+
 # Network configuration
 -w /etc/hosts -p wa -k network_config
 -w /etc/network/ -p wa -k network_config
