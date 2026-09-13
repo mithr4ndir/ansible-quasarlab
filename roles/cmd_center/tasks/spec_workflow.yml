@@ -37,16 +37,16 @@
 - name: Flush handlers so the unit is reloaded before we enable it
   ansible.builtin.meta: flush_handlers
 
+# Runs WITHOUT become, as the SSH connection user, for the same reason as
+# herdr.yml and ce_review_viewer.yml. It previously became ansible_user with
+# XDG_RUNTIME_DIR built from ansible_user_uid, which is root's uid (0) under
+# the play-level become, and failed with "Failed to connect to bus".
 - name: Enable and start spec-workflow-dashboard
   ansible.builtin.systemd:
     name: spec-workflow-dashboard
     scope: user
     enabled: true
     state: started
-  become: true
-  become_user: "{{ ansible_user }}"
-  environment:
-    XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid | default(1000) }}"
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid | default(1000) }}/bus"
+  become: false
   tags:
     - spec_workflow
