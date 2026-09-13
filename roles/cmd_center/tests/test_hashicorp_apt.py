@@ -229,8 +229,18 @@ def test_defaults_pin_the_verified_fingerprint() -> None:
 
 def test_key_and_source_tasks_run_before_any_apt_cache_update() -> None:
     main = load_yaml(ROLE / "tasks" / "main.yml")
-    imports = [t["ansible.builtin.import_tasks"] for t in main]
-    assert imports[0] == "hashicorp_apt.yml"
+    # main.yml is not purely imports: it also carries cleanup tasks, so skip
+    # anything that is not an import rather than assuming the key is present.
+    imports = [
+        t["ansible.builtin.import_tasks"]
+        for t in main
+        if "ansible.builtin.import_tasks" in t
+    ]
+    # The invariant is ordering, not position. shell_env.yml legitimately runs
+    # first (it touches no apt), so assert hashicorp precedes the cache update
+    # rather than pinning it to index 0.
+    assert "hashicorp_apt.yml" in imports
+    assert imports.index("hashicorp_apt.yml") < imports.index("packages.yml")
     # packages.yml holds the update_cache that failed on command-center1.
     packages = load_yaml(ROLE / "tasks" / "packages.yml")
     assert any(
