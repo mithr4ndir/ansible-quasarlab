@@ -1,0 +1,270 @@
+TASK [op_ratelimit_collector : Install shared op-killswitch.sh library] ********
+--- before: /usr/local/lib/op-quota-collector/op-killswitch.sh
++++ after: /var/lib/ansible-quasarlab/repo/roles/op_ratelimit_collector/files/op-killswitch.sh
+@@ -27,12 +27,28 @@
+ OP_KILLSWITCH_LOCK="${OP_KILLSWITCH_LOCK:-${OP_KILLSWITCH_STATE_DIR}/1p-killswitch}"
+ OP_KILLSWITCH_TTL_SECS="${OP_KILLSWITCH_TTL_SECS:-86400}"
+ OP_KILLSWITCH_METRIC_FILE="${OP_KILLSWITCH_METRIC_FILE:-/var/lib/node_exporter/textfiles/onepassword_killswitch.prom}"
++# Headroom required before the lock auto-clears. Set well above the
++# pre-flight threshold (50) so releasing the lock does not immediately hand
++# the next run a quota that re-trips it.
++OP_KILLSWITCH_RECOVER_MIN_REMAINING="${OP_KILLSWITCH_RECOVER_MIN_REMAINING:-200}"
+ 
+ # Ensure the state dir exists with sane perms. Best-effort; failures do
+ # not abort the caller because permission issues should be surfaced
+ # explicitly, not swallowed by killswitch plumbing.
+ op_killswitch_init() {
+     mkdir -p "$OP_KILLSWITCH_STATE_DIR" 2>/dev/null || true
++}
++
++# Returns 0 when the 1Password account quota has real headroom again.
++# Deliberately strict: anything unreadable returns 1 (not recovered) so an
++# op outage can never be mistaken for recovery and release the lock early.
++# Requires more than a bare pass of the pre-flight threshold, so a lock is
++# not released straight into a window that would immediately re-trip it.
++op_killswitch_quota_recovered() {
++    local remaining
++    remaining=$(op_preflight_remaining)
++    [[ -n "$remaining" ]] || return 1
++    (( remaining > OP_KILLSWITCH_RECOVER_MIN_REMAINING ))
+ }
+ 
+ # Returns 0 if the killswitch is currently active, 1 otherwise.
+@@ -49,6 +65,22 @@
+         if (( age < OP_KILLSWITCH_TTL_SECS )); then
+             active=1
+         fi
++    fi
++
++    # A fixed 24h TTL is a proxy for the real condition, which is "the quota
++    # came back". Those are not the same: the account window can reset hours
++    # before the TTL expires, and until someone remembers to remove the lock
++    # by hand the whole lab stays frozen with the staleness alerts firing.
++    # That manual step has been missed before.
++    #
++    # Now that the quota can be read for free, check it directly and release
++    # the lock once there is real headroom. Only ever clears on a positively
++    # read healthy value; an unreadable quota leaves the lock exactly as it is.
++    if (( active == 1 )) && op_killswitch_quota_recovered; then
++        rm -f "$OP_KILLSWITCH_LOCK" 2>/dev/null || true
++        logger -t op-killswitch "1Password quota recovered; kill-switch lock auto-cleared."
++        active=0
++        tripped_at=0
+     fi
+ 
+     op_killswitch_write_metric "$active" "$tripped_at"
+@@ -127,3 +159,67 @@
+         exit 0
+     fi
+ }
++
++# ---------------------------------------------------------------------------
++# Proactive pre-flight quota check.
++#
++# The kill switch above is reactive: it only trips once 1Password has already
++# answered "Too many requests". By then the 24h window is pinned. This check
++# runs BEFORE any op call and refuses to start when the account quota is
++# already spent.
++#
++# `op service-account ratelimit` does not itself count against the quota
++# (verified 2026-04-19), so this is free to call on every run.
++#
++# This duplicates callback_plugins/op_quota_gate.py on purpose. The callback
++# covers interactive `ansible-playbook` runs but only takes effect once the
++# ara role has re-templated /etc/profile.d/ara-ansible-env.sh, because
++# ANSIBLE_CALLBACK_PLUGINS overrides ansible.cfg. This shell guard needs no
++# deploy step, so scheduled timer runs are protected immediately.
++# ---------------------------------------------------------------------------
++
++OP_PREFLIGHT_MIN_REMAINING="${OP_PREFLIGHT_MIN_REMAINING:-50}"
++
++# Echo the account read_write REMAINING value, or nothing if undeterminable.
++op_preflight_remaining() {
++    command -v op >/dev/null 2>&1 || return 0
++    local out
++    out=$(timeout 20 op service-account ratelimit 2>/dev/null) || return 0
++    # Match the account/read_write row and sanity check that used+remaining
++    # equals limit, so a future column reorder fails closed to "unknown"
++    # rather than silently gating on the wrong number.
++    awk '
++        tolower($1) == "account" && tolower($2) == "read_write" {
++            limit = $3 + 0; used = $4 + 0; remaining = $5 + 0
++            if (used + remaining == limit) { print remaining }
++            exit
++        }
++    ' <<< "$out"
++}
++
++# Exit non-zero (and log) when the quota is at or below the threshold.
++# Fails OPEN: an unreadable quota lets the run proceed with a warning, because
++# blocking all automation is worse than the overspend this prevents.
++op_preflight_check_or_exit() {
++    if [[ "${OP_QUOTA_GATE_BYPASS:-}" == "1" ]]; then
++        logger -t op-preflight "pre-flight quota gate BYPASSED via OP_QUOTA_GATE_BYPASS=1"
++        return 0
++    fi
++
++    local remaining
++    remaining=$(op_preflight_remaining)
++
++    if [[ -z "$remaining" ]]; then
++        logger -t op-preflight "could not read 1P account quota; proceeding anyway"
++        return 0
++    fi
++
++    if (( remaining <= OP_PREFLIGHT_MIN_REMAINING )); then
++        logger -t op-preflight "1P account quota at ${remaining} (threshold ${OP_PREFLIGHT_MIN_REMAINING}); skipping $(basename "${0:-unknown}")"
++        echo "1Password account quota is down to ${remaining} (threshold ${OP_PREFLIGHT_MIN_REMAINING})." >&2
++        echo "Skipping this run so the 24h window is not kept pinned." >&2
++        echo "  Check status: op service-account ratelimit" >&2
++        echo "  Run anyway  : OP_QUOTA_GATE_BYPASS=1 $0" >&2
++        exit 0
++    fi
++}
+
+changed: [command-center1]
+
+TASK [op_ratelimit_collector : Install collector script] ***********************
+--- before: /usr/local/bin/op-quota-collector.sh
++++ after: /home/ladino/.ansible/tmp/ansible-local-1677514lp2onbni/tmpcb_0oehl/op-quota-collector.sh.j2
+@@ -1,5 +1,5 @@
+ #!/bin/bash
+-# Managed by Ansible. Do not edit manually.
++# Ansible managed
+ # 1Password quota collector.
+ # Runs `op service-account ratelimit`, parses the table through parse.py,
+ # writes Prometheus textfile metrics at /var/lib/node_exporter/textfiles/op_quota.prom.
+@@ -12,16 +12,28 @@
+ METRIC_FILE="/var/lib/node_exporter/textfiles/op_quota.prom"
+ PARSER="/usr/local/lib/op-quota-collector/parse.py"
+ KILLSWITCH_LIB="/usr/local/lib/op-quota-collector/op-killswitch.sh"
++ATTRIBUTION="/usr/local/lib/op-quota-collector/attribution.py"
++SHIM_LOG="/var/log/op-shim/op-invocations.log"
++ATTRIBUTION_STATE="/var/lib/op-quota-collector/attribution-state.json"
++ATTRIBUTION_METRIC_FILE="/var/lib/node_exporter/textfiles/op_invocations.prom"
+ TOKEN_FILE="${OP_TOKEN_FILE:-/home/ladino/.config/op/service-account-token}"
+ LOG_TAG="op-quota-collector"
+ 
++# Keep the main metric body stable across failures; only overwrite the
++# trailing success/timestamp lines. We achieve that by extracting the
++# main body from the existing file (if any) and appending fresh trailing
++# gauges on every write.
+ finish() {
+     local reason="$1"
+     local success="$2"
+     local tmp
+     tmp="$(mktemp)"
+ 
++    # Preserve whatever gauges were last written (or empty on first run).
+     if [[ -s "$METRIC_FILE" ]]; then
++        # Strip any prior collector_success / collector_timestamp lines AND
++        # their matching HELP/TYPE comments, so we can append a fresh footer
++        # without duplicating comment lines on every run.
+         grep -vE '^(# (HELP|TYPE) )?onepassword_ratelimit_collector_(success|timestamp_seconds)(\s|$)' \
+             "$METRIC_FILE" > "$tmp" || true
+     fi
+@@ -35,6 +47,12 @@
+         echo "onepassword_ratelimit_collector_timestamp_seconds $(date +%s)"
+     } >> "$tmp"
+ 
++    # If the rename fails (e.g. textfile dir unwritable, disk full) we
++    # cannot emit metrics at all. Log loudly so the operator sees a
++    # distinct signal that is different from a "bad quota" reading.
++    # We still exit 0 so the systemd unit does not flap, but the
++    # Prometheus scrape will show the last-known file or nothing,
++    # which is correct behavior for a collector that cannot write.
+     if ! mv "$tmp" "$METRIC_FILE" 2>/dev/null; then
+         rm -f "$tmp"
+         logger -t "$LOG_TAG" "reason=footer_write_failed success=${success} (original reason=${reason})"
+@@ -45,11 +63,35 @@
+     exit 0
+ }
+ 
++# Attribution: fold the op shim invocation log (who called op) into
++# onepassword_op_invocations_total. Runs before the ratelimit call because
++# finish() exits early on any op failure, and attribution matters most during
++# exactly those incidents. Reads local files only and makes no op call. It
++# writes its own textfile, so a failure here never touches the quota metrics.
++if [[ -f "$ATTRIBUTION" ]]; then
++    attr_err="$(mktemp)"
++    if ! python3 "$ATTRIBUTION" \
++        --log "$SHIM_LOG" \
++        --state "$ATTRIBUTION_STATE" \
++        --out "$ATTRIBUTION_METRIC_FILE" \
++        --max-bytes "5242880" 2>"$attr_err"; then
++        logger -t "$LOG_TAG" "reason=attribution_error" || true
++    fi
++    if [[ -s "$attr_err" ]]; then
++        logger -t "$LOG_TAG" < "$attr_err" || true
++    fi
++    rm -f "$attr_err"
++fi
++
++# Ensure the kill-switch library is present and source it. We do NOT
++# gate the actual op call behind op_killswitch_is_active here because
+ # `op service-account ratelimit` is a free control-plane call (verified
+-# 2026-04-19), so the collector intentionally does NOT gate on
+-# op_killswitch_is_active. It still sources the lib so
+-# op_killswitch_scan_file can trip the lock on bad responses, protecting
+-# OTHER callers that make billable op calls.
++# 2026-04-19, see memory feedback_op_rate_limit_care). Gating it would
++# blind the dashboard during exactly the incidents the collector exists
++# to observe. We still load the lib so op_killswitch_scan_file can trip
++# the lock on the response if a "Too many requests" marker appears,
++# protecting OTHER callers (wrappers, vault-pass) that do make billable
++# calls.
+ if [[ -f "$KILLSWITCH_LIB" ]]; then
+     # shellcheck source=/dev/null
+     source "$KILLSWITCH_LIB"
+@@ -57,6 +99,10 @@
+     finish "killswitch_lib_missing" 0
+ fi
+ 
++# Load the op service account token from the standard location used by
++# the other wrappers. Read-only is sufficient for `service-account ratelimit`.
++# Loaded into a local var and passed inline to `op` rather than exported
++# process-wide, so subprocess children (logger, parse.py) never see it.
+ OP_TOKEN=""
+ if [[ -r "$TOKEN_FILE" ]]; then
+     OP_TOKEN="$(cat "$TOKEN_FILE")"
+@@ -70,6 +116,11 @@
+     finish "token_missing" 0
+ fi
+ 
++# Run the ratelimit command with a 30s hard timeout, capturing stdout and
++# stderr so we can scan BOTH streams for rate-limit markers (op CLI may
++# write the rate-limit warning to either). Timeout exit 124 is treated as
++# an op failure; op exit != 0 is also a failure. On any failure, scan the
++# combined output for markers and trip the kill switch if any match.
+ op_stdout="$(mktemp)"
+ op_stderr="$(mktemp)"
+ op_status=0
+@@ -87,9 +138,16 @@
+     fi
+     finish "op_error" 0
+ fi
++# Also scan stdout on success - some op versions put warnings there while
++# still exiting 0. If a marker is found we still consume this successful
++# response (we got the data) but flip the kill switch to protect other callers.
+ op_killswitch_scan_file "$op_stdout" || true
+ rm -f "$op_stderr"
+ 
++# Pipe through the parser; on parser error, keep prior metrics and surface
++# via reason=parse_error. Use mktemp for the parser stderr so we do not
++# touch a predictable /tmp path (symlink attack surface + unbounded growth
++# if the file were long-lived).
+ new_body="$(mktemp)"
+ parse_err="$(mktemp)"
+ if ! python3 "$PARSER" < "$op_stdout" > "$new_body" 2>"$parse_err"; then
+@@ -99,6 +157,8 @@
+ fi
+ rm -f "$op_stdout" "$parse_err"
+ 
++# Write the fresh body atomically, then append the trailing collector
++# success/timestamp gauges via finish().
+ tmp="$(mktemp)"
+ cat "$new_body" > "$tmp"
+ rm -f "$new_body"
+
+changed: [command-center1]
+

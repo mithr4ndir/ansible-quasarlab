@@ -109,10 +109,10 @@ for playbook in proxmox.yml vm_baseline.yml monitoring.yml jellyfin.yml authenti
     rc=$?
     cat "$tmpfile" >> "$LOGFILE"
     playbook_results["${playbook}"]=$rc
-    # Any playbook that invoked `op read` and hit the rate limit puts
-    # "Too many requests" in its output. Surface that to the killswitch
-    # so subsequent scheduled runs short-circuit.
-    op_killswitch_scan_file "$tmpfile" || true
+    # A run whose op call hit the rate limit trips the kill switch for
+    # everything after it. Only the op error line counts, not the phrase
+    # anywhere in the output: --diff text once tripped it (issue #160).
+    op_killswitch_scan_playbook_output "$tmpfile" || true
 
     # Parse PLAY RECAP for failed/unreachable hosts
     failed_hosts=""
