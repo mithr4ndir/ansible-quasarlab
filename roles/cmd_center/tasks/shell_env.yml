@@ -1,0 +1,85 @@
+---
+# Keep 1Password reads out of shell startup on the command center.
+#
+# /etc/profile.d/op-ansible-env.sh (hand-placed 2026-03-22, never managed here)
+# and a copy of its logic at the top of ~/.bashrc each ran an uncached
+# `op read "op://Infrastructure/Proxmox API/Ansible Inventory/token_secret"`
+# whenever PROXMOX_TOKEN_SECRET was unset. The ~/.bashrc copy sat above the
+# non-interactive guard on purpose, and bash on Ubuntu sources ~/.bashrc for
+# commands run over SSH. So every SSH exec Ansible made into this host paid for
+# it: measured 2 reads per `ssh command-center1 true`, 88 per cmd_center.yml run.
+# Issue #124 moved the token into ansible-vault (scripts/lib/proxmox-vault.sh)
+# and never removed the thing it replaced.
+#
+# Imported first in main.yml so the rest of the cmd_center role, and every later
+# role in the play, already runs against the fixed shell.
+
+- name: Manage the Ansible shell environment profile
+  ansible.builtin.template:
+    src: op-ansible-env.sh.j2
+    dest: /etc/profile.d/op-ansible-env.sh
+    owner: root
+    group: root
+    mode: '0644'
+    validate: bash -n %s
+  tags:
+    - shell_env
+
+# Removes the whole `if [ -z "${PROXMOX_TOKEN_SECRET:-}" ] ... fi` block,
+# elif branch included. Removing only the `op read` lines would leave an empty
+# if/elif body, a syntax error that breaks every SSH command, Ansible's own
+# included; validate refuses to write that.
+- name: Remove the uncached Proxmox token op read from ~/.bashrc
+  ansible.builtin.replace:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    regexp: '^if \[ -z "\$\{PROXMOX_TOKEN_SECRET:-\}" \].*\n(?:.*\n)*?fi\n'
+    replace: |
+      # PROXMOX_TOKEN_SECRET is loaded for interactive shells by
+      # /etc/profile.d/op-ansible-env.sh (managed by Ansible). Never fetch it
+      # from 1Password here: this part of ~/.bashrc runs for every SSH command.
+    validate: bash -n %s
+  become: false
+  tags:
+    - shell_env
+
+- name: Correct the stale comment above the service account token export
+  ansible.builtin.replace:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    regexp: '^# 1Password / Proxmox token for Ansible \(must be before non-interactive guard\)$'
+    replace: '# 1Password service account token (a local file read, no 1Password API call)'
+    validate: bash -n %s
+  become: false
+  tags:
+    - shell_env
+
+# Fails loudly if ~/.bashrc still reads from 1Password in some shape the
+# regexp above did not anticipate, instead of silently leaving the burn in.
+# Skipped under --check, where the replace above has not really run.
+- name: Look for any op read left in ~/.bashrc
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -n
+      - -F
+      - op read
+      - "/home/{{ ansible_user }}/.bashrc"
+  register: cmd_center_bashrc_op_reads
+  changed_when: false
+  failed_when: cmd_center_bashrc_op_reads.rc > 1
+  become: false
+  when: not ansible_check_mode
+  tags:
+    - shell_env
+
+- name: Fail if ~/.bashrc still calls op read
+  ansible.builtin.assert:
+    that:
+      - cmd_center_bashrc_op_reads.rc == 1
+    fail_msg: >-
+      ~/.bashrc still contains `op read` at line(s):
+      {{ cmd_center_bashrc_op_reads.stdout_lines | map('regex_replace', ':.*$', '') | join(', ') }}.
+      Every SSH command into this host would pay for it. Remove it by hand and
+      load PROXMOX_TOKEN_SECRET from vault instead (see docs/vault.md).
+  when: not ansible_check_mode
+  tags:
+    - shell_env

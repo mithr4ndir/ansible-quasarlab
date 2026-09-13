@@ -90,8 +90,13 @@
   no_log: true
   when: op_token.stat.exists
 
+# `op service-account ratelimit` does not count against the 1Password quota
+# (verified 2026-04-19, see docs/op-call-inventory.md) yet still has to
+# authenticate: it fails with no token (rc 1) and with a bad token (rc 9). That
+# proves the token works without the billable read `op vault list` used to
+# cost. Nothing needs caching, because nothing billable is called.
 - name: Verify op CLI works with service account
-  ansible.builtin.command: op vault list
+  ansible.builtin.command: op service-account ratelimit
   environment:
     OP_SERVICE_ACCOUNT_TOKEN: "{{ op_token_content.content | b64decode | trim }}"
   register: op_verify

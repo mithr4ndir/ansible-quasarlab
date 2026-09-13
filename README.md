@@ -87,11 +87,20 @@ ansible-playbook playbooks/k8s_init.yml         # K8s cluster bootstrap
 ansible-playbook playbooks/lb_setup.yml         # Load balancer pair
 ```
 
+For the command center itself, prefer the wrapper. It pins the automation checkout to
+origin/main and adds the kill switch, quota pre-flight, vault-sourced Proxmox token and
+a log, like the timers:
+
+```bash
+scripts/run-cmd-center.sh --check                 # defaults to --limit command-center1
+scripts/run-cmd-center.sh --limit k8cluster1      # override the limit
+```
+
 ## Secrets
 
 - **Ansible Vault** for encrypted variables (password from 1Password via `scripts/vault-pass.sh`). Includes the Proxmox API token (`vault_proxmox_api_token`).
 - **1Password CLI cache** (`scripts/lib/op-secret-cache.sh`) for runtime-fetched secrets like Authentik, Grafana, Wazuh, Claude Bridge passwords. 48h TTL with per-slug locking, kill-switched against rate-limit drains. Every op call on command-center1 is attributed by a shim, see `docs/op-call-inventory.md`.
-- **`scripts/lib/proxmox-vault.sh`** decrypts and exports `PROXMOX_TOKEN_SECRET` for dynamic inventory. Replaces the previous `op read` path that bypassed the env cache (issue #124).
+- **`scripts/lib/proxmox-vault.sh`** decrypts and exports `PROXMOX_TOKEN_SECRET` for dynamic inventory. Replaces the previous `op read` path that bypassed the env cache (issue #124). On command-center1, interactive bash shells get it from `/etc/profile.d/op-ansible-env.sh` (managed by `roles/cmd_center/tasks/shell_env.yml`), which uses the same lib and never calls `op`.
 - See `docs/vault.md` for variable inventory, rotation runbook, and disaster-recovery bootstrap.
 - See `docs/op-call-inventory.md` for the per-call-site audit of every `op` invocation in the repo.
 

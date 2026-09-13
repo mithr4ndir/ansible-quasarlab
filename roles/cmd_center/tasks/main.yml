@@ -7,6 +7,11 @@
 #   onepassword_token.yml   1P service account token from vault
 #   ssh_keys.yml            SSH keys from 1P via op
 
+# First on purpose: until it runs, every SSH exec into this host costs a
+# 1Password read (see shell_env.yml).
+- name: Shell startup without 1Password reads
+  ansible.builtin.import_tasks: shell_env.yml
+
 - name: System packages and Ansible collections
   ansible.builtin.import_tasks: packages.yml
 
@@ -40,3 +45,26 @@
 - name: Herdr headless server systemd user service
   ansible.builtin.import_tasks: herdr.yml
   when: cmd_center_herdr_enabled | bool
+
+# herdr.yml is skipped entirely when herdr is disabled, so the link it creates
+# for `herdr --remote` is cleaned up here instead of being left dangling. Only
+# a symlink that points at the managed binary is removed; anything else at
+# that path was not put there by this role and is left alone.
+- name: Remove the herdr --remote link when herdr is disabled
+  when: not (cmd_center_herdr_enabled | bool)
+  tags:
+    - herdr
+  block:
+    - name: Check the herdr --remote link
+      ansible.builtin.stat:
+        path: "{{ cmd_center_herdr_link_path }}"
+        follow: false
+        get_checksum: false
+      register: cmd_center_herdr_link_stat
+
+    - name: Remove the herdr --remote link
+      ansible.builtin.file:
+        path: "{{ cmd_center_herdr_link_path }}"
+        state: absent
+      become: true
+      when: cmd_center_herdr_link_stat.stat.lnk_target | default('') == cmd_center_herdr_bin_path

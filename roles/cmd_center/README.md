@@ -19,7 +19,7 @@ management + spec-workflow dashboard workstation). Applied by
 | Claude Code | `claude-config/bin/bootstrap.sh` run to set up `~/.claude` symlinks |
 | Node runtime | Standalone Node 22 at `~/.local/lib/nodejs/current/` (isolated from system apt node) |
 | Spec-workflow dashboard | systemd user service on port 5000, bound to 0.0.0.0 for LAN reach |
-| Herdr server | Pinned, checksum-verified herdr binary at `~/.local/bin/herdr`, plus the `herdr.service` systemd user unit, enabled (not started). Only when `cmd_center_herdr_enabled` is true, which only command-center1 sets. |
+| Herdr server | Pinned, checksum-verified herdr binary at `~/.local/bin/herdr`, symlinked from `/usr/local/bin/herdr` so `herdr --remote` finds it over a non-login SSH shell (whose PATH lacks `~/.local/bin`; without it the client silently falls back to a local session), plus the `herdr.service` systemd user unit, enabled (not started). Only when `cmd_center_herdr_enabled` is true, which only command-center1 sets. |
 | Herdr health | `herdr-health-collector.timer` user timer writing `herdr.service` state to the node_exporter textfile `herdr.prom` every minute |
 
 `op` (1Password CLI) is installed by the separate `onepassword_cli` role,
@@ -97,7 +97,7 @@ See `defaults/main.yml` for the full list. Key ones to override in inventory:
 - `spec_workflow_bind_address` set to `127.0.0.1` for localhost-only
 - `spec_workflow_cors_enabled` set to `true` and configure allowed origins if exposing beyond LAN
 - `lab_repos` add or remove repos cloned onto the host
-- `cmd_center_herdr_enabled` set to `true` in host_vars to install herdr, its user unit, and its health timer (command-center1 only today)
+- `cmd_center_herdr_enabled` set to `true` in host_vars to install herdr, its `/usr/local/bin/herdr` link, its user unit, and its health timer (command-center1 only today). Setting it back to `false` removes the link if it still points at the managed binary.
 - `cmd_center_herdr_version`, `cmd_center_herdr_sha256` bump together to upgrade herdr (see below)
 
 ## Herdr binary: pinning and upgrades
@@ -160,6 +160,7 @@ command center.
    - `systemctl list-timers` shows both ansible-proxmox and ansible-security timers
    - `systemctl --user is-enabled herdr` returns `enabled` (on command-center1)
    - `~/.local/bin/herdr --version` reports the pinned version (on command-center1)
+   - `ssh command-center1 command -v herdr` returns `/usr/local/bin/herdr`, i.e. a non-login shell finds it (on command-center1)
    - `/var/lib/node_exporter/textfiles/herdr.prom` is fresh (on command-center1)
 4. Reboot the host and re-verify item 3 to confirm services auto-start via linger. On command-center1, also confirm `systemctl --user is-active herdr` returns `active`.
 

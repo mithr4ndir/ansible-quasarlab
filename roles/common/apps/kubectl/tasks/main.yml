@@ -37,13 +37,44 @@
     update_cache: true
   register: repo_added
 
-- name: Install kubectl
-  ansible.builtin.apt:
-    name:
-      - "kubectl={{ kube_version }}"
-    state: present
-    update_cache: false
+# kubectl is held (and kubeadm/kubelet too, on hosts that carry those marks), so
+# a version change needs --allow-change-held-packages. That flag is not scoped to
+# the named package: if apt ever decided a dependency change was needed, it would
+# silently move other held packages too. Simulate first and refuse unless kubectl
+# is the only package apt would install, remove or purge. Read-only, so it also
+# runs under --check.
+- name: Refuse unless kubectl is the only package the pinned install would change
+  ansible.builtin.shell: |
+    set -o pipefail
+    LC_ALL=C apt-get --simulate install "kubectl=${KUBE_VERSION}" --allow-change-held-packages \
+      | awk '/^(Inst|Remv|Purg) / && $2 !~ /^kubectl(:[a-z0-9]+)?$/ { print "would change: " $0; bad = 1 }
+             END { exit bad }'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBE_VERSION: "{{ kube_version }}"
+  register: kubectl_install_simulation
+  changed_when: false
+  check_mode: false
   become: true
+
+- name: Install kubectl at the pinned cluster version
+  become: true
+  block:
+    - name: Install kubectl (hold is overridden for this package only)
+      ansible.builtin.apt:
+        name:
+          - "kubectl={{ kube_version }}"
+        state: present
+        allow_change_held_packages: true
+        update_cache: false
+  always:
+    # In `always` so the hold is reasserted even if the install fails part way.
+    # kubeadm and kubelet holds are deliberately left alone.
+    - name: Hold kubectl
+      ansible.builtin.dpkg_selections:
+        name: kubectl
+        selection: hold
 
 - name: Add kubectl alias to bashrc
   ansible.builtin.lineinfile:
@@ -55,9 +86,3 @@
     group: "{{ ansible_user }}"
   become: false
   run_once: true
-
-- name: Hold kubectl package (if not already held)
-  ansible.builtin.dpkg_selections:
-    name: kubectl
-    selection: hold
-  become: true

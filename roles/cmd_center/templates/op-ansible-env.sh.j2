@@ -1,0 +1,47 @@
+# Managed by Ansible (roles/cmd_center/tasks/shell_env.yml). Local edits are
+# overwritten.
+#
+# Shell environment for running Ansible by hand on the command center.
+#
+# This file must never call `op read`. It used to read the Proxmox inventory
+# token from 1Password on every shell startup, and a copy of that logic at the
+# top of ~/.bashrc ran for every SSH command, which is every exec Ansible makes
+# against this host. See shell_env.yml for the measured cost.
+
+# Service account token from its file: a local read, not a 1Password API call.
+if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && [ -f "$HOME/.config/op/service-account-token" ]; then
+    OP_SERVICE_ACCOUNT_TOKEN="$(cat "$HOME/.config/op/service-account-token")"
+    export OP_SERVICE_ACCOUNT_TOKEN
+fi
+
+# PROXMOX_TOKEN_SECRET for inventory.proxmox.yml, in interactive bash only.
+#
+# Decrypted from ansible-vault by scripts/lib/proxmox-vault.sh, the same
+# supplier the run-*.sh wrappers use, out of the automation checkout (pinned to
+# origin/main, so a feature branch in ~/code cannot change what runs here).
+# Costs no 1Password read while the vault-password cache is warm, one read per
+# cache TTL otherwise.
+#
+# Non-interactive shells get nothing. Only the controller process resolving
+# inventory needs the token; the shells Ansible opens over SSH never did.
+# A child shell inherits an exported token, so this runs once per session.
+if [ -n "${BASH_VERSION:-}" ] && [ -z "${PROXMOX_TOKEN_SECRET:-}" ]; then
+    case $- in
+        *i*)
+            if command -v ansible-vault >/dev/null 2>&1 \
+                && [ -f "{{ ansible_automation_repo_path }}/scripts/lib/proxmox-vault.sh" ]; then
+                _op_ansible_env_token="$(REPO_DIR="{{ ansible_automation_repo_path }}" timeout 30 bash -c '
+                    source "${REPO_DIR}/scripts/lib/proxmox-vault.sh" \
+                        && load_proxmox_token_from_vault \
+                        && printf "%s" "$PROXMOX_TOKEN_SECRET"' 2>/dev/null)"
+                if [ -n "$_op_ansible_env_token" ]; then
+                    PROXMOX_TOKEN_SECRET="$_op_ansible_env_token"
+                    export PROXMOX_TOKEN_SECRET
+                else
+                    echo "op-ansible-env: could not decrypt PROXMOX_TOKEN_SECRET from vault; dynamic inventory is unavailable in this shell (see docs/vault.md)" >&2
+                fi
+                unset _op_ansible_env_token
+            fi
+            ;;
+    esac
+fi
