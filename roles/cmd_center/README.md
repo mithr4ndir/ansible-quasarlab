@@ -76,7 +76,7 @@ Every task is designed to be re-runnable without side effects:
 
 - apt modules use their native state tracking
 - Git clones use `update: false` so local commits are never clobbered
-- Binary installs (helm, yq, Node) use pinned versioned paths with `creates:` or `get_url` checksum comparison
+- Binary installs (helm, yq, Node) use pinned versioned paths. Node uses `creates:`, yq uses `get_url` comparison, and helm gates its download, extract, and copy on one stat of the versioned binary, extracting into a root-only temp directory that is removed afterwards, so a reboot that clears `/tmp` or a `--check` run cannot break it
 - Symlinks use `force: true` to repoint without leaving duplicates
 - systemd linger uses a stat check on the marker file
 - `claude-config/bin/bootstrap.sh` is idempotent by design (checks for symlinks before writing)
