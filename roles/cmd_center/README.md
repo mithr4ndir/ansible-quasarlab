@@ -145,7 +145,12 @@ If the user manager itself dies, the timer dies with it. That shows up as a
 stale timestamp, and directly as `user@1000.service` in node_exporter's
 systemd allowlist for command-center1.
 
-Tests: `python3 -m unittest discover roles/cmd_center/tests`.
+Tests: `uv run --with pytest --with pyyaml --with ansible-core pytest roles/cmd_center/tests`.
+
+Use pytest, not `python3 -m unittest discover`. Several test modules are
+pytest-style functions and some drive real Ansible modules, so plain unittest
+imports them as a single failed test and skips every case inside, while still
+reporting the rest of the suite.
 
 ## Disaster recovery runbook
 
