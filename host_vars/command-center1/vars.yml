@@ -19,3 +19,7 @@ node_exporter_systemd_units:
 # Herdr headless server systemd user service (roles/cmd_center/tasks/herdr.yml).
 # Enabled on this host only.
 cmd_center_herdr_enabled: true
+
+# Lab changelog to Discord (roles/cmd_center/tasks/changelog.yml).
+# Enabled on this host only.
+cmd_center_changelog_enabled: true

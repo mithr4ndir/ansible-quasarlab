@@ -20,6 +20,7 @@ management + spec-workflow dashboard workstation). Applied by
 | Node runtime | Standalone Node 22 at `~/.local/lib/nodejs/current/` (isolated from system apt node) |
 | Spec-workflow dashboard | systemd user service on port 5000, bound to 0.0.0.0 for LAN reach |
 | Herdr server | Pinned, checksum-verified herdr binary at `~/.local/bin/herdr`, symlinked from `/usr/local/bin/herdr` so `herdr --remote` finds it over a non-login SSH shell (whose PATH lacks `~/.local/bin`; without it the client silently falls back to a local session), plus the `herdr.service` systemd user unit, enabled (not started). Only when `cmd_center_herdr_enabled` is true, which only command-center1 sets. |
+| Lab changelog | `/usr/local/bin/lab-changelog` plus the `lab-changelog.timer` system timer (daily 23:55 UTC, as `ansible_user`). Posts merged PRs and opened or closed issues from `cmd_center_changelog_repos` to Discord, with optional claude-generated highlights from those titles and bodies only. The webhook URL comes from the 1Password secret cache at run time; nothing is posted without it. Also the target of the Claude Code SessionEnd hook (`lab-changelog session-end`, registered in claude-config). Only when `cmd_center_changelog_enabled` is true, which only command-center1 sets. |
 | Herdr health | `herdr-health-collector.timer` user timer writing `herdr.service` state to the node_exporter textfile `herdr.prom` every minute |
 
 `op` (1Password CLI) is installed by the separate `onepassword_cli` role,
@@ -69,6 +70,7 @@ Available tags per task file:
 - `spec_workflow`
 - `ce_review_viewer`
 - `herdr`
+- `changelog`
 
 ## Idempotency
 
@@ -99,6 +101,7 @@ See `defaults/main.yml` for the full list. Key ones to override in inventory:
 - `spec_workflow_cors_enabled` set to `true` and configure allowed origins if exposing beyond LAN
 - `lab_repos` add or remove repos cloned onto the host
 - `cmd_center_herdr_enabled` set to `true` in host_vars to install herdr, its `/usr/local/bin/herdr` link, its user unit, and its health timer (command-center1 only today). Setting it back to `false` removes the link if it still points at the managed binary.
+- `cmd_center_changelog_enabled` set to `true` in host_vars to install the lab changelog script, its settings file and its daily timer. `cmd_center_changelog_repos`, `cmd_center_changelog_op_reference`, `cmd_center_changelog_on_calendar` and `cmd_center_changelog_session_min_secs` tune it. Setting it back to `false` stops managing it but does not remove an installed timer; disable that by hand with `systemctl disable --now lab-changelog.timer`.
 - `cmd_center_herdr_version`, `cmd_center_herdr_sha256` bump together to upgrade herdr (see below)
 
 ## Herdr binary: pinning and upgrades
