@@ -49,7 +49,7 @@ TEMPLATES = ROLE / "templates"
 FAKE_WEBHOOK = "https://discord.com/api/webhooks/123456789012345678/FAKE-token_value-for-tests-only"
 # Computed here, not by the script, so a wrong tag in the script is caught.
 SLUG = "discord_changelog_webhook_url." + __import__("hashlib").sha256(
-    b"op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url").hexdigest()[:16]
+    b"op://Infrastructure/6pu46lg64wvtd62hxvgcffc7jq/webhook_url").hexdigest()[:16]
 
 TOOLS = ["awk", "bash", "cat", "chmod", "date", "dirname", "flock", "mkdir", "mktemp",
          "mv", "rm", "sh", "sleep", "stat", "timeout", "touch", "basename"]
@@ -1789,3 +1789,22 @@ def test_no_highlights_are_generated_when_there_is_no_webhook(lc: Any, sandbox: 
     sent = lc.run_changelog(cfg, now() - dt.timedelta(hours=1), now() + dt.timedelta(minutes=1), dry_run=False,
                             use_llm=True, runner=fake_runner(rows), opener=FakeOpener())
     assert sent == 0
+
+
+# ---------------------------------------------------------------------------
+# The default webhook is the #activity changelog webhook
+# ---------------------------------------------------------------------------
+
+# Item ids of webhooks that belong to other consumers. rmmf24ed... is
+# DONCHIAN_DISCORD_WEBHOOK (k8s-argocd apps/automation/donchian-signal and
+# dream-team), the trading signals channel. The first changelog was posted
+# there on 2026-09-14 because it was mistaken for the alerts webhook.
+FOREIGN_WEBHOOK_ITEMS = ("rmmf24ed3vvjffafar6wtah4ky", "vausmfy2q2m57r6scvziyrc7lq")
+CHANGELOG_WEBHOOK_REFERENCE = "op://Infrastructure/6pu46lg64wvtd62hxvgcffc7jq/webhook_url"
+
+
+def test_default_reference_is_the_changelog_webhook(lc: Any) -> None:
+    role_default = load_yaml(ROLE / "defaults" / "main.yml")["cmd_center_changelog_op_reference"]
+    assert role_default == lc.DEFAULT_OP_REFERENCE == CHANGELOG_WEBHOOK_REFERENCE
+    for item in FOREIGN_WEBHOOK_ITEMS:
+        assert item not in role_default
