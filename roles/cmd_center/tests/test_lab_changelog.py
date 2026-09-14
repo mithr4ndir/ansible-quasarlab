@@ -1527,3 +1527,71 @@ def test_untaggable_reference_fails_closed(lc: Any, sandbox: Sandbox, monkeypatc
     assert "not posting" in sandbox.log_text()
     assert sandbox.op_argv() == []
     assert REF_A not in sandbox.log_text()
+
+
+# ---------------------------------------------------------------------------
+# Review fix 3: a result that hits the gh --limit cap is not complete
+# ---------------------------------------------------------------------------
+
+def capped_search_runner(lc: Any, rows: list[dict[str, Any]], calls: list[str] | None = None):
+    """Behaves like gh: honours the search range and --limit, and returns rows
+    in an order unrelated to the timestamp (GitHub search does not sort by
+    merge time), so the caller cannot page by "oldest row seen"."""
+    def runner(argv: list[str], timeout: int) -> str:
+        search = argv[argv.index("--search") + 1]
+        limit = int(argv[argv.index("--limit") + 1])
+        if calls is not None:
+            calls.append(search)
+        span = search.split(":", 1)[1]
+        if span.startswith(">="):
+            low, high = lc.parse_ts(span[2:]), None
+        else:
+            low_text, high_text = span.split("..")
+            low, high = lc.parse_ts(low_text), lc.parse_ts(high_text)
+        hits = [r for r in rows if lc.parse_ts(r["mergedAt"]) >= low
+                and (high is None or lc.parse_ts(r["mergedAt"]) <= high)]
+        hits.sort(key=lambda r: (r["number"] * 7919) % 101)
+        return json.dumps(hits[:limit])
+    return runner
+
+
+def test_capped_results_are_split_until_complete(lc: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lc, "GH_LIMIT", 5)
+    start, end = T0 - dt.timedelta(days=7), T0
+    rows = [pr_row(n, start + dt.timedelta(minutes=97 * n)) for n in range(1, 61)]
+    calls: list[str] = []
+    failed: list[str] = []
+    capped = capped_search_runner(lc, rows, calls)
+    items = lc.collect([ANSIBLE], start, end,
+                       lambda argv, timeout: capped(argv, timeout) if argv[1] == "pr" else "[]", failed)
+    assert sorted(it.number for it in items if it.kind == "pr_merged") == list(range(1, 61))
+    assert failed == []
+    assert any(".." in c for c in calls), "a capped result must be re-queried over narrower windows"
+
+
+def test_cap_that_cannot_be_split_marks_the_run_incomplete(lc: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lc, "GH_LIMIT", 3)
+    same = T0 - dt.timedelta(hours=1)
+    rows = [pr_row(n, same) for n in range(1, 8)]
+    capped = capped_search_runner(lc, rows)
+    failed: list[str] = []
+    lc.collect([ANSIBLE], T0 - dt.timedelta(days=1), T0,
+               lambda argv, timeout: capped(argv, timeout) if argv[1] == "pr" else "[]", failed)
+    assert failed == [f"{ANSIBLE}:pr_merged"]
+
+
+def test_capped_daily_run_does_not_advance_the_boundary(daily: DailyHarness, lc: Any,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    first = T0 - dt.timedelta(hours=24)
+    assert daily.run(first, {}) == (0, [])
+    assert lc.load_daily_end(daily.box.state) == first
+    monkeypatch.setattr(lc, "GH_LIMIT", 2)
+    rows = [pr_row(n, T0 - dt.timedelta(hours=3)) for n in range(1, 4)]
+    capped = capped_search_runner(lc, rows)
+    monkeypatch.setattr(lc, "utcnow", lambda: T0)
+    monkeypatch.setattr(lc, "run_gh", lambda argv, timeout: capped(argv, timeout)
+                        if argv[1] == "pr" and argv[argv.index("--repo") + 1] == ANSIBLE else "[]")
+    monkeypatch.setattr(lc.urllib.request, "urlopen", FakeOpener())
+    lc.main(["daily", "--no-llm"])
+    assert lc.load_daily_end(daily.box.state) == first, \
+        "a capped, incomplete collection must not move the boundary"

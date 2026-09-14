@@ -96,6 +96,8 @@ CHILD_ENV = "LAB_CHANGELOG_CHILD"
 
 GH_TIMEOUT_SECS = 60
 GH_LIMIT = 200
+# Upper bound on gh queries per repo and kind when capped results are split.
+GH_MAX_QUERIES = 64
 SECRET_TIMEOUT_SECS = 150
 HTTP_TIMEOUT_SECS = 20
 POST_MAX_ATTEMPTS = 5
@@ -410,16 +412,61 @@ QUERIES = {
 }
 
 
-def gh_argv(kind: str, repo: str, start: dt.datetime) -> list[str]:
+def gh_argv(kind: str, repo: str, start: dt.datetime, until: dt.datetime | None = None) -> list[str]:
     noun, state, qualifier, stamp_field = QUERIES[kind]
+    span = f">={iso(start)}" if until is None else f"{iso(start)}..{iso(until)}"
     return [
         "gh", noun, "list",
         "--repo", repo,
         "--state", state,
-        "--search", f"{qualifier}:>={iso(start)}",
+        "--search", f"{qualifier}:{span}",
         "--limit", str(GH_LIMIT),
         "--json", f"number,title,url,body,{stamp_field}",
     ]
+
+
+class TruncatedResult(ChangelogError):
+    """A query still hit the --limit cap after splitting its window."""
+
+
+def fetch_rows(kind: str, repo: str, start: dt.datetime, end: dt.datetime, runner: Runner) -> list[Any]:
+    """Every row in [start, end] for one repo and kind.
+
+    gh returns at most GH_LIMIT rows and says nothing when it stops there, and
+    GitHub search does not order by merge or close time, so "page from the
+    oldest row seen" can skip rows. A result that reaches the cap is treated
+    as possibly incomplete: its window is split in half (whole seconds,
+    inclusive ranges) and each half is queried again. A one second window that
+    still hits the cap, or a runaway number of queries, raises instead of
+    returning a silently partial list.
+    """
+    budget = [GH_MAX_QUERIES]
+    by_number: dict[Any, Any] = {}
+
+    def query(lo: dt.datetime, hi: dt.datetime | None) -> None:
+        if budget[0] <= 0:
+            raise TruncatedResult(f"more than {GH_MAX_QUERIES} queries needed; result would be partial")
+        budget[0] -= 1
+        rows = json.loads(runner(gh_argv(kind, repo, lo, hi), GH_TIMEOUT_SECS) or "[]")
+        if not isinstance(rows, list):
+            raise ChangelogError("gh returned something other than a list")
+        if len(rows) < GH_LIMIT:
+            for row in rows:
+                key = row.get("number") if isinstance(row, dict) else None
+                by_number[key if key is not None else ("row", len(by_number))] = row
+            return
+        top = end if hi is None or hi > end else hi
+        if top - lo < dt.timedelta(seconds=1):
+            raise TruncatedResult(f"{GH_LIMIT} or more results within one second at {iso(lo)}")
+        mid = lo + (top - lo) / 2
+        mid = mid.replace(microsecond=0)
+        log.info("gh result hit the %d row cap: repo=%s kind=%s; splitting %s..%s",
+                 GH_LIMIT, repo, kind, iso(lo), iso(top))
+        query(lo, mid)
+        query(mid + dt.timedelta(seconds=1), top)
+
+    query(start.replace(microsecond=0), None)
+    return list(by_number.values())
 
 
 def collect(
@@ -439,7 +486,7 @@ def collect(
         for kind in KINDS:
             stamp_field = QUERIES[kind][3]
             try:
-                rows = json.loads(runner(gh_argv(kind, repo, start), GH_TIMEOUT_SECS) or "[]")
+                rows = fetch_rows(kind, repo, start, end, runner)
             except ChangelogError as exc:
                 failures += 1
                 log.warning("gh query failed: repo=%s kind=%s: %s", repo, kind, exc)
