@@ -79,7 +79,7 @@ DEFAULT_REPOS = (
     "mithr4ndir/terraform-quasarlab",
     "mithr4ndir/quasarlab-docs",
 )
-DEFAULT_OP_REFERENCE = "op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url"
+DEFAULT_OP_REFERENCE = "op://Infrastructure/6pu46lg64wvtd62hxvgcffc7jq/webhook_url"
 DEFAULT_OP_LIB_DIR = "/var/lib/ansible-quasarlab/repo/scripts/lib"
 # The cache slug is this prefix plus a tag derived from the reference (see
 # webhook_cache_slug), so changing the reference can never serve the webhook

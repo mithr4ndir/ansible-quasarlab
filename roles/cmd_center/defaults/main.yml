@@ -115,8 +115,9 @@ cmd_center_changelog_repos:
   - mithr4ndir/terraform-quasarlab
   - mithr4ndir/quasarlab-docs
 # 1Password reference for the Discord webhook URL, resolved only through the
-# secret cache. The default is the alerts channel webhook item that
-# discord-alert-proxy uses.
+# secret cache. The default is the "Discord Changelog Webhook" item, a webhook
+# named changelog in the #activity channel. Never reuse another consumer's
+# webhook item: rmmf24ed... is the Donchian trading signals channel.
 #
 # The cache slug is keyed by this reference:
 #   discord_changelog_webhook_url.<first 16 hex chars of sha256(reference)>
@@ -127,7 +128,7 @@ cmd_center_changelog_repos:
 # /var/lib/ansible-quasarlab/secrets/<slug> (ansible_user, mode 0600). Refresh
 # it after editing the item with scripts/op-secret-refresh.sh <slug>. An entry
 # for a reference no longer in use can be deleted.
-cmd_center_changelog_op_reference: "op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url"
+cmd_center_changelog_op_reference: "op://Infrastructure/6pu46lg64wvtd62hxvgcffc7jq/webhook_url"
 # systemd OnCalendar for the daily run.
 cmd_center_changelog_on_calendar: "*-*-* 23:55:00 UTC"
 cmd_center_changelog_timeout_start_sec: 1800
