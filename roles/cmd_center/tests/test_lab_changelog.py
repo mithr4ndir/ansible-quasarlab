@@ -47,7 +47,9 @@ HOST_VARS = REPO / "host_vars" / "command-center1" / "vars.yml"
 TEMPLATES = ROLE / "templates"
 
 FAKE_WEBHOOK = "https://discord.com/api/webhooks/123456789012345678/FAKE-token_value-for-tests-only"
-SLUG = "discord_changelog_webhook_url"
+# Computed here, not by the script, so a wrong tag in the script is caught.
+SLUG = "discord_changelog_webhook_url." + __import__("hashlib").sha256(
+    b"op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url").hexdigest()[:16]
 
 TOOLS = ["awk", "bash", "cat", "chmod", "date", "dirname", "flock", "mkdir", "mktemp",
          "mv", "rm", "sh", "sleep", "stat", "timeout", "touch", "basename"]
@@ -107,7 +109,7 @@ if [[ "$1 $2" == "service-account ratelimit" && -n "${FAKE_OP_REMAINING:-}" ]]; 
     exit 0
 fi
 if [[ "$1" == "read" ]]; then
-    printf '%s' "value-from-fake-op-read"
+    printf '%s' "${FAKE_OP_VALUE:-value-from-fake-op-read}"
     exit 0
 fi
 exit 1
@@ -349,19 +351,6 @@ def test_window_without_timestamp_is_an_error(lc: Any, tmp_path: Path, content: 
 def test_window_missing_transcript_is_an_error(lc: Any, tmp_path: Path) -> None:
     with pytest.raises(lc.ChangelogError):
         lc.transcript_start(str(tmp_path / "missing.jsonl"))
-
-
-def test_daily_window_is_last_24_hours(lc: Any, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, dt.datetime] = {}
-
-    def fake_run(cfg: Any, start: dt.datetime, end: dt.datetime, **kwargs: Any) -> int:
-        seen["start"], seen["end"] = start, end
-        return 0
-
-    monkeypatch.setattr(lc, "run_changelog", fake_run)
-    assert lc.main(["daily", "--dry-run", "--no-llm"]) == 0
-    assert seen["end"] - seen["start"] == dt.timedelta(hours=24)
-    assert abs((seen["end"] - now()).total_seconds()) < 60
 
 
 def test_hook_input_parsing(lc: Any) -> None:
@@ -1314,3 +1303,227 @@ def test_window_scan_is_bounded(lc: Any, tmp_path: Path, monkeypatch: pytest.Mon
     transcript.write_text(json.dumps({"message": "x" * 4096}) + "\n" + json.dumps({"timestamp": "2026-09-13T10:00:00Z"}) + "\n")
     with pytest.raises(lc.ChangelogError):
         lc.transcript_start(str(transcript))
+
+
+# ---------------------------------------------------------------------------
+# Review fix 1: the daily window starts at the last successful daily run
+# ---------------------------------------------------------------------------
+
+T0 = dt.datetime(2026, 9, 10, 23, 55, tzinfo=dt.timezone.utc)
+ANSIBLE = "mithr4ndir/ansible-quasarlab"
+ARGOCD = "mithr4ndir/k8s-argocd"
+
+
+def pr_row(number: int, when: dt.datetime) -> dict[str, Any]:
+    return {"number": number, "title": f"change {number}", "url": "", "body": "", "mergedAt": iso(when)}
+
+
+class DailyHarness:
+    """Drives `lab-changelog daily` through main() at a chosen wall clock.
+
+    The webhook lookup is stubbed out here so these tests exercise only the
+    window logic; the cache itself is covered by the review fix 2 tests.
+    """
+
+    def __init__(self, lc: Any, box: Sandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.lc = lc
+        self.box = box
+        self.monkeypatch = monkeypatch
+        self.posted_numbers: list[int] = []
+        monkeypatch.setattr(lc, "resolve_webhook", lambda *args, **kwargs: FAKE_WEBHOOK)
+
+    def run(self, at: dt.datetime, prs: dict[str, list[dict[str, Any]]], *extra: str,
+            fail_repos: tuple[str, ...] = (), post_status: int | None = None) -> tuple[int, list[int]]:
+        lc = self.lc
+        rows = {f"pr:merged:{repo}": value for repo, value in prs.items()}
+        good = fake_runner(rows)
+
+        def runner(argv: list[str], timeout: int) -> str:
+            if argv[argv.index("--repo") + 1] in fail_repos:
+                raise lc.ChangelogError("gh exited 1: simulated outage")
+            return good(argv, timeout)
+
+        failures = [http_error(post_status)] * 10 if post_status else []
+        opener = FakeOpener(failures)
+        self.monkeypatch.setattr(lc, "utcnow", lambda: at)
+        self.monkeypatch.setattr(lc, "run_gh", runner)
+        self.monkeypatch.setattr(lc.urllib.request, "urlopen", opener)
+        code = lc.main(["daily", "--no-llm", *extra])
+        numbers = sorted(int(n) for n in re.findall(r"/pull/(\d+)\)", json.dumps(opener.bodies()))) \
+            if not failures else []
+        return code, numbers
+
+
+@pytest.fixture()
+def daily(lc: Any, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch) -> DailyHarness:
+    return DailyHarness(lc, sandbox, monkeypatch)
+
+
+def test_first_daily_run_looks_back_24_hours(daily: DailyHarness) -> None:
+    prs = {ANSIBLE: [pr_row(1, T0 - dt.timedelta(hours=23)), pr_row(2, T0 - dt.timedelta(hours=25))]}
+    assert daily.run(T0, prs) == (0, [1])
+
+
+def test_daily_runs_25_hours_apart_lose_nothing(daily: DailyHarness) -> None:
+    prs = {ANSIBLE: [pr_row(1, T0 - dt.timedelta(hours=2))]}
+    assert daily.run(T0, prs) == (0, [1])
+    # Merged half an hour after the first run. A fixed 24 hour lookback from a
+    # run 25 hours later starts at T0+1h and never sees it.
+    prs[ANSIBLE].append(pr_row(2, T0 + dt.timedelta(minutes=30)))
+    assert daily.run(T0 + dt.timedelta(hours=25), prs) == (0, [2])
+
+
+def test_daily_host_down_for_three_days_loses_nothing(daily: DailyHarness) -> None:
+    assert daily.run(T0, {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(n, T0 + dt.timedelta(hours=10 * n)) for n in range(1, 7)]}
+    assert daily.run(T0 + dt.timedelta(days=3), prs) == (0, [1, 2, 3, 4, 5, 6])
+
+
+def test_failed_post_does_not_advance_the_boundary(daily: DailyHarness) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=24), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(7, T0 - dt.timedelta(hours=3))]}
+    code, _ = daily.run(T0, prs, post_status=400)
+    assert code == 1
+    # The next run is 25 hours after the failed one. Its window must reach
+    # back to the last SUCCESSFUL run, so #7 is still posted.
+    assert daily.run(T0 + dt.timedelta(hours=25), prs) == (0, [7])
+
+
+def test_missing_webhook_does_not_advance_the_boundary(daily: DailyHarness, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=24), {}) == (0, [])
+    # Older than the overlap, so only a boundary that did not move keeps it.
+    prs = {ANSIBLE: [pr_row(8, T0 - dt.timedelta(hours=3))]}
+    monkeypatch.setattr(daily.lc, "resolve_webhook", lambda *args, **kwargs: None)
+    assert daily.run(T0, prs) == (0, [])
+    monkeypatch.setattr(daily.lc, "resolve_webhook", lambda *args, **kwargs: FAKE_WEBHOOK)
+    assert daily.run(T0 + dt.timedelta(hours=25), prs) == (0, [8])
+
+
+def test_github_failure_does_not_advance_the_boundary(daily: DailyHarness) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=24), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(1, T0 - dt.timedelta(hours=2))], ARGOCD: [pr_row(50, T0 - dt.timedelta(hours=3))]}
+    # argocd is unreachable: what was collected is still posted...
+    assert daily.run(T0, prs, fail_repos=(ARGOCD,)) == (0, [1])
+    # ...but the boundary stays put, so argocd's item is not lost.
+    assert daily.run(T0 + dt.timedelta(hours=25), prs) == (0, [50])
+
+
+def test_overlap_catches_late_indexed_items_without_duplicates(daily: DailyHarness) -> None:
+    posted_before = pr_row(1, T0 - dt.timedelta(minutes=10))
+    assert daily.run(T0, {ANSIBLE: [posted_before]}) == (0, [1])
+    # #2 merged five minutes before the first run but GitHub search had not
+    # indexed it yet. The overlap re-reads that stretch; dedup keeps #1 out.
+    late = pr_row(2, T0 - dt.timedelta(minutes=5))
+    assert daily.run(T0 + dt.timedelta(hours=24), {ANSIBLE: [posted_before, late]}) == (0, [2])
+    assert daily.run(T0 + dt.timedelta(hours=48), {ANSIBLE: [posted_before, late]}) == (0, [])
+
+
+def test_lookback_is_capped_and_logged(daily: DailyHarness, lc: Any) -> None:
+    assert daily.run(T0 - dt.timedelta(days=20), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(1, T0 - dt.timedelta(days=8)), pr_row(2, T0 - dt.timedelta(days=6))]}
+    assert daily.run(T0, prs) == (0, [2])
+    log_text = daily.box.log_text()
+    assert "capped" in log_text and "7 days" in log_text
+
+
+def test_since_overrides_the_boundary(daily: DailyHarness) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=2), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(3, T0 - dt.timedelta(days=4))]}
+    assert daily.run(T0, prs, "--since", iso(T0 - dt.timedelta(days=5))) == (0, [3])
+
+
+def test_narrow_since_run_does_not_advance_the_boundary(daily: DailyHarness) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=48), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(5, T0 - dt.timedelta(hours=30)), pr_row(6, T0 - dt.timedelta(hours=1))]}
+    # A manual run over the last two hours only covers part of the gap.
+    assert daily.run(T0, prs, "--since", iso(T0 - dt.timedelta(hours=2))) == (0, [6])
+    assert daily.run(T0 + dt.timedelta(hours=1), prs) == (0, [5])
+
+
+def test_dry_run_does_not_advance_the_boundary(daily: DailyHarness, capsys: pytest.CaptureFixture[str]) -> None:
+    assert daily.run(T0 - dt.timedelta(hours=24), {}) == (0, [])
+    prs = {ANSIBLE: [pr_row(4, T0 - dt.timedelta(minutes=30))]}
+    assert daily.run(T0, prs, "--dry-run") == (0, [])
+    assert "/pull/4" in capsys.readouterr().out
+    assert daily.run(T0 + dt.timedelta(hours=25), prs) == (0, [4])
+
+
+# ---------------------------------------------------------------------------
+# Review fix 2: the webhook cache slug is keyed by the 1Password reference
+# ---------------------------------------------------------------------------
+
+REF_A = "op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url"
+REF_B = "op://Infrastructure/changelog-channel/webhook_url"
+WEBHOOK_A = "https://discord.com/api/webhooks/111111111111111111/channel-A-token"
+WEBHOOK_B = "https://discord.com/api/webhooks/222222222222222222/channel-B-token"
+
+
+def expected_slug(reference: str) -> str:
+    import hashlib
+    return "discord_changelog_webhook_url." + hashlib.sha256(reference.encode()).hexdigest()[:16]
+
+
+def cache_slugs(box: Sandbox) -> list[str]:
+    return sorted(p.name for p in box.cache.iterdir() if not p.name.startswith("."))
+
+
+@pytest.fixture()
+def live_op(sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch) -> Path:
+    token = sandbox.root / "token"
+    token.write_text("fake-token")
+    monkeypatch.setenv("FAKE_OP_REMAINING", "900")
+    return token
+
+
+def test_changed_reference_does_not_return_the_old_webhook(lc: Any, sandbox: Sandbox, live_op: Path,
+                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_A)
+    assert lc.resolve_webhook(str(LIB_DIR), REF_A, str(live_op)) == WEBHOOK_A
+    # The operator points cmd_center_changelog_op_reference at another item.
+    # The cache for REF_A is fresh, but it belongs to a different reference.
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_B)
+    assert lc.resolve_webhook(str(LIB_DIR), REF_B, str(live_op)) == WEBHOOK_B
+    assert [line for line in sandbox.op_argv() if line.startswith("read")] == [f"read {REF_A}", f"read {REF_B}"]
+
+
+def test_same_reference_still_hits_its_cache(lc: Any, sandbox: Sandbox, live_op: Path,
+                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_A)
+    assert lc.resolve_webhook(str(LIB_DIR), REF_A, str(live_op)) == WEBHOOK_A
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_B)
+    assert lc.resolve_webhook(str(LIB_DIR), REF_B, str(live_op)) == WEBHOOK_B
+    assert lc.resolve_webhook(str(LIB_DIR), REF_A, str(live_op)) == WEBHOOK_A
+    assert lc.resolve_webhook(str(LIB_DIR), REF_B, str(live_op)) == WEBHOOK_B
+    assert len([line for line in sandbox.op_argv() if line.startswith("read")]) == 2, "later lookups are cache hits"
+
+
+def test_cache_slug_is_a_tag_never_the_raw_reference(lc: Any, sandbox: Sandbox, live_op: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_A)
+    lc.resolve_webhook(str(LIB_DIR), REF_A, str(live_op))
+    monkeypatch.setenv("FAKE_OP_VALUE", WEBHOOK_B)
+    lc.resolve_webhook(str(LIB_DIR), REF_B, str(live_op))
+    slugs = cache_slugs(sandbox)
+    assert slugs == sorted([expected_slug(REF_A), expected_slug(REF_B)])
+    for name in [p.name for p in sandbox.cache.iterdir()]:
+        assert not re.search(r"(?i)op:|infrastructure|rmmf24|changelog-channel|webhook_url/|channel-|discord\.com", name)
+    for slug in slugs:
+        assert re.fullmatch(r"discord_changelog_webhook_url\.[0-9a-f]{16}", slug)
+
+
+def test_untaggable_reference_fails_closed(lc: Any, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    sandbox.seed_webhook(WEBHOOK_A)
+
+    class BrokenHash:
+        def hexdigest(self) -> str:
+            return "not-hex!"
+
+    monkeypatch.setattr(lc.hashlib, "sha256", lambda data: BrokenHash())
+    assert lc.resolve_webhook(str(LIB_DIR), REF_A, "") is None
+    assert "not posting" in sandbox.log_text()
+    assert sandbox.op_argv() == []
+    assert REF_A not in sandbox.log_text()

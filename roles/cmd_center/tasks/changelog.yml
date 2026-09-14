@@ -19,8 +19,10 @@
 #                         the 1Password kill switch and secret cache
 #
 # The webhook URL is never templated or stored by this role. The script reads
-# it at run time through the 1Password secret cache (slug
-# discord_changelog_webhook_url) and posts nothing when the cache has no value.
+# it at run time through the 1Password secret cache and posts nothing when the
+# cache has no value. The slug is discord_changelog_webhook_url.<tag>, where
+# the tag is 16 hex chars of sha256 over cmd_center_changelog_op_reference;
+# see defaults/main.yml for seeding and refreshing it.
 
 - name: Install lab-changelog script
   ansible.builtin.copy:

@@ -8,7 +8,9 @@ Usage:
     lab-changelog daily [--dry-run] [--since ISO8601] [--no-llm]
     lab-changelog session-end [--dry-run] [--no-llm]
 
-daily        Window is the last 24 hours (or --since to now). Run by
+daily        Window starts one hour before the end of the last successful
+             daily run (24 hours back on the first run, never more than 7
+             days back) and ends now. --since overrides the start. Run by
              lab-changelog.timer.
 session-end  Claude Code SessionEnd hook. Reads the hook JSON on stdin, detaches
              the real work and returns at once. It always exits 0 and never
@@ -49,6 +51,7 @@ import argparse
 import datetime as dt
 import errno
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -78,7 +81,11 @@ DEFAULT_REPOS = (
 )
 DEFAULT_OP_REFERENCE = "op://Infrastructure/rmmf24ed3vvjffafar6wtah4ky/webhook_url"
 DEFAULT_OP_LIB_DIR = "/var/lib/ansible-quasarlab/repo/scripts/lib"
-WEBHOOK_CACHE_SLUG = "discord_changelog_webhook_url"
+# The cache slug is this prefix plus a tag derived from the reference (see
+# webhook_cache_slug), so changing the reference can never serve the webhook
+# cached for the previous one.
+WEBHOOK_CACHE_SLUG_PREFIX = "discord_changelog_webhook_url"
+REFERENCE_TAG_RE = re.compile(r"^[0-9a-f]{16}$")
 DEFAULT_SESSION_MIN_SECS = 600
 DEFAULT_HOST = "command-center1"
 DEFAULT_CONFIG_FILE = "/etc/default/lab-changelog"
@@ -102,6 +109,12 @@ TRANSCRIPT_SCAN_BYTES = 4 << 20
 # longer than any window can reach back, so pruning can never re-post.
 MAX_WINDOW = dt.timedelta(days=30)
 STATE_KEEP = dt.timedelta(days=90)
+# Daily window: re-read an hour before the last successful run's end (GitHub
+# search indexing lags; posted-item dedup suppresses repeats), look back 24
+# hours when there is no previous run, and never further back than the cap.
+DAILY_OVERLAP = dt.timedelta(hours=1)
+DAILY_FIRST_WINDOW = dt.timedelta(hours=24)
+DAILY_MAX_LOOKBACK = dt.timedelta(days=7)
 
 # Discord limits (https://discord.com/developers/docs/resources/message).
 EMBED_TITLE_MAX = 256
@@ -409,7 +422,15 @@ def gh_argv(kind: str, repo: str, start: dt.datetime) -> list[str]:
     ]
 
 
-def collect(repos: Iterable[str], start: dt.datetime, end: dt.datetime, runner: Runner | None = None) -> list[Item]:
+def collect(
+    repos: Iterable[str],
+    start: dt.datetime,
+    end: dt.datetime,
+    runner: Runner | None = None,
+    failed: list[str] | None = None,
+) -> list[Item]:
+    """Items in the window. Failed queries are logged and, when `failed` is
+    given, recorded there, so a caller can tell a partial collection apart."""
     runner = runner or run_gh
     items: list[Item] = []
     failures = 0
@@ -422,13 +443,19 @@ def collect(repos: Iterable[str], start: dt.datetime, end: dt.datetime, runner: 
             except ChangelogError as exc:
                 failures += 1
                 log.warning("gh query failed: repo=%s kind=%s: %s", repo, kind, exc)
+                if failed is not None:
+                    failed.append(f"{repo}:{kind}")
                 continue
             except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
                 failures += 1
                 log.warning("gh query failed: repo=%s kind=%s: %s", repo, kind, type(exc).__name__)
+                if failed is not None:
+                    failed.append(f"{repo}:{kind}")
                 continue
             if not isinstance(rows, list):
                 failures += 1
+                if failed is not None:
+                    failed.append(f"{repo}:{kind}")
                 continue
             for row in rows:
                 item = item_from_row(kind, repo, row, stamp_field, start, end)
@@ -777,23 +804,59 @@ def load_state(state_dir: Path) -> dict[str, str]:
     return {k: v for k, v in posted.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-def save_state(state_dir: Path, posted: dict[str, str], now: dt.datetime) -> None:
-    horizon = now - STATE_KEEP
-    kept = {k: v for k, v in posted.items() if (parse_ts(v) or now) >= horizon}
-    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".posted.", dir=state_dir)
+def write_json_atomic(path: Path, data: Any) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.stem}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as handle:
-            json.dump({"version": 1, "posted": kept}, handle, indent=1, sort_keys=True)
+            json.dump(data, handle, indent=1, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, state_dir / "posted.json")
+        os.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def save_state(state_dir: Path, posted: dict[str, str], now: dt.datetime) -> None:
+    horizon = now - STATE_KEEP
+    kept = {k: v for k, v in posted.items() if (parse_ts(v) or now) >= horizon}
+    write_json_atomic(state_dir / "posted.json", {"version": 1, "posted": kept})
+
+
+def load_daily_end(state_dir: Path) -> dt.datetime | None:
+    """End of the window of the last successful daily run, if any."""
+    try:
+        data = json.loads((state_dir / "daily.json").read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.warning("daily state unreadable (%s); treating as a first run", type(exc).__name__)
+        return None
+    return parse_ts(data.get("last_success_end")) if isinstance(data, dict) else None
+
+
+def save_daily_end(state_dir: Path, end: dt.datetime) -> None:
+    write_json_atomic(state_dir / "daily.json", {"version": 1, "last_success_end": iso(end)})
+
+
+def daily_window_start(last_end: dt.datetime | None, end: dt.datetime) -> dt.datetime:
+    if last_end is None:
+        return end - DAILY_FIRST_WINDOW
+    if last_end > end:
+        log.warning("daily: last successful run ends in the future (%s); looking back 24 hours", iso(last_end))
+        return end - DAILY_FIRST_WINDOW
+    start = last_end - DAILY_OVERLAP
+    if end - start > DAILY_MAX_LOOKBACK:
+        log.warning(
+            "daily: last successful run ended %s; lookback capped to %d days, older items are not posted",
+            iso(last_end), DAILY_MAX_LOOKBACK.days,
+        )
+        start = end - DAILY_MAX_LOOKBACK
+    return start
 
 
 class StateLock:
@@ -851,10 +914,30 @@ cached_op_read "$slug" "$ref"
 """
 
 
+def webhook_cache_slug(reference: str) -> str | None:
+    """Cache slug for this reference, or None when no tag can be derived.
+
+    Same scheme as terraform-quasarlab's tf-cached-secrets: the first 16 hex
+    characters of sha256 over the exact reference string. The raw reference
+    never appears in the slug, and each reference gets its own cache entry.
+    """
+    try:
+        tag = hashlib.sha256(reference.encode("utf-8")).hexdigest()[:16]
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not isinstance(tag, str) or not REFERENCE_TAG_RE.match(tag):
+        return None
+    return f"{WEBHOOK_CACHE_SLUG_PREFIX}.{tag}"
+
+
 def resolve_webhook(lib_dir: str, reference: str, token_file: str) -> str | None:
     """Return the webhook URL, or None with the reason logged."""
     if not OP_REFERENCE_RE.match(reference):
         log.warning("webhook: configured 1Password reference is malformed; not posting")
+        return None
+    slug = webhook_cache_slug(reference)
+    if slug is None:
+        log.warning("webhook: could not derive a cache slug tag from the reference; not posting")
         return None
     for lib in ("op-killswitch.sh", "op-secret-cache.sh"):
         if not os.path.isfile(os.path.join(lib_dir, lib)):
@@ -864,7 +947,7 @@ def resolve_webhook(lib_dir: str, reference: str, token_file: str) -> str | None
     env[CHILD_ENV] = "1"
     try:
         proc = subprocess.run(
-            ["bash", "-c", SECRET_SCRIPT, "lab-changelog-secret", lib_dir, WEBHOOK_CACHE_SLUG, reference, token_file],
+            ["bash", "-c", SECRET_SCRIPT, "lab-changelog-secret", lib_dir, slug, reference, token_file],
             capture_output=True,
             text=True,
             timeout=SECRET_TIMEOUT_SECS,
@@ -1053,6 +1136,14 @@ class Config:
         )
 
 
+@dataclass
+class RunResult:
+    sent: int
+    # True only when every gh query succeeded and every new item was posted
+    # (or there was nothing new). Only then may the daily boundary advance.
+    complete: bool
+
+
 def run_changelog(
     cfg: Config,
     start: dt.datetime,
@@ -1066,21 +1157,54 @@ def run_changelog(
 ) -> int:
     """Collect, dedup, build and post (or print). Returns the number of posts."""
     if dry_run:
-        return _run_locked(cfg, start, end, True, use_llm, runner, opener, sleep, out)
+        return _run_locked(cfg, start, end, True, use_llm, runner, opener, sleep, out).sent
     with StateLock(cfg.state_dir):
-        return _run_locked(cfg, start, end, False, use_llm, runner, opener, sleep, out)
+        return _run_locked(cfg, start, end, False, use_llm, runner, opener, sleep, out).sent
+
+
+def run_daily(
+    cfg: Config,
+    end: dt.datetime,
+    since: dt.datetime | None,
+    dry_run: bool,
+    use_llm: bool,
+    runner: Runner | None = None,
+    opener: Opener | None = None,
+    sleep: Sleeper = time.sleep,
+    out: Any = None,
+) -> int:
+    """The daily run: window from the last successful daily run to `end`.
+
+    The boundary is read and written under the state lock, and only advanced
+    after a complete run. A --since window only advances it when it reaches
+    at least as far back as the boundary would have, so a narrow manual run
+    cannot skip the stretch in between.
+    """
+    if dry_run:
+        start = since or daily_window_start(load_daily_end(cfg.state_dir), end)
+        return _run_locked(cfg, start, end, True, use_llm, runner, opener, sleep, out).sent
+    with StateLock(cfg.state_dir):
+        default_start = daily_window_start(load_daily_end(cfg.state_dir), end)
+        start = since or default_start
+        result = _run_locked(cfg, start, end, False, use_llm, runner, opener, sleep, out)
+        if result.complete and start <= default_start:
+            save_daily_end(cfg.state_dir, end)
+        elif not result.complete:
+            log.warning("daily: run incomplete; the next daily window still starts from the last successful run")
+        return result.sent
 
 
 def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool, use_llm: bool,
-                runner: Runner | None, opener: Opener | None, sleep: Sleeper, out: Any) -> int:
+                runner: Runner | None, opener: Opener | None, sleep: Sleeper, out: Any) -> RunResult:
     posted = load_state(cfg.state_dir)
-    items = collect(cfg.repos, start, end, runner)
+    failed: list[str] = []
+    items = collect(cfg.repos, start, end, runner, failed)
     fresh = [item for item in items if item.key not in posted]
     log.info("window %s to %s: %d items, %d new", iso(start), iso(end), len(items), len(fresh))
     if not fresh:
         if dry_run:
             print(json.dumps({"payloads": [], "note": "nothing new"}, indent=2), file=out or sys.stdout)
-        return 0
+        return RunResult(0, not failed)
 
     highlights = None
     if use_llm:
@@ -1092,11 +1216,11 @@ def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool
     if dry_run:
         payloads = [payload for payload, _ in messages]
         print(json.dumps({"payloads": payloads}, indent=2, ensure_ascii=False), file=out or sys.stdout)
-        return 0
+        return RunResult(0, False)
 
     webhook = resolve_webhook(cfg.lib_dir, cfg.reference, cfg.token_file)
     if webhook is None:
-        return 0
+        return RunResult(0, False)
     sent = 0
     try:
         for payload, keys in messages:
@@ -1109,7 +1233,7 @@ def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool
         if sent:
             save_state(cfg.state_dir, posted, utcnow())
     log.info("posted %d message(s)", sent)
-    return sent
+    return RunResult(sent, not failed)
 
 
 def session_end_work(cfg: Config, start: dt.datetime, use_llm: bool) -> None:
@@ -1163,14 +1287,13 @@ def cmd_session_end(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_daily(args: argparse.Namespace, cfg: Config) -> int:
     end = utcnow()
+    since = None
     if args.since:
-        start = parse_ts(args.since)
-        if start is None or start >= end:
+        since = parse_ts(args.since)
+        if since is None or since >= end:
             raise ChangelogError("--since must be an ISO 8601 time in the past")
-        start = max(start, end - MAX_WINDOW)
-    else:
-        start = end - dt.timedelta(hours=24)
-    run_changelog(cfg, start, end, dry_run=args.dry_run, use_llm=not args.no_llm)
+        since = max(since, end - MAX_WINDOW)
+    run_daily(cfg, end, since, dry_run=args.dry_run, use_llm=not args.no_llm)
     return 0
 
 
