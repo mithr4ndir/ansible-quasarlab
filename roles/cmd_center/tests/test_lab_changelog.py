@@ -1738,3 +1738,18 @@ def test_malformed_repo_does_not_advance_the_boundary(daily: DailyHarness, lc: A
     assert daily.run(T0, {ANSIBLE: [pr_row(1, T0 - dt.timedelta(hours=2))]}) == (0, [1])
     assert lc.load_daily_end(daily.box.state) == first, "a skipped repo must keep the boundary where it was"
     assert "malformed repo" in daily.box.log_text()
+
+
+# ---------------------------------------------------------------------------
+# Review fix 8: a repo listed twice is collected once
+# ---------------------------------------------------------------------------
+
+def test_repeated_repo_is_collected_once(lc: Any, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    upper = ANSIBLE.replace("ansible", "Ansible")
+    monkeypatch.setenv("LAB_CHANGELOG_REPOS", f"{ANSIBLE},{ARGOCD},{ANSIBLE},{upper}")
+    cfg = lc.Config.from_env()
+    assert cfg.repos == [ANSIBLE, ARGOCD]
+    assert cfg.invalid_repos == 0
+    rows = {f"pr:merged:{ANSIBLE}": [pr_row(1, T0 - dt.timedelta(hours=1))]}
+    items = lc.collect([ANSIBLE, ANSIBLE], T0 - dt.timedelta(hours=2), T0, fake_runner(rows))
+    assert [it.key for it in items] == [f"{ANSIBLE}#1:pr_merged"]

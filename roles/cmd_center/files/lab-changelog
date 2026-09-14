@@ -517,8 +517,9 @@ def collect(
                     items.append(item)
     if repos and failures == len(repos) * len(KINDS):
         raise ChangelogError("every gh query failed")
-    items.sort(key=lambda it: (KINDS.index(it.kind), it.repo, it.number))
-    return items
+    unique = list({item.key: item for item in items}.values())
+    unique.sort(key=lambda it: (KINDS.index(it.kind), it.repo, it.number))
+    return unique
 
 
 def item_from_row(kind: str, repo: str, row: Any, stamp_field: str, start: dt.datetime, end: dt.datetime) -> Item | None:
@@ -1187,9 +1188,13 @@ class Config:
         repos_raw = env.get("LAB_CHANGELOG_REPOS", "")
         repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
         valid = [r for r in repos if REPO_RE.match(r)]
-        if len(valid) != len(repos):
-            log.warning("ignoring %d malformed repo name(s); runs stay incomplete until fixed",
-                        len(repos) - len(valid))
+        invalid = len(repos) - len(valid)
+        # GitHub repo names are case-insensitive. A repeat would double every
+        # item it returns, so keep the first spelling in configured order.
+        seen: set[str] = set()
+        valid = [r for r in valid if not (r.lower() in seen or seen.add(r.lower()))]
+        if invalid:
+            log.warning("ignoring %d malformed repo name(s); runs stay incomplete until fixed", invalid)
 
         def int_env(name: str, default: int, low: int, high: int) -> int:
             try:
@@ -1211,7 +1216,7 @@ class Config:
             claude_model=env.get("LAB_CHANGELOG_CLAUDE_MODEL", "haiku"),
             claude_timeout=int_env("LAB_CHANGELOG_CLAUDE_TIMEOUT", 90, 5, 600),
             host=host,
-            invalid_repos=len(repos) - len(valid),
+            invalid_repos=invalid,
         )
 
 
