@@ -12,3 +12,7 @@ LAB_CHANGELOG_CLAUDE_BIN={{ cmd_center_changelog_claude_bin if cmd_center_change
 LAB_CHANGELOG_CLAUDE_MODEL={{ cmd_center_changelog_claude_model }}
 LAB_CHANGELOG_CLAUDE_TIMEOUT={{ cmd_center_changelog_claude_timeout }}
 LAB_CHANGELOG_HOST={{ inventory_hostname }}
+# Pinned so the SessionEnd hook (interactive environment, which may set
+# XDG_STATE_HOME) and the daily timer (HOME and PATH only) share one lock and
+# one posted-item state, and so never post the same events twice.
+LAB_CHANGELOG_STATE_DIR=/home/{{ ansible_user }}/.local/state/lab-changelog

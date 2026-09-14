@@ -1753,3 +1753,39 @@ def test_repeated_repo_is_collected_once(lc: Any, sandbox: Sandbox, monkeypatch:
     rows = {f"pr:merged:{ANSIBLE}": [pr_row(1, T0 - dt.timedelta(hours=1))]}
     items = lc.collect([ANSIBLE, ANSIBLE], T0 - dt.timedelta(hours=2), T0, fake_runner(rows))
     assert [it.key for it in items] == [f"{ANSIBLE}#1:pr_merged"]
+
+
+# ---------------------------------------------------------------------------
+# Review fix 9: one state dir for both entry points; no model call without a webhook
+# ---------------------------------------------------------------------------
+
+def test_rendered_settings_pin_one_state_dir_for_hook_and_timer(lc: Any, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    rendered = render((TEMPLATES / "lab-changelog.default.j2").read_text(), role_vars())
+    path = tmp_path / "lab-changelog"
+    path.write_text(rendered)
+    for key in list(os.environ):
+        if key.startswith("LAB_CHANGELOG_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("LAB_CHANGELOG_CONFIG", str(path))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    timer = lc.Config.from_env().state_dir
+    # The SessionEnd hook inherits the interactive environment.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    hook = lc.Config.from_env().state_dir
+    assert timer == hook == Path("/home/ladino/.local/state/lab-changelog")
+
+
+def test_no_highlights_are_generated_when_there_is_no_webhook(lc: Any, sandbox: Sandbox,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = gh_rows(now() - dt.timedelta(minutes=5))
+    monkeypatch.setattr(lc, "resolve_webhook", lambda *args, **kwargs: None)
+
+    def must_not_run(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("claude was asked for highlights that could never be posted")
+
+    monkeypatch.setattr(lc, "generated_highlights", must_not_run)
+    cfg = config(lc, sandbox)
+    sent = lc.run_changelog(cfg, now() - dt.timedelta(hours=1), now() + dt.timedelta(minutes=1), dry_run=False,
+                            use_llm=True, runner=fake_runner(rows), opener=FakeOpener())
+    assert sent == 0

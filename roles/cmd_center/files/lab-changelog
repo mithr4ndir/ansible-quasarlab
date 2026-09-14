@@ -1290,6 +1290,14 @@ def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool
             print(json.dumps({"payloads": [], "note": "nothing new"}, indent=2), file=out or sys.stdout)
         return RunResult(0, not failed)
 
+    webhook = None
+    if not dry_run:
+        # Before highlights: a model call whose output can never be posted
+        # wastes usage and up to the claude timeout on every run.
+        webhook = resolve_webhook(cfg.lib_dir, cfg.reference, cfg.token_file)
+        if webhook is None:
+            return RunResult(0, False)
+
     highlights = None
     if use_llm:
         highlights = generated_highlights(fresh, cfg.claude_bin, cfg.claude_model, cfg.claude_timeout,
@@ -1302,9 +1310,6 @@ def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool
         print(json.dumps({"payloads": payloads}, indent=2, ensure_ascii=False), file=out or sys.stdout)
         return RunResult(0, False)
 
-    webhook = resolve_webhook(cfg.lib_dir, cfg.reference, cfg.token_file)
-    if webhook is None:
-        return RunResult(0, False)
     sent = 0
     for payload, keys in messages:
         post_payload(webhook, payload, opener=opener, sleep=sleep)
