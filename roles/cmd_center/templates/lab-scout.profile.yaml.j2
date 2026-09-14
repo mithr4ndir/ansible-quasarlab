@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# Lab profile for /usr/local/bin/lab-scout, passed to the model as data.
+# Source: cmd_center_scout_profile in roles/cmd_center/defaults/main.yml.
+{{ cmd_center_scout_profile | to_nice_yaml(indent=2, width=100) }}

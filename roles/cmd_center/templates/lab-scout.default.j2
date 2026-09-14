@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Settings for /usr/local/bin/lab-scout (roles/cmd_center/tasks/scout.yml).
+# Only LAB_SCOUT_* keys are honoured. No secrets belong here: the webhook URL
+# is resolved at run time through the 1Password secret cache.
+LAB_SCOUT_OP_REFERENCE={{ cmd_center_scout_op_reference }}
+LAB_SCOUT_OP_LIB_DIR={{ ansible_automation_repo_path }}/scripts/lib
+LAB_SCOUT_OP_TOKEN_FILE=/home/{{ ansible_user }}/.config/op/service-account-token
+LAB_SCOUT_STATE_DIR={{ cmd_center_scout_state_dir }}
+LAB_SCOUT_PROFILE=/etc/lab-scout/profile.yaml
+LAB_SCOUT_INVENTORY={% for source in cmd_center_scout_inventory %}{{ source.repo }}:{{ source.paths | join(',') }}{% if not loop.last %};{% endif %}{% endfor %}
+
+LAB_SCOUT_EXTRA_INVENTORY={{ cmd_center_scout_extra_inventory | join(',') }}
+LAB_SCOUT_METRICS_FILE={{ cmd_center_scout_metrics_file }}
+LAB_SCOUT_CLAUDE_BIN={{ cmd_center_scout_claude_bin }}
+LAB_SCOUT_CLAUDE_MODEL={{ cmd_center_scout_claude_model }}
+LAB_SCOUT_CLAUDE_TIMEOUT={{ cmd_center_scout_claude_timeout }}
+LAB_SCOUT_MAX_IDEAS={{ cmd_center_scout_max_ideas }}
+LAB_SCOUT_MAX_STALE_DAYS={{ cmd_center_scout_max_stale_days }}
+LAB_SCOUT_FETCH_DOMAINS={{ cmd_center_scout_fetch_domains | join(',') }}

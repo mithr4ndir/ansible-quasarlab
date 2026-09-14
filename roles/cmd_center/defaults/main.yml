@@ -142,3 +142,112 @@ cmd_center_changelog_highlights_enabled: false
 cmd_center_changelog_claude_bin: "/home/{{ ansible_user }}/.local/bin/claude"
 cmd_center_changelog_claude_model: haiku
 cmd_center_changelog_claude_timeout: 90
+
+# Lab scout (Radagast): a weekly Discord digest of homelab project ideas
+# (tasks/scout.yml). Off by default; enabled only for command-center1 in its
+# host_vars.
+cmd_center_scout_enabled: false
+# 1Password reference for the Discord webhook URL, resolved only through the
+# secret cache. The default is the webhook named "Magic" in the lab-scout
+# channel. Never reuse another consumer's webhook item: 6pu46lg6... is the
+# lab-changelog #activity webhook and rmmf24ed... is the Donchian trading
+# signals channel.
+#
+# The cache slug is keyed by this reference:
+#   discord_lab_scout_webhook_url.<first 16 hex chars of sha256(reference)>
+# so changing the reference starts a new cache entry (one 1Password read on
+# the next post) instead of posting to the previous channel. Get the slug with
+#   printf '%s' 'op://...' | sha256sum | cut -c1-16
+# Seed it without a read by writing the URL, no trailing newline, to
+# /var/lib/ansible-quasarlab/secrets/<slug> (ansible_user, mode 0600). Refresh
+# it after editing the item with scripts/op-secret-refresh.sh <slug>. An entry
+# for a reference no longer in use can be deleted.
+cmd_center_scout_op_reference: "op://Infrastructure/7vywuwxnj7jcpur7m552eiirz4/webhook_url"
+# systemd OnCalendar for the weekly run.
+cmd_center_scout_on_calendar: "Sat *-*-* 14:00:00 UTC"
+# Must stay above the claude timeout plus the git, gh, link and post steps.
+# systemd never re-triggers a timer whose oneshot is still activating.
+cmd_center_scout_timeout_start_sec: 1800
+cmd_center_scout_claude_bin: "/home/{{ ansible_user }}/.local/bin/claude"
+cmd_center_scout_claude_model: opus
+cmd_center_scout_claude_timeout: 900
+cmd_center_scout_max_ideas: 5
+# GitHub ideas whose last push is older than this are dropped.
+cmd_center_scout_max_stale_days: 180
+cmd_center_scout_state_dir: /var/lib/lab-scout
+cmd_center_scout_metrics_file: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/lab_scout.prom"
+# The only hosts claude may WebFetch (web search runs on Anthropic's side). A
+# fetch runs from command-center1, on the LAN, so page text that tries to
+# steer it anywhere else is denied.
+cmd_center_scout_fetch_domains:
+  - github.com
+  - raw.githubusercontent.com
+  - awesome-selfhosted.net
+  - news.ycombinator.com
+  - selfh.st
+  - landscape.cncf.io
+  - www.cncf.io
+  - www.reddit.com
+  - old.reddit.com
+# What the lab already runs, read from origin/main of each local checkout
+# (never the working tree). A path lists the directories directly under it;
+# path/* also lists one level of subdirectories under each of those.
+cmd_center_scout_inventory:
+  - repo: "/home/{{ ansible_user }}/code/k8s-argocd"
+    paths:
+      - "apps/*"
+      - "infrastructure/*"
+  - repo: "/home/{{ ansible_user }}/code/ansible-quasarlab"
+    paths:
+      - roles
+      - roles/monitoring
+# Components the directory names above do not spell out (a directory called
+# kube-prometheus-stack says nothing about Grafana). Also used for dedup.
+cmd_center_scout_extra_inventory:
+  - ArgoCD
+  - Prometheus
+  - Alertmanager
+  - Grafana
+  - Loki
+  - Vector
+  - External Secrets Operator
+  - MetalLB
+  - Falco
+  - Trivy Operator
+  - Wazuh
+  - CrowdSec
+  - Authentik
+  - Nginx Proxy Manager
+  - pfSense
+  - TrueNAS
+  - Proxmox VE
+  - Jellyfin
+  - Jellyseerr
+  - Bazarr
+  - Homepage
+  - GoatCounter
+  - Dask
+  - 1Password
+  - herdr
+# Rendered to /etc/lab-scout/profile.yaml and given to the model as data.
+# Keep it factual and short; the model is told not to repeat numbers from it.
+cmd_center_scout_profile:
+  hardware:
+    - Two Proxmox VE nodes (pve and pve2)
+    - TrueNAS NAS for storage
+    - No GPU
+    - 1G managed switch, with a 10G direct NIC link between the storage node and the NAS
+    - command-center1 automation VM with 4 vCPU and 16 GiB RAM
+  constraints:
+    - No cloud resources yet
+    - Everything managed as code (Ansible, Terraform, ArgoCD)
+    - Security-first
+    - Self-hosted preferred
+    - Open source only
+  interests:
+    - Kubernetes and GitOps
+    - Observability with Prometheus, Grafana, Loki and Vector
+    - Detection engineering with Wazuh and Sigma
+    - Astronomy data infrastructure (LSDB, Dask)
+    - Security hardening
+    - Portfolio-worthy projects for a systems engineer
