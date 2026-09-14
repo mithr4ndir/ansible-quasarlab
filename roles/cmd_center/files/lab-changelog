@@ -1176,6 +1176,10 @@ class Config:
     claude_model: str
     claude_timeout: int
     host: str
+    # Configured repo names that failed validation and were not queried. A run
+    # that skipped any is incomplete, so the daily boundary cannot move past
+    # events from a repo the operator meant to include.
+    invalid_repos: int = 0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -1184,7 +1188,8 @@ class Config:
         repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
         valid = [r for r in repos if REPO_RE.match(r)]
         if len(valid) != len(repos):
-            log.warning("ignoring %d malformed repo name(s)", len(repos) - len(valid))
+            log.warning("ignoring %d malformed repo name(s); runs stay incomplete until fixed",
+                        len(repos) - len(valid))
 
         def int_env(name: str, default: int, low: int, high: int) -> int:
             try:
@@ -1206,6 +1211,7 @@ class Config:
             claude_model=env.get("LAB_CHANGELOG_CLAUDE_MODEL", "haiku"),
             claude_timeout=int_env("LAB_CHANGELOG_CLAUDE_TIMEOUT", 90, 5, 600),
             host=host,
+            invalid_repos=len(repos) - len(valid),
         )
 
 
@@ -1270,7 +1276,7 @@ def run_daily(
 def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool, use_llm: bool,
                 runner: Runner | None, opener: Opener | None, sleep: Sleeper, out: Any) -> RunResult:
     posted = load_state(cfg.state_dir)
-    failed: list[str] = []
+    failed: list[str] = ["config:malformed repo"] if cfg.invalid_repos else []
     items = collect(cfg.repos, start, end, runner, failed)
     fresh = [item for item in items if item.key not in posted]
     log.info("window %s to %s: %d items, %d new", iso(start), iso(end), len(items), len(fresh))

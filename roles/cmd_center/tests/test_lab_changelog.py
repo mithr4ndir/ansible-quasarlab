@@ -1724,3 +1724,17 @@ def test_reclosed_issue_is_announced_again_but_overlap_is_not(lc: Any, sandbox: 
     assert run(T0 + dt.timedelta(minutes=30), closed(first_close)) == []
     # Reopened and closed again: GitHub now reports the new closedAt.
     assert run(T0 + dt.timedelta(hours=24), closed(second_close)) == [42]
+
+
+# ---------------------------------------------------------------------------
+# Review fix 7: a malformed configured repo makes the run incomplete
+# ---------------------------------------------------------------------------
+
+def test_malformed_repo_does_not_advance_the_boundary(daily: DailyHarness, lc: Any,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    first = T0 - dt.timedelta(hours=24)
+    assert daily.run(first, {}) == (0, [])
+    monkeypatch.setenv("LAB_CHANGELOG_REPOS", f"{ANSIBLE},not a/valid repo!")
+    assert daily.run(T0, {ANSIBLE: [pr_row(1, T0 - dt.timedelta(hours=2))]}) == (0, [1])
+    assert lc.load_daily_end(daily.box.state) == first, "a skipped repo must keep the boundary where it was"
+    assert "malformed repo" in daily.box.log_text()
