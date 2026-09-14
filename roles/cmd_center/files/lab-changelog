@@ -67,7 +67,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -825,10 +825,16 @@ def build_messages(
 # ---------------------------------------------------------------------------
 
 
-def state_dir_default() -> Path:
-    override = os.environ.get("LAB_CHANGELOG_STATE_DIR")
-    if override:
+def state_dir_default(env: Mapping[str, str] | None = None) -> Path:
+    """LAB_CHANGELOG_STATE_DIR from the environment or the config file, else
+    the XDG state directory. A relative override is ignored: it would resolve
+    against whatever cwd the hook or timer happened to start in."""
+    env = os.environ if env is None else env
+    override = env.get("LAB_CHANGELOG_STATE_DIR")
+    if override and os.path.isabs(override):
         return Path(override)
+    if override:
+        log.warning("LAB_CHANGELOG_STATE_DIR is not an absolute path; using the default")
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg) if xdg and os.path.isabs(xdg) else Path.home() / ".local" / "state"
     return base / "lab-changelog"
@@ -1113,6 +1119,7 @@ CONFIG_KEYS = frozenset({
     "LAB_CHANGELOG_CLAUDE_MODEL",
     "LAB_CHANGELOG_CLAUDE_TIMEOUT",
     "LAB_CHANGELOG_HOST",
+    "LAB_CHANGELOG_STATE_DIR",
 })
 
 
@@ -1142,6 +1149,13 @@ def load_config_file(path: str) -> dict[str, str]:
     return values
 
 
+def merged_env() -> dict[str, str]:
+    # The SessionEnd hook runs with Claude's environment, not the timer's,
+    # so the role's settings live in a config file both of them read.
+    # A variable set in the environment wins over the file.
+    return {**load_config_file(os.environ.get("LAB_CHANGELOG_CONFIG", DEFAULT_CONFIG_FILE)), **os.environ}
+
+
 @dataclass
 class Config:
     repos: list[str]
@@ -1157,10 +1171,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        # The SessionEnd hook runs with Claude's environment, not the timer's,
-        # so the role's settings live in a config file both of them read.
-        # A variable set in the environment wins over the file.
-        env = {**load_config_file(os.environ.get("LAB_CHANGELOG_CONFIG", DEFAULT_CONFIG_FILE)), **os.environ}
+        env = merged_env()
         repos_raw = env.get("LAB_CHANGELOG_REPOS", "")
         repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
         valid = [r for r in repos if REPO_RE.match(r)]
@@ -1182,7 +1193,7 @@ class Config:
                 "LAB_CHANGELOG_OP_TOKEN_FILE", str(Path.home() / ".config" / "op" / "service-account-token")
             ),
             session_min_secs=int_env("LAB_CHANGELOG_SESSION_MIN_SECS", DEFAULT_SESSION_MIN_SECS, 0, 86400),
-            state_dir=state_dir_default(),
+            state_dir=state_dir_default(env),
             claude_bin=env.get("LAB_CHANGELOG_CLAUDE_BIN", "claude"),
             claude_model=env.get("LAB_CHANGELOG_CLAUDE_MODEL", "haiku"),
             claude_timeout=int_env("LAB_CHANGELOG_CLAUDE_TIMEOUT", 90, 5, 600),
@@ -1381,7 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
     try:
-        cfg_state = state_dir_default()
+        cfg_state = state_dir_default(merged_env())
         setup_logging(cfg_state, to_stderr=not session_end)
         args = build_parser().parse_args(argv)
         cfg = Config.from_env()

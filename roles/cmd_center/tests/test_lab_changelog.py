@@ -1658,3 +1658,38 @@ def test_each_delivered_message_is_persisted_before_the_next_post(lc: Any, sandb
     assert sent >= 2
     assert on_disk_at_post[0] == 0
     assert all(later > earlier for earlier, later in zip(on_disk_at_post, on_disk_at_post[1:])), on_disk_at_post
+
+
+# ---------------------------------------------------------------------------
+# Review fix 5: LAB_CHANGELOG_STATE_DIR from the config file is honoured
+# ---------------------------------------------------------------------------
+
+def test_state_dir_from_the_config_file_holds_state_and_log(lc: Any, sandbox: Sandbox, tmp_path: Path,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = tmp_path / "configured-state"
+    conf = tmp_path / "lab-changelog.conf"
+    conf.write_text(f"LAB_CHANGELOG_STATE_DIR={configured}\n")
+    monkeypatch.delenv("LAB_CHANGELOG_STATE_DIR", raising=False)
+    monkeypatch.setenv("LAB_CHANGELOG_CONFIG", str(conf))
+    monkeypatch.setattr(lc, "run_gh", fake_runner({}))
+    assert lc.Config.from_env().state_dir == configured
+    assert lc.main(["daily", "--no-llm"]) == 0
+    assert (configured / "daily.json").exists(), "the daily boundary belongs in the configured directory"
+    assert any(configured.glob("*.log")), "so does the log"
+
+
+def test_environment_state_dir_still_wins_over_the_file(lc: Any, tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    conf = tmp_path / "lab-changelog.conf"
+    conf.write_text(f"LAB_CHANGELOG_STATE_DIR={tmp_path / 'from-file'}\n")
+    monkeypatch.setenv("LAB_CHANGELOG_CONFIG", str(conf))
+    monkeypatch.setenv("LAB_CHANGELOG_STATE_DIR", str(tmp_path / "from-env"))
+    assert lc.Config.from_env().state_dir == tmp_path / "from-env"
+
+
+def test_relative_state_dir_is_ignored(lc: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conf = tmp_path / "lab-changelog.conf"
+    conf.write_text("LAB_CHANGELOG_STATE_DIR=relative/state\n")
+    monkeypatch.setenv("LAB_CHANGELOG_CONFIG", str(conf))
+    monkeypatch.delenv("LAB_CHANGELOG_STATE_DIR", raising=False)
+    assert lc.Config.from_env().state_dir.is_absolute()
