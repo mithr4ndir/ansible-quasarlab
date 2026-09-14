@@ -38,3 +38,8 @@
   ansible.builtin.systemd:
     name: lab-changelog.timer
     state: restarted
+
+- name: Restart lab-scout timer
+  ansible.builtin.systemd:
+    name: lab-scout.timer
+    state: restarted

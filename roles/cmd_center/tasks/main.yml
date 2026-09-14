@@ -52,6 +52,10 @@
   ansible.builtin.import_tasks: changelog.yml
   when: cmd_center_changelog_enabled | bool
 
+- name: Lab scout weekly ideas digest posted to Discord
+  ansible.builtin.import_tasks: scout.yml
+  when: cmd_center_scout_enabled | bool
+
 - name: Herdr headless server systemd user service
   ansible.builtin.import_tasks: herdr.yml
   when: cmd_center_herdr_enabled | bool

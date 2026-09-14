@@ -1,0 +1,20 @@
+[Unit]
+Description=Post the weekly lab scout ideas digest to Discord
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart=/usr/local/bin/lab-scout weekly
+WorkingDirectory=/home/{{ ansible_user }}
+Environment=HOME=/home/{{ ansible_user }}
+# gh, git and claude live in ~/.local/bin and /usr/bin. The service account
+# token path is in /etc/default/lab-scout, read by the script itself, which
+# loads the token only when the secret cache needs a refresh.
+Environment=PATH=/home/{{ ansible_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Bound the oneshot: systemd never re-triggers a timer whose service is still
+# activating, so a hung run would silently stop every later digest.
+TimeoutStartSec={{ cmd_center_scout_timeout_start_sec }}
+Nice=10
