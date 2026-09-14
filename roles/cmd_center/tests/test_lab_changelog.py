@@ -574,7 +574,8 @@ def test_collect_filters_by_timestamp_and_rebuilds_urls(lc: Any) -> None:
 
 def test_dedup_second_run_posts_nothing(lc: Any, sandbox: Sandbox) -> None:
     sandbox.seed_webhook()
-    rows = gh_rows(now() - dt.timedelta(minutes=5))
+    when = now() - dt.timedelta(minutes=5)
+    rows = gh_rows(when)
     cfg = config(lc, sandbox, claude_bin="")
     start, end = now() - dt.timedelta(hours=1), now() + dt.timedelta(minutes=1)
 
@@ -585,7 +586,7 @@ def test_dedup_second_run_posts_nothing(lc: Any, sandbox: Sandbox) -> None:
     assert set(state) == {
         "mithr4ndir/ansible-quasarlab#163:pr_merged",
         "mithr4ndir/ansible-quasarlab#164:issue_opened",
-        "mithr4ndir/k8s-argocd#201:issue_closed",
+        f"mithr4ndir/k8s-argocd#201:issue_closed@{iso(when)}",
     }
 
     second = FakeOpener()
@@ -631,7 +632,8 @@ def test_opened_and_closed_same_issue_are_separate_keys(lc: Any, sandbox: Sandbo
     lc.run_changelog(cfg, now() - dt.timedelta(hours=1), now() + dt.timedelta(minutes=1), dry_run=False,
                      use_llm=False, runner=fake_runner(rows), opener=opener)
     state = json.loads((sandbox.state / "posted.json").read_text())["posted"]
-    assert set(state) == {"mithr4ndir/ansible-quasarlab#9:issue_opened", "mithr4ndir/ansible-quasarlab#9:issue_closed"}
+    assert set(state) == {"mithr4ndir/ansible-quasarlab#9:issue_opened",
+                          f"mithr4ndir/ansible-quasarlab#9:issue_closed@{stamp}"}
 
 
 def test_failed_post_records_nothing(lc: Any, sandbox: Sandbox) -> None:
@@ -1693,3 +1695,32 @@ def test_relative_state_dir_is_ignored(lc: Any, tmp_path: Path, monkeypatch: pyt
     monkeypatch.setenv("LAB_CHANGELOG_CONFIG", str(conf))
     monkeypatch.delenv("LAB_CHANGELOG_STATE_DIR", raising=False)
     assert lc.Config.from_env().state_dir.is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# Review fix 6: a re-closed issue is a new event
+# ---------------------------------------------------------------------------
+
+def test_reclosed_issue_is_announced_again_but_overlap_is_not(lc: Any, sandbox: Sandbox,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    sandbox.seed_webhook()
+    first_close = T0 - dt.timedelta(hours=2)
+    second_close = T0 + dt.timedelta(hours=20)
+
+    def closed(when: dt.datetime) -> dict[str, list[dict[str, Any]]]:
+        return {f"issue:closed:{ANSIBLE}": [{"number": 42, "title": "flaky", "url": "", "body": "",
+                                             "closedAt": iso(when)}]}
+
+    def run(at: dt.datetime, rows: dict[str, list[dict[str, Any]]]) -> list[int]:
+        opener = FakeOpener()
+        monkeypatch.setattr(lc, "utcnow", lambda: at)
+        monkeypatch.setattr(lc, "run_gh", fake_runner(rows))
+        monkeypatch.setattr(lc.urllib.request, "urlopen", opener)
+        assert lc.main(["daily", "--no-llm"]) == 0
+        return [int(n) for n in re.findall(r"/issues/(\d+)\)", json.dumps(opener.bodies()))]
+
+    assert run(T0, closed(first_close)) == [42]
+    # Overlapping re-scan of the same closure: already posted.
+    assert run(T0 + dt.timedelta(minutes=30), closed(first_close)) == []
+    # Reopened and closed again: GitHub now reports the new closedAt.
+    assert run(T0 + dt.timedelta(hours=24), closed(second_close)) == [42]

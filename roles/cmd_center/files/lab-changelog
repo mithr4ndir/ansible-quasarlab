@@ -368,10 +368,17 @@ class Item:
     number: int
     title: str
     body: str
+    # When the event happened (ISO 8601). Part of the dedup key only for
+    # closures: an issue can be reopened and closed again, and each closure is
+    # its own event, while an overlapping re-scan of one closure is not.
+    occurred: str = ""
 
     @property
     def key(self) -> str:
-        return f"{self.repo}#{self.number}:{self.kind}"
+        base = f"{self.repo}#{self.number}:{self.kind}"
+        if self.kind == "issue_closed" and self.occurred:
+            return f"{base}@{self.occurred}"
+        return base
 
     @property
     def url(self) -> str:
@@ -536,6 +543,7 @@ def item_from_row(kind: str, repo: str, row: Any, stamp_field: str, start: dt.da
         number=number,
         title=title if isinstance(title, str) else "",
         body=body if isinstance(body, str) else "",
+        occurred=iso(stamp),
     )
 
 
