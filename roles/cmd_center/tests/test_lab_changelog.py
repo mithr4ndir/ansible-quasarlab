@@ -102,6 +102,11 @@ def write_exe(path: Path, body: str) -> None:
 
 FAKE_OP = """#!/bin/bash
 echo "$*" >> "$FAKE_OP_CALLS"
+# Like the real op, ratelimit fails without a service account token.
+if [[ "$1 $2" == "service-account ratelimit" && -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+    echo "[ERROR] you must specify the service account" >&2
+    exit 1
+fi
 if [[ "$1 $2" == "service-account ratelimit" && -n "${FAKE_OP_REMAINING:-}" ]]; then
     used=$((1000 - FAKE_OP_REMAINING))
     echo "TYPE       ACTION        LIMIT    USED    REMAINING    RESET"
@@ -1595,3 +1600,61 @@ def test_capped_daily_run_does_not_advance_the_boundary(daily: DailyHarness, lc:
     lc.main(["daily", "--no-llm"])
     assert lc.load_daily_end(daily.box.state) == first, \
         "a capped, incomplete collection must not move the boundary"
+
+
+
+# ---------------------------------------------------------------------------
+# Review fix 4: the quota pre-flight needs the token; state per message
+# ---------------------------------------------------------------------------
+
+def test_spent_quota_with_token_only_in_the_file_never_reads(lc: Any, sandbox: Sandbox,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    """The systemd unit exports only HOME and PATH. The token comes from the
+    file, so the pre-flight must see it, or it cannot read the quota."""
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    sandbox.seed_webhook(age_secs=10 * 86400)
+    token = sandbox.root / "token"
+    token.write_text("fake-token")
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    monkeypatch.setenv("FAKE_OP_REMAINING", "10")
+    assert lc.resolve_webhook(str(LIB_DIR), lc.DEFAULT_OP_REFERENCE, str(token)) == FAKE_WEBHOOK
+    assert "service-account ratelimit" in sandbox.op_argv()
+    assert not any(line.startswith("read") for line in sandbox.op_argv())
+
+
+def test_unreadable_quota_never_refreshes_the_cache(lc: Any, sandbox: Sandbox,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """The changelog is not worth spending quota blind: an unknown quota
+    fails closed to the stale cache instead of the wrappers' fail open."""
+    lc.setup_logging(sandbox.state, to_stderr=False)
+    sandbox.seed_webhook(age_secs=10 * 86400)
+    token = sandbox.root / "token"
+    token.write_text("fake-token")
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    monkeypatch.delenv("FAKE_OP_REMAINING", raising=False)
+    assert lc.resolve_webhook(str(LIB_DIR), lc.DEFAULT_OP_REFERENCE, str(token)) == FAKE_WEBHOOK
+    assert not any(line.startswith("read") for line in sandbox.op_argv())
+
+
+def test_each_delivered_message_is_persisted_before_the_next_post(lc: Any, sandbox: Sandbox) -> None:
+    """A SIGTERM (TimeoutStartSec) or crash does not run `finally`, so the keys
+    of a delivered message must already be on disk when the next post starts."""
+    sandbox.seed_webhook()
+    stamp = iso(now() - dt.timedelta(minutes=5))
+    rows = {"pr:merged:mithr4ndir/ansible-quasarlab": [
+        {"number": n, "title": "x" * 140, "url": "", "body": "", "mergedAt": stamp} for n in range(1, 101)
+    ]}
+    opener = FakeOpener()
+    on_disk_at_post: list[int] = []
+
+    def observing(request: Any, timeout: float | None = None) -> FakeResponse:
+        path = sandbox.state / "posted.json"
+        on_disk_at_post.append(len(json.loads(path.read_text())["posted"]) if path.exists() else 0)
+        return opener(request, timeout)
+
+    cfg = config(lc, sandbox)
+    sent = lc.run_changelog(cfg, now() - dt.timedelta(hours=1), now() + dt.timedelta(minutes=1), dry_run=False,
+                            use_llm=False, runner=fake_runner(rows), opener=observing, sleep=lambda s: None)
+    assert sent >= 2
+    assert on_disk_at_post[0] == 0
+    assert all(later > earlier for earlier, later in zip(on_disk_at_post, on_disk_at_post[1:])), on_disk_at_post

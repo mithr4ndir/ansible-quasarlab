@@ -945,16 +945,23 @@ lib_dir=$1; slug=$2; ref=$3; token_file=$4
 source "$lib_dir/op-killswitch.sh" || exit 3
 source "$lib_dir/op-secret-cache.sh" || exit 3
 if ! op_secret_cache_is_fresh "$OP_SECRET_CACHE_DIR/$slug"; then
-    # A refresh would cost a 1Password read. Same pre-flight gate as the run-*
-    # wrappers: when the account quota is spent, drop the token so the cache
-    # can only serve a stale value and never calls op.
-    remaining=$(op_preflight_remaining)
-    if [[ -n "$remaining" ]] && (( remaining <= OP_PREFLIGHT_MIN_REMAINING )); then
-        logger -t lab-changelog "1P quota at ${remaining}; not refreshing the webhook cache"
-        unset OP_SERVICE_ACCOUNT_TOKEN
-    elif [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" && -r "$token_file" ]]; then
+    # A refresh would cost a 1Password read. Load the token FIRST: the quota
+    # check (`op service-account ratelimit`) fails without one, and the systemd
+    # unit exports only HOME and PATH. Reading the token file costs no call.
+    if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" && -r "$token_file" ]]; then
         OP_SERVICE_ACCOUNT_TOKEN=$(<"$token_file")
         export OP_SERVICE_ACCOUNT_TOKEN
+    fi
+    remaining=$(op_preflight_remaining)
+    # Unlike the run-* wrappers this fails CLOSED on an unreadable quota: a
+    # changelog is not worth a blind read. Without a token the cache can only
+    # serve a stale value and never calls op.
+    if [[ -z "$remaining" ]]; then
+        logger -t lab-changelog "1P quota unreadable; not refreshing the webhook cache"
+        unset OP_SERVICE_ACCOUNT_TOKEN
+    elif (( remaining <= OP_PREFLIGHT_MIN_REMAINING )); then
+        logger -t lab-changelog "1P quota at ${remaining}; not refreshing the webhook cache"
+        unset OP_SERVICE_ACCOUNT_TOKEN
     fi
 fi
 cached_op_read "$slug" "$ref"
@@ -1269,16 +1276,15 @@ def _run_locked(cfg: Config, start: dt.datetime, end: dt.datetime, dry_run: bool
     if webhook is None:
         return RunResult(0, False)
     sent = 0
-    try:
-        for payload, keys in messages:
-            post_payload(webhook, payload, opener=opener, sleep=sleep)
-            stamp = iso(utcnow())
-            for key in keys:
-                posted[key] = stamp
-            sent += 1
-    finally:
-        if sent:
-            save_state(cfg.state_dir, posted, utcnow())
+    for payload, keys in messages:
+        post_payload(webhook, payload, opener=opener, sleep=sleep)
+        stamp = iso(utcnow())
+        for key in keys:
+            posted[key] = stamp
+        sent += 1
+        # Persist before the next post: a SIGTERM from TimeoutStartSec or a
+        # crash skips `finally`, and unsaved keys would be posted again.
+        save_state(cfg.state_dir, posted, utcnow())
     log.info("posted %d message(s)", sent)
     return RunResult(sent, not failed)
 
