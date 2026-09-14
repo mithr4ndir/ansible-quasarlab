@@ -189,6 +189,8 @@ cmd_center_scout_fetch_domains:
   - www.cncf.io
   - www.reddit.com
   - old.reddit.com
+  - distrowatch.com
+  - discourse.openrobotics.org
 # What the lab already runs, read from origin/main of each local checkout
 # (never the working tree). A path lists the directories directly under it;
 # path/* also lists one level of subdirectories under each of those.
@@ -251,3 +253,5 @@ cmd_center_scout_profile:
     - Astronomy data infrastructure (LSDB, Dask)
     - Security hardening
     - Portfolio-worthy projects for a systems engineer
+    - New operating systems to try in Proxmox VMs (immutable, BSD, microkernel, research)
+    - Robotics software (ROS, simulation, small hobby robots) that runs without a GPU

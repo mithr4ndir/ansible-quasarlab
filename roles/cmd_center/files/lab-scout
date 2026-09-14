@@ -109,6 +109,8 @@ DEFAULT_FETCH_DOMAINS = (
     "www.cncf.io",
     "www.reddit.com",
     "old.reddit.com",
+    "distrowatch.com",
+    "discourse.openrobotics.org",
 )
 
 # Set in the environment of every child this script starts, so a hook or
@@ -155,6 +157,8 @@ CATEGORIES = {
     "data": "Data",
     "learning": "Learning",
     "cloud-starter": "Cloud starter",
+    "os": "Operating system",
+    "robotics": "Robotics",
 }
 IDEA_KEYS = ("name", "url", "summary", "why_this_lab", "effort", "footprint", "category")
 
@@ -270,6 +274,10 @@ SECRETLIKE_RE = re.compile(r"(?i)\b(?:op://|ghp_|github_pat_|sk-ant-|xox[abp]-|p
 NUMERIC_CLAIM_RE = re.compile(r"(?<![A-Za-z0-9_])v?\d")
 # Names are held to less: only a free-standing number (Foo 2, Bar v3, 12k).
 NAME_NUMBER_RE = re.compile(r"(?<![\w.])v?\d+(?:[.,]\d+)*[kKmM%]?(?!\w)")
+# Project names that carry a digit as part of the name, not as a claim. They
+# are removed before the number checks, so "ROS 2" passes but "ROS 2.5" and
+# "ROS 22" still count as numbers.
+NUMBERED_NAMES_RE = re.compile(r"(?i)\bROS 2\b(?![.,]\d)|\bPlan 9\b(?![.,]\d)|\b9front\b")
 
 
 def clean_text(value: str, limit: int) -> str:
@@ -564,9 +572,15 @@ a JSON object that a script validates and fact-checks before anything is
 posted. Ideas that break a rule below are thrown away, not fixed.
 
 Task: use web search to find between 6 and 8 candidate projects that are new
-or trending in roughly the last 90 days. Good places to look: GitHub,
-awesome-selfhosted, Hacker News "Show HN" posts, selfh.st, the CNCF landscape
-(sandbox and incubating projects), r/selfhosted and r/homelab. Web fetches are
+or trending in roughly the last 90 days. Projects can be software to run,
+operating systems to try in a virtual machine (distributions, immutable or
+atomic systems, BSDs, microkernel and research systems), or robotics software
+(ROS, simulators, robot stacks that run without a GPU or on cheap hobby
+hardware). Aim for a spread of categories rather than several ideas of one
+kind; include operating systems and robotics when a good candidate exists.
+Good places to look: GitHub, awesome-selfhosted, Hacker News "Show HN" posts,
+selfh.st, the CNCF landscape (sandbox and incubating projects), DistroWatch,
+the Open Robotics discourse, r/selfhosted, r/homelab and r/robotics. Web fetches are
 only permitted for these hosts: @@DOMAINS@@. A fetch of any other
 host is denied, so use web search for everything else.
 
@@ -795,7 +809,7 @@ def checked_text(raw: Any, key: str, cap: int) -> str:
     if "://" in text or re.search(r"(?i)\bwww\.", text):
         raise Rejected(f"{key} contains a link")
     number = NAME_NUMBER_RE if key == "name" else NUMERIC_CLAIM_RE
-    if number.search(text):
+    if number.search(NUMBERED_NAMES_RE.sub("", text)):
         raise Rejected(f"{key} states a number")
     return text
 
@@ -964,6 +978,23 @@ class Selection:
     held_back: int
 
 
+def spread_categories(raw_ideas: list[Any]) -> list[tuple[int, Any]]:
+    """Number the ideas from 1, then order them so the first idea of every
+    category comes before the second idea of any category. Within each round
+    the model's order is kept. Without this, five ideas of one kind would fill
+    the post and hold back the rest."""
+    counts: dict[str, int] = {}
+    ranked: list[tuple[int, int, Any]] = []
+    for index, raw in enumerate(raw_ideas, start=1):
+        category = raw.get("category") if isinstance(raw, dict) else None
+        key = category if isinstance(category, str) else ""
+        rank = counts.get(key, 0)
+        counts[key] = rank + 1
+        ranked.append((rank, index, raw))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [(index, raw) for _, index, raw in ranked]
+
+
 def select_ideas(
     raw_ideas: list[Any],
     inventory: Iterable[str],
@@ -984,7 +1015,7 @@ def select_ideas(
     dropped = held = 0
     cloud_starters = 0
 
-    for index, raw in enumerate(raw_ideas[:IDEAS_SCHEMA_MAX], start=1):
+    for index, raw in spread_categories(raw_ideas[:IDEAS_SCHEMA_MAX]):
         label = clean_text(raw.get("name", ""), NAME_MAX_CHARS) if isinstance(raw, dict) and isinstance(raw.get("name"), str) else "?"
         try:
             idea = validate_idea(raw)
