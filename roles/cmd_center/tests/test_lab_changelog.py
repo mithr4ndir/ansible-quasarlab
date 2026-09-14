@@ -1287,7 +1287,10 @@ def test_rendered_settings_file_configures_the_script(lc: Any, tmp_path: Path, m
     assert cfg.lib_dir == "/var/lib/ansible-quasarlab/repo/scripts/lib"
     assert cfg.token_file == "/home/ladino/.config/op/service-account-token"
     assert cfg.session_min_secs == 600
-    assert cfg.claude_bin == "/home/ladino/.local/bin/claude"
+    # Generated highlights are off by default: in review, haiku conflated two
+    # numbers from a PR body into a false claim. Plain titles only.
+    assert cfg.claude_bin == ""
+    assert lc.generated_highlights([], cfg.claude_bin, cfg.claude_model, cfg.claude_timeout, tmp_path) is None
     assert cfg.host == "command-center1"
     assert lc.load_config_file(str(path)).keys() <= lc.CONFIG_KEYS
     monkeypatch.setenv("LAB_CHANGELOG_SESSION_MIN_SECS", "60")
