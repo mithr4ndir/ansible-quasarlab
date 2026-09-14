@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily lab changelog to Discord
+
+[Timer]
+OnCalendar={{ cmd_center_changelog_on_calendar }}
+# Catch up after downtime. Items already posted are skipped, so a catch-up run
+# right after a normal one posts nothing twice.
+Persistent=true
+AccuracySec=1min
+Unit=lab-changelog.service
+
+[Install]
+WantedBy=timers.target

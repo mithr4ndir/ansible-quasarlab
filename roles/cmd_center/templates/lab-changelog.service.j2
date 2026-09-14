@@ -1,0 +1,20 @@
+[Unit]
+Description=Post the daily lab changelog to Discord
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart=/usr/local/bin/lab-changelog daily
+WorkingDirectory=/home/{{ ansible_user }}
+Environment=HOME=/home/{{ ansible_user }}
+# gh and claude live in ~/.local/bin and /usr/bin. The service account token
+# path is in /etc/default/lab-changelog, read by the script itself, which
+# loads the token only when the secret cache needs a refresh.
+Environment=PATH=/home/{{ ansible_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Bound the oneshot: systemd never re-triggers a timer whose service is still
+# activating, so a hung run would silently stop every later changelog.
+TimeoutStartSec={{ cmd_center_changelog_timeout_start_sec }}
+Nice=10

@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# Settings for /usr/local/bin/lab-changelog (roles/cmd_center/tasks/changelog.yml).
+# Read by the daily timer and by the Claude Code SessionEnd hook. Only
+# LAB_CHANGELOG_* keys are honoured. No secrets belong here: the webhook URL is
+# resolved at run time through the 1Password secret cache.
+LAB_CHANGELOG_REPOS={{ cmd_center_changelog_repos | join(',') }}
+LAB_CHANGELOG_OP_REFERENCE={{ cmd_center_changelog_op_reference }}
+LAB_CHANGELOG_OP_LIB_DIR={{ ansible_automation_repo_path }}/scripts/lib
+LAB_CHANGELOG_OP_TOKEN_FILE=/home/{{ ansible_user }}/.config/op/service-account-token
+LAB_CHANGELOG_SESSION_MIN_SECS={{ cmd_center_changelog_session_min_secs }}
+LAB_CHANGELOG_CLAUDE_BIN={{ cmd_center_changelog_claude_bin if cmd_center_changelog_highlights_enabled | bool else '' }}
+LAB_CHANGELOG_CLAUDE_MODEL={{ cmd_center_changelog_claude_model }}
+LAB_CHANGELOG_CLAUDE_TIMEOUT={{ cmd_center_changelog_claude_timeout }}
+LAB_CHANGELOG_HOST={{ inventory_hostname }}
+# Pinned so the SessionEnd hook (interactive environment, which may set
+# XDG_STATE_HOME) and the daily timer (HOME and PATH only) share one lock and
+# one posted-item state, and so never post the same events twice.
+LAB_CHANGELOG_STATE_DIR=/home/{{ ansible_user }}/.local/state/lab-changelog

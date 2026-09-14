@@ -33,3 +33,8 @@
     scope: user
     state: restarted
   become: false
+
+- name: Restart lab-changelog timer
+  ansible.builtin.systemd:
+    name: lab-changelog.timer
+    state: restarted
