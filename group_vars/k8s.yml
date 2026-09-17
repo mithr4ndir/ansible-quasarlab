@@ -10,7 +10,31 @@ node_exporter_systemd_units:
   - kubelet.service
   - containerd.service
 
-# Unattended upgrades — block packages that can break the cluster
+# NVIDIA
+#
+# No k8s node has a GPU. pve2's RTX 2080 Ti is bound to vfio-pci and passed
+# through to the jellyfin VM, not to k8cluster2. Setting this at the group level
+# rather than per host matters: roles/k8s/common reads it as
+# `nvidia_gpu_node | default(true)`, so while it was set only in
+# host_vars/k8cluster2 it was undefined on k8cluster1 and k8cluster3 and every
+# no-GPU branch in that role silently skipped there. A node that really does get
+# a GPU sets nvidia_gpu_node: true in its own host_vars, which wins over this.
+nvidia_gpu_node: false
+
+# Remove the leftover NVIDIA driver and container-runtime stack. See
+# roles/k8s/common/defaults/main.yml for the package set and the guards.
+k8s_purge_nvidia: true
+
+# Unattended upgrades: block packages that can break the cluster.
+#
+# nvidia-* and libnvidia-* used to be blocked here. They are gone now that
+# k8s_purge_nvidia removes the stack, and a blacklist entry that matches no
+# installed package is dead weight that hides what this list is actually for.
+#
+# The kernel entries stay. Kernel upgrades on these nodes are deliberately
+# manual: drain the node, upgrade, reboot, uncordon, one node at a time. An
+# unattended kernel upgrade would leave the running kernel and the installed
+# one out of step until a reboot nobody scheduled.
 unattended_upgrades_blacklist:
   - kubelet
   - kubeadm
@@ -18,7 +42,5 @@ unattended_upgrades_blacklist:
   - kubernetes-cni
   - cri-tools
   - containerd.io
-  - nvidia-*
-  - libnvidia-*
   - linux-image-*
   - linux-headers-*

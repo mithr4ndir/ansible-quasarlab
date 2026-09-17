@@ -70,6 +70,29 @@
     state: started
     enabled: yes
 
+# Every k8s node carries a full NVIDIA driver and container-runtime stack that
+# nothing uses: no nvidia kernel module is loaded, nvidia-smi cannot talk to a
+# driver, there are no /dev/nvidia* devices, /etc/containerd/config.toml has no
+# nvidia runtime, the cluster has no RuntimeClass and no pod requests an nvidia
+# resource. The only thing it still does is rebuild DKMS modules on every kernel
+# upgrade and keep a large unattended-upgrades blacklist alive.
+#
+# Two guards, both of which must hold before anything is removed:
+#   k8s_purge_nvidia   opt-in, false by default (roles/k8s/common/defaults)
+#   nvidia_gpu_node    must be false; defaults to true so an unlabelled node is
+#                      treated as having a GPU and is left completely alone.
+- name: Purge the unused NVIDIA driver and container-runtime stack
+  ansible.builtin.apt:
+    name: "{{ k8s_nvidia_purge_packages }}"
+    state: absent
+    purge: true
+    autoremove: true
+  when:
+    - k8s_purge_nvidia | default(false)
+    - not (nvidia_gpu_node | default(true))
+  tags:
+    - nvidia_purge
+
 - name: Check if nvidia-cdi-refresh service exists
   ansible.builtin.command: systemctl list-unit-files nvidia-cdi-refresh.service
   register: nvidia_cdi_refresh_check

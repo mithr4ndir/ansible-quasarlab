@@ -1,0 +1,41 @@
+---
+# Purge the leftover NVIDIA driver and container-runtime stack from a k8s node.
+# Default false so no host removes packages unless it is explicitly configured
+# to. Turned on for the whole k8s group in group_vars/k8s.yml.
+#
+# The purge is additionally gated on nvidia_gpu_node being false, so a node that
+# really does have a GPU can never have its driver removed by this role.
+k8s_purge_nvidia: false
+
+# Package set removed when k8s_purge_nvidia is true.
+#
+# Careful when editing: ansible.builtin.apt expands a wildcard with fnmatch
+# against the whole apt cache, and a wildcard that matches nothing there is a
+# hard task failure ("No package(s) matching ..."), not a no-op. Only add a
+# glob that a package really existing in the Ubuntu archive will match. The
+# cache keeps offering a package after it is purged, so a second run still
+# matches, finds nothing installed, and reports no change.
+#
+# The version globs are deliberate: these nodes carry three driver series at
+# once (550, 570 and the current 580), all of them left over from past
+# unattended-upgrade churn, and pinning the list to 580 would leave the older
+# two behind.
+k8s_nvidia_purge_packages:
+  # Driver stack: kernel module, DKMS sources, firmware and userspace libs.
+  - nvidia-driver-*-server
+  - nvidia-dkms-*-server
+  - nvidia-kernel-common-*-server
+  - nvidia-kernel-source-*-server
+  - nvidia-compute-utils-*-server
+  - nvidia-utils-*-server
+  - nvidia-firmware-*-server-*
+  - libnvidia-*-server
+  # EGL/Wayland shim pulled in as a driver dependency. Nothing else on a
+  # headless node needs it.
+  - libnvidia-egl-wayland1
+  # Container runtime integration. /etc/containerd/config.toml has no nvidia
+  # runtime, the cluster has no RuntimeClass and no pod asks for one.
+  - nvidia-container-toolkit
+  - nvidia-container-toolkit-base
+  - libnvidia-container-tools
+  - libnvidia-container1
