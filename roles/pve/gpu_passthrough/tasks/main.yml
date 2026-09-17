@@ -46,3 +46,47 @@
     enabled: false
     masked: true
   when: "'nvidia-cdi-refresh' in nvidia_cdi_refresh_check.stdout"
+
+# nvidia-persistenced keeps the NVIDIA kernel driver loaded and the GPU
+# initialised between CUDA clients. On a passthrough host it can never do that:
+# the drivers are blacklisted above and the card is bound to vfio-pci, so the
+# daemon finds no /dev/nvidia* and fails at every boot ("Failed to query NVIDIA
+# devices"). That one leftover unit is enough to make systemctl report the whole
+# hypervisor as degraded, which is exactly the signal that should mean something
+# is actually wrong. Stop it, disable it, mask it.
+#
+# Read this before reversing the passthrough. Per
+# docs/decisions/2026-05-31-jellyfin-cpu-transcoding.md the 2080 Ti is no longer
+# attached to any VM (pve_gpu_vms is empty) and is earmarked for host-side LLM
+# inference, which wants this daemon running. A mask survives a driver
+# reinstall, and clearing pve_gpu_passthrough only stops this role from running
+# (the play in playbooks/proxmox.yml is gated on it), it does not undo the mask.
+# That work has to lift it by hand:
+#   systemctl unmask nvidia-persistenced
+#   systemctl enable --now nvidia-persistenced
+- name: Check if nvidia-persistenced service exists
+  ansible.builtin.command: systemctl list-unit-files nvidia-persistenced.service
+  register: nvidia_persistenced_check
+  changed_when: false
+  failed_when: false
+  when: pve_gpu_passthrough | default(false)
+
+- name: Disable nvidia-persistenced (GPU is bound to vfio-pci, driver never loads)
+  when:
+    - pve_gpu_passthrough | default(false)
+    - "'nvidia-persistenced' in (nvidia_persistenced_check.stdout | default(''))"
+  block:
+    - name: Stop and disable nvidia-persistenced
+      ansible.builtin.systemd:
+        name: nvidia-persistenced.service
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Mask nvidia-persistenced
+      ansible.builtin.file:
+        src: /dev/null
+        dest: /etc/systemd/system/nvidia-persistenced.service
+        state: link
+        force: true
+      notify: Reload systemd
