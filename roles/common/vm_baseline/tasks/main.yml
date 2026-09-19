@@ -83,6 +83,10 @@
 - name: Authorize the operator SSH keys for the ansible user
   ansible.posix.authorized_key:
     user: "{{ ansible_user }}"
-    key: '{{ vm_baseline_authorized_keys | join("\n") }}'
+    # The scalar must be DOUBLE quoted. Jinja does not process \n inside its
+    # own string literals, so the YAML layer has to supply the real newline:
+    # a single quoted scalar renders the keys joined by a literal backslash-n
+    # and authorises nothing. Verified by rendering, see tests.
+    key: "{{ vm_baseline_authorized_keys | join('\n') }}"
     state: present
     exclusive: "{{ vm_baseline_authorized_keys_exclusive }}"
