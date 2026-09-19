@@ -319,8 +319,7 @@ class RecordShapeTests(unittest.TestCase):
         record = aca.build_record(payload, {}, aca.utcnow())
         self.assertEqual(record["status"], aca.STATUS_FAILED)
         self.assertNotIn("exit_code", record)
-        line, _ = aca.entry_line(record, 100)
-        self.assertIn("non-zero", line)
+        self.assertEqual(aca.status_word(record), "failed")
 
     def test_backgrounded_is_labelled_outcome_unknown(self):
         payload = {
@@ -332,8 +331,7 @@ class RecordShapeTests(unittest.TestCase):
         }
         record = aca.build_record(payload, {}, aca.utcnow())
         self.assertEqual(record["status"], aca.STATUS_BACKGROUNDED)
-        line, _ = aca.entry_line(record, 100)
-        self.assertIn("outcome unknown", line)
+        self.assertIn("backgrounded", aca.transcript_entry(record))
 
     def test_herdr_env_is_captured(self):
         payload = {
@@ -520,61 +518,107 @@ class PayloadTests(unittest.TestCase):
         payload, _, _ = aca.build_payload(self.make(1), {})
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
 
-    def test_batch_fits_discord_limits(self):
-        records = [
-            dict(r, command="x" * 400, session_id=f"s{i % 12}")
-            for i, r in enumerate(self.make(120, "s0"))
-        ]
-        payload, _, _ = aca.build_payload(records, {})
-        self.assertLessEqual(len(payload["embeds"]), aca.EMBEDS_MAX)
-        self.assertLessEqual(sum(aca.embed_size(e) for e in payload["embeds"]), aca.EMBED_TOTAL_MAX)
-        for embed in payload["embeds"]:
-            self.assertLessEqual(len(embed["description"]), aca.EMBED_DESCRIPTION_MAX)
-
-    def test_one_embed_per_session(self):
-        records = self.make(3, "a") + self.make(2, "b")
-        payload, _, _ = aca.build_payload(records, {})
-        self.assertEqual(len(payload["embeds"]), 2)
-
-    def test_workspace_label_is_used_when_known(self):
-        payload, _, _ = aca.build_payload(self.make(1), {"w1": "Main Driver"})
-        self.assertIn("Main Driver", payload["embeds"][0]["title"])
-
     def test_withheld_commands_are_counted(self):
         records = self.make(1)
         records[0]["command"] = "op read op://Infrastructure/x/password"
-        _, withheld, _ = aca.build_payload(records, {})
+        payload, withheld, _ = aca.build_payload(records, {})
         self.assertEqual(withheld, 1)
+        self.assertIn("1 withheld", payload["content"])
 
-    def test_no_attachment_when_nothing_was_cut(self):
-        _, _, transcript = aca.build_payload(self.make(2), {})
-        self.assertIsNone(transcript)
+    def test_summary_names_the_sessions_and_counts(self):
+        records = self.make(3, "a") + self.make(2, "b")
+        payload, _, _ = aca.build_payload(records, {"w1": "Main Driver"})
+        self.assertIn("5 commands", payload["content"])
+        self.assertIn("Main Driver", payload["content"])
+        self.assertNotIn("embeds", payload)
 
-    def test_attachment_carries_the_full_command_when_cut(self):
+    def test_summary_fits_the_content_limit(self):
+        records = [
+            dict(r, command="x" * 400, session_id=f"s{i % 12}", workspace=f"w{i}")
+            for i, r in enumerate(self.make(120, "s0"))
+        ]
+        payload, _, _ = aca.build_payload(records, {})
+        self.assertLessEqual(len(payload["content"]), aca.CONTENT_MAX)
+
+    def test_failures_are_called_out_with_a_snippet(self):
+        records = self.make(2)
+        records[1]["status"] = aca.STATUS_FAILED
+        records[1]["command"] = "kubectl -n media rollout status deploy/sonarr"
+        payload, _, _ = aca.build_payload(records, {})
+        self.assertIn("failed", payload["content"])
+        self.assertIn("rollout status deploy/sonarr", payload["content"])
+
+    def test_snippet_is_not_markdown_escaped(self):
+        # Escaping inside a code span is what put `list\-timers` in the feed.
         records = self.make(1)
-        long_command = "deploy " + "abcdefgh " * 60  # past COMMAND_MAX_CHARS
+        records[0]["status"] = aca.STATUS_FAILED
+        records[0]["command"] = "systemctl list-timers 'agent-cmd-audit*' --no-pager"
+        payload, _, _ = aca.build_payload(records, {})
+        self.assertIn("list-timers 'agent-cmd-audit*' --no-pager", payload["content"])
+        self.assertNotIn("\\-", payload["content"])
+
+    def test_snippet_cannot_escape_its_code_span_or_ping(self):
+        records = self.make(1)
+        records[0]["status"] = aca.STATUS_FAILED
+        records[0]["command"] = "echo '`@everyone`'"
+        payload, _, _ = aca.build_payload(records, {})
+        self.assertNotIn("@everyone", payload["content"])
+        self.assertEqual(payload["content"].count("`"), 2)
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+
+    def test_canary_is_summarised_not_counted_as_a_command(self):
+        records = self.make(1)
+        records.append(dict(records[0], canary=True, nonce="abc123", command=""))
+        payload, _, _ = aca.build_payload(records, {})
+        self.assertIn("1 command ", payload["content"] + " ")
+        self.assertIn("canary", payload["content"])
+
+    def test_file_is_always_attached(self):
+        _, _, transcript = aca.build_payload(self.make(2), {})
+        self.assertTrue(transcript)
+        self.assertIn(b"echo 0", transcript)
+
+    def test_file_holds_the_full_command(self):
+        records = self.make(1)
+        long_command = "deploy " + "abcdefgh " * 60
         records[0]["command"] = long_command
         payload, _, transcript = aca.build_payload(records, {}, host="test-host")
-        self.assertIsNotNone(transcript)
         text = transcript.decode("utf-8")
-        # The embed cut it; the file did not.
-        self.assertIn("…", payload["embeds"][0]["description"])
         self.assertIn(long_command.strip(), text)
         self.assertIn("test-host", text)
+        # The message points at the file rather than repeating the command.
+        self.assertNotIn("abcdefgh abcdefgh", payload["content"])
 
-    def test_attachment_does_not_lift_redaction(self):
-        # Trimming is measured AFTER redaction, so the long benign command is
-        # what pulls the file in; the other two ride along still redacted.
+    def test_subagent_commands_get_their_own_block(self):
+        # A subagent shares the parent's session id; its commands are still
+        # its own, so they must not be filed under the parent's heading.
+        records = self.make(2)
+        records[1]["agent_type"] = "kuma-agent"
+        _, _, transcript = aca.build_payload(records, {})
+        text = transcript.decode("utf-8")
+        self.assertEqual(text.count("## "), 2)
+        self.assertIn("subagent kuma-agent", text)
+
+    def test_file_does_not_lift_redaction(self):
         records = self.make(3)
         records[0]["command"] = "cat <<'EOF' > /tmp/x\n" + "LEAKED " * 80 + "\nEOF"
         records[1]["command"] = "deploy --token " + "z" * 400
         records[2]["command"] = "rsync -av " + "/srv/data/dir " * 40
         _, _, transcript = aca.build_payload(records, {})
-        self.assertIsNotNone(transcript)
         text = transcript.decode("utf-8")
         self.assertNotIn("LEAKED", text)
         self.assertNotIn("z" * 40, text)
         self.assertIn("[redacted]", text)
+
+    def test_file_groups_by_session_and_shows_exit_codes(self):
+        records = self.make(1, "a") + self.make(1, "b")
+        records[1]["status"] = aca.STATUS_FAILED
+        records[1]["exit_code"] = 3
+        _, _, transcript = aca.build_payload(records, {"w1": "Main Driver"})
+        text = transcript.decode("utf-8")
+        self.assertEqual(text.count("## "), 2)
+        self.assertIn("session a", text)
+        self.assertIn("failed(3)", text)
 
     def test_attachment_is_capped(self):
         records = [
@@ -654,7 +698,8 @@ class FlushTests(unittest.TestCase):
         finally:
             aca.resolve_webhook = original  # type: ignore[assignment]
         self.assertEqual(calls, [], "a dry run must never fetch the secret")
-        self.assertIn("embeds", buf.getvalue())
+        self.assertIn("content", buf.getvalue())
+        self.assertIn(aca.TRANSCRIPT_FILENAME, buf.getvalue())
         self.assertEqual(len(aca.inbox_batches(self.box.state_dir)), 1, "a dry run must keep the batch")
 
     def test_successful_flush_deletes_the_batch_and_stamps_success(self):
