@@ -55,17 +55,32 @@ class AuthorizedKeyTests(unittest.TestCase):
         task = key_task()["ansible.posix.authorized_key"]
         self.assertEqual(task["exclusive"], "{{ vm_baseline_authorized_keys_exclusive }}")
 
-    def test_keys_are_newline_joined(self):
-        """The module takes many keys as one newline separated string; a list
-        or a space joined string silently authorises nothing useful.
+    def test_keys_render_newline_separated(self):
+        """The module takes many keys as one newline separated string.
 
-        The escape must still be an escape by the time Jinja sees it. In a
-        double quoted YAML scalar, \\n becomes a real newline before Jinja
-        parses the expression, which happens to work but only by accident.
+        This renders the template instead of inspecting its source, because
+        the source form lies. Jinja does NOT process \\n inside its own string
+        literals, so a single quoted YAML scalar produces keys joined by a
+        literal backslash-n: the module then writes one mangled line and the
+        second key authorises nobody. An earlier version of this test asserted
+        the source text matched join("\\n") and passed against exactly that
+        bug. Caught by an ansible-playbook --check diff, not by the test.
         """
-        key = key_task()["ansible.posix.authorized_key"]["key"]
-        self.assertRegex(key, r"join\(\s*['\"]\\n['\"]\s*\)")
-        self.assertNotIn("\n", key.replace("\\n", ""), "a real newline leaked into the template")
+        from ansible.parsing.dataloader import DataLoader
+        from ansible.template import Templar
+
+        keys = yaml.safe_load(DEFAULTS.read_text())["vm_baseline_authorized_keys"]
+        template = key_task()["ansible.posix.authorized_key"]["key"]
+        rendered = Templar(
+            loader=DataLoader(),
+            variables={"vm_baseline_authorized_keys": keys},
+        ).template(template)
+
+        self.assertEqual(rendered, "\n".join(keys))
+        self.assertNotIn("\\n", rendered, "literal backslash-n, not a newline")
+        self.assertEqual(len(rendered.splitlines()), len(keys))
+        for line, key in zip(rendered.splitlines(), keys):
+            self.assertEqual(line, key)
 
 
 if __name__ == "__main__":
