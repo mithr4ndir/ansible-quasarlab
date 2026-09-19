@@ -1,0 +1,1242 @@
+#!/usr/bin/python3
+"""Post the shell commands AI coding agents run to Discord.
+
+Managed by Ansible (roles/cmd_center/tasks/cmd_audit.yml). Local edits are
+overwritten.
+
+Usage:
+    agent-cmd-audit record                 Claude Code PostToolUse hook
+    agent-cmd-audit flush [--dry-run]      post spooled records (timer)
+    agent-cmd-audit canary                 spool a synthetic record (timer)
+
+record       Reads the hook JSON on stdin, appends one line to the spool and
+             returns at once. It always exits 0 and never writes to stdout, so
+             it can never break or slow an agent. Registered for BOTH
+             PostToolUse and PostToolUseFailure with matcher Bash: a failing
+             Bash call throws, so only the failure event sees it.
+flush        Seals the spool, posts one batch per run and deletes the batch
+             only after Discord accepts it. Never exits non-zero for a failed
+             post: a Discord outage must not turn into a unit-failure alert.
+canary       Proves the whole path end to end, including Discord acceptance.
+             Liveness checks on the units prove only that they ran.
+--dry-run    Print the payload as JSON. Posts nothing, fetches no secret and
+             deletes no batch.
+
+What this CANNOT see, by construction:
+  - commands denied or blocked before they ran (no post-hook fires at all)
+  - the outcome of run_in_background commands (the hook fires when the tool
+    returns, not when the command ends)
+  - shell run by MCP servers, skills or plugins outside the Bash tool
+  - the operator's own ! commands in the REPL
+
+SECURITY: this is telemetry, not a tamper-proof audit log. The spool and the
+agent's own settings are writable by the user the agent runs as, so an agent
+with Bash can disable its own auditing. Root owning this script and its config
+raises the bar; it does not close it.
+
+Command text is untrusted and routinely holds credentials. Everything that
+reaches Discord goes through sanitize_command(), which fails CLOSED: if a
+secret pattern still matches after redaction, the command is withheld instead
+of posted. Every payload carries allowed_mentions {"parse": []}, and the
+webhook URL is never logged or put in an exception.
+
+Configuration (environment, all optional):
+    AGENT_CMD_AUDIT_ENABLED         0 disables recording (default 1)
+    AGENT_CMD_AUDIT_OP_REFERENCE    1Password reference of the webhook URL
+    AGENT_CMD_AUDIT_OP_LIB_DIR      directory holding op-killswitch.sh and
+                                    op-secret-cache.sh
+    AGENT_CMD_AUDIT_OP_TOKEN_FILE   1Password service account token file
+    AGENT_CMD_AUDIT_STATE_DIR       spool, lock and state directory
+    AGENT_CMD_AUDIT_PROM_FILE       node_exporter textfile collector output
+    AGENT_CMD_AUDIT_HOST            host name shown in the footer
+    AGENT_CMD_AUDIT_HERDR_BIN       herdr CLI path ("" disables labels)
+    AGENT_CMD_AUDIT_CONFIG          KEY=VALUE file holding any of the above
+                                    (/etc/default/agent-cmd-audit); the
+                                    environment wins over the file
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import logging
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+CHILD_ENV = "AGENT_CMD_AUDIT_CHILD"
+
+SECRET_TIMEOUT_SECS = 150
+HTTP_TIMEOUT_SECS = 20
+POST_MAX_ATTEMPTS = 5
+POST_MAX_SLEEP_SECS = 60.0
+# The recorder must never wait on a peer: a busy agent would feel it.
+RECORD_LOCK_WAIT_SECS = 2.0
+FLUSH_LOCK_WAIT_SECS = 30.0
+HOOK_STDIN_MAX_BYTES = 1 << 20
+HOOK_STDIN_WAIT_SECS = 5
+HERDR_TIMEOUT_SECS = 3
+HERDR_CACHE_SECS = 60
+
+# Caps. The writer enforces its own so a wedged flusher cannot fill /home.
+RECORD_MAX_BYTES = 4096
+MAX_CURRENT_BYTES = 8 << 20
+MAX_INBOX_FILES = 200
+MAX_INBOX_BYTES = 32 << 20
+MAX_RECORDS_PER_FLUSH = 60
+MAX_MESSAGES_PER_FLUSH = 3
+# Discord publishes no webhook bucket size and changes it, so this is a
+# self-imposed floor, not a documented limit. retry_after always wins.
+INTER_MESSAGE_SLEEP_SECS = 2.0
+# Even a bug that bypasses the 48h cache cannot exceed 12 lookups an hour.
+MIN_SECRET_LOOKUP_INTERVAL_SECS = 300
+
+# Discord limits (https://discord.com/developers/docs/resources/message).
+EMBED_TITLE_MAX = 256
+EMBED_DESCRIPTION_MAX = 4096
+EMBED_FOOTER_MAX = 2048
+EMBED_TOTAL_MAX = 6000
+EMBEDS_MAX = 10
+CONTENT_MAX = 2000
+
+COMMAND_MAX_CHARS = 300
+# Beyond this a command is withheld outright: redaction over something this
+# long is not a bet worth taking.
+HARD_DROP_CHARS = 4096
+TRIM_FLOOR_CHARS = 60
+
+EMBED_COLOR = 0x5865F2
+USER_AGENT = "DiscordBot (https://github.com/mithr4ndir/ansible-quasarlab, 1.0)"
+
+WEBHOOK_RE = re.compile(
+    r"^https://(?:discord\.com|discordapp\.com|ptb\.discord\.com|canary\.discord\.com)"
+    r"/api/webhooks/[0-9]{1,30}/[A-Za-z0-9_-]{1,200}$"
+)
+OP_REFERENCE_RE = re.compile(r"^op://[A-Za-z0-9 _./-]{1,300}$")
+REFERENCE_TAG_RE = re.compile(r"^[0-9a-f]{16}$")
+WEBHOOK_CACHE_SLUG_PREFIX = "discord_cmds_webhook_url"
+
+STATUS_OK = "ok"
+STATUS_FAILED = "failed"
+STATUS_BACKGROUNDED = "backgrounded"
+STATUS_INTERRUPTED = "interrupted"
+
+STATUS_ICON = {
+    STATUS_OK: "✅",
+    STATUS_FAILED: "❌",
+    STATUS_BACKGROUNDED: "⏳",
+    STATUS_INTERRUPTED: "⛔",
+}
+
+log = logging.getLogger("agent-cmd-audit")
+
+
+class AuditError(Exception):
+    """An expected failure, with a message that is safe to log."""
+
+
+class PostError(AuditError):
+    pass
+
+
+Opener = Callable[..., Any]
+Sleeper = Callable[[float], None]
+
+# ---------------------------------------------------------------------------
+# Logging that can never leak the webhook
+# ---------------------------------------------------------------------------
+
+_SECRETS: set[str] = set()
+WEBHOOK_ANY_RE = re.compile(r"https?://[^\s\"'<>]*/api/webhooks/[^\s\"'<>]*", re.IGNORECASE)
+
+
+def register_secret(value: str) -> None:
+    if value:
+        _SECRETS.add(value)
+
+
+def redact(text: str) -> str:
+    for secret in _SECRETS:
+        text = text.replace(secret, "[redacted]")
+    return WEBHOOK_ANY_RE.sub("[redacted webhook]", text)
+
+
+class RedactingFormatter(logging.Formatter):
+    """Redacts after formatting, so arguments and tracebacks are covered too."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
+def setup_logging(to_stderr: bool) -> None:
+    log.handlers.clear()
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    if not to_stderr:
+        log.addHandler(logging.NullHandler())
+        return
+    fmt = RedactingFormatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%dT%H:%M:%SZ")
+    fmt.converter = time.gmtime
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(fmt)
+    log.addHandler(handler)
+
+
+def syslog(message: str) -> None:
+    """Best effort breadcrumb for the paths that must not write to stdout."""
+    try:
+        subprocess.run(
+            ["logger", "-t", "agent-cmd-audit", redact(message)],
+            check=False,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Text that is safe in a Discord embed
+# ---------------------------------------------------------------------------
+
+MARKDOWN_CHARS_RE = re.compile(r"([\\\[\]()*_~`|>#<@-])")
+URL_SCHEME_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{1,20})://")
+MENTION_RE = re.compile(r"@(?=\S)")
+WHITESPACE_RE = re.compile(r"\s+")
+MENTION_FORMS_RE = re.compile(r"(?i)@everyone|@here|<@[!&]?\d+>")
+
+
+def clean_text(value: str, limit: int) -> str:
+    """Strip control and invisible format characters, collapse whitespace, cap."""
+    kept = []
+    for char in value:
+        category = unicodedata.category(char)
+        if category in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"):
+            kept.append(" ")
+        else:
+            kept.append(char)
+    text = WHITESPACE_RE.sub(" ", "".join(kept)).strip()
+    if len(text) > limit:
+        text = text[: max(limit - 1, 0)].rstrip() + "…"
+    return text
+
+
+def discord_text(value: str, limit: int = EMBED_TITLE_MAX) -> str:
+    """Make untrusted text inert in a Discord embed.
+
+    Order matters: strip mentions, clean and cap first (so the cap cannot cut
+    an escape in half), defang URL schemes so nothing auto-links, then escape
+    every markdown character in a single pass.
+    """
+    text = MENTION_FORMS_RE.sub("", value)
+    text = clean_text(text, limit)
+    text = URL_SCHEME_RE.sub(r"\1[:]//", text)
+    text = MARKDOWN_CHARS_RE.sub(r"\\\1", text)
+    return MENTION_RE.sub("@​", text)
+
+
+# ---------------------------------------------------------------------------
+# Redaction of command text
+# ---------------------------------------------------------------------------
+
+# The last line of defence, applied AFTER redaction. A command that still
+# matches this is withheld rather than posted.
+SECRETLIKE_RE = re.compile(
+    r"(?i)\b(?:op://|ghp_|gho_|ghs_|ghu_|github_pat_|sk-ant-|xox[abprs]-|glpat-"
+    r"|dckr_pat_|AKIA[0-9A-Z]{16}|password\s*[:=]|token\s*[:=]|secret\s*[:=])"
+)
+
+# Value-only substitutions: the key survives so the reader knows what was
+# hidden, the value never does.
+SECRET_NAME = r"(?:password|passwd|pass|token|secret|api[-_]?key|apikey|bearer|auth[a-z_]*|credential[s]?)"
+CMD_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Known token shapes, wherever they appear.
+    (re.compile(r"\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{16,}"), "[redacted token]"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{16,}"), "[redacted token]"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"), "[redacted token]"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}"), "[redacted token]"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), "[redacted token]"),
+    (re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}"), "[redacted token]"),
+    (re.compile(r"\bdckr_pat_[A-Za-z0-9_-]{16,}"), "[redacted token]"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted key id]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*"), "[redacted jwt]"),
+    # op:// leaks vault and item topology even though it is not itself a secret.
+    (re.compile(r"\bop://[A-Za-z0-9 _./-]+"), "op://[redacted]"),
+    # Assignment and flag forms.
+    (re.compile(r"(?i)\b(" + SECRET_NAME + r")(\s*[:=]\s*)(\S+)"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(--(?:" + SECRET_NAME + r")[a-z-]*)([= ])(\S+)"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(--from-literal=[A-Za-z0-9_.-]+=)(\S+)"), r"\1[redacted]"),
+    (re.compile(r"(?i)(Authorization:\s*(?:Bearer|Basic)\s+)(\S+)"), r"\1[redacted]"),
+    (re.compile(r"(-u\s+)(\S+:\S+)"), r"\1[redacted]"),
+)
+# There is deliberately no rule for a bare `-p<value>`. It cannot be told
+# apart from ordinary long options (it ate `git status --porcelain` in
+# testing), and the programs that actually take a password that way (mysql,
+# psql) are in SENSITIVE_PROGRAMS, so their arguments are withheld wholesale.
+
+HEREDOC_RE = re.compile(r"<<-?\s*[\"']?\w+")
+PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY")
+# Programs whose arguments are not worth the risk. The audit fact that an
+# agent ran `op` is what matters; the arguments are not.
+SENSITIVE_PROGRAMS = frozenset({
+    "op", "pass", "gpg", "gpg2", "age", "sops", "vault", "ansible-vault",
+    "keyctl", "openssl", "htpasswd", "passwd", "chpasswd", "mysql", "psql",
+})
+SENSITIVE_PHRASES = ("docker login", "kubectl create secret", "gh auth", "az login", "aws configure")
+
+WITHHELD_SECRET = "«withheld: matched a secret pattern»"
+WITHHELD_HEREDOC = "«heredoc body withheld»"
+WITHHELD_ARGS = "«args withheld»"
+WITHHELD_OVERSIZE = "«oversize command withheld»"
+WITHHELD_KEY = "«private key material withheld»"
+
+
+def program_name(command: str) -> str:
+    """First bare word of the command, for the withheld forms."""
+    for token in command.strip().split():
+        if "=" in token.split("/")[-1] and not token.startswith("-"):
+            continue  # leading VAR=value assignments
+        return os.path.basename(token)[:40]
+    return "?"
+
+
+def sanitize_command(command: str) -> tuple[str, str]:
+    """Return (text safe to post, reason it was withheld or "").
+
+    Fails closed: anything still matching SECRETLIKE_RE after redaction is
+    withheld rather than posted.
+    """
+    if not command.strip():
+        return "", "empty"
+    program = program_name(command)
+    if len(command) > HARD_DROP_CHARS:
+        return f"{program} {WITHHELD_OVERSIZE}", "oversize"
+    if PRIVATE_KEY_RE.search(command):
+        return f"{program} {WITHHELD_KEY}", "private_key"
+    if HEREDOC_RE.search(command):
+        return f"{program} {WITHHELD_HEREDOC}", "heredoc"
+    lowered = command.lower()
+    if program in SENSITIVE_PROGRAMS or any(p in lowered for p in SENSITIVE_PHRASES):
+        return f"{program} {WITHHELD_ARGS}", "sensitive_program"
+
+    text = redact(command)
+    for pattern, replacement in CMD_REDACTIONS:
+        text = pattern.sub(replacement, text)
+    if SECRETLIKE_RE.search(text):
+        return f"{program} {WITHHELD_SECRET}", "fail_closed"
+    return text, ""
+
+
+# ---------------------------------------------------------------------------
+# Hook input
+# ---------------------------------------------------------------------------
+
+
+def read_stdin_limited(stream: Any = None) -> bytes:
+    """Read hook JSON without ever hanging an agent on an open stdin."""
+    stream = stream if stream is not None else sys.stdin.buffer
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + HOOK_STDIN_WAIT_SECS
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return stream.read(HOOK_STDIN_MAX_BYTES) if hasattr(stream, "read") else b""
+    while total < HOOK_STDIN_MAX_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            ready, _, _ = select.select([fd], [], [], remaining)
+        except (OSError, ValueError):
+            break
+        if not ready:
+            break
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)[:HOOK_STDIN_MAX_BYTES]
+
+
+EXIT_CODE_RE = re.compile(r"exit code[:\s]+(\d{1,3})", re.IGNORECASE)
+
+
+def parse_exit_code(error: str) -> int | None:
+    """Pull the exit code out of a PostToolUseFailure error string.
+
+    Verified against Claude Code 2.1.273: a failing Bash call records
+    "Error: Exit code 3". There is no exit_code field on the Bash tool result,
+    so this string is the only place the number appears. Tolerant on purpose:
+    an upgrade that rewords it degrades to "non-zero, code unknown" rather
+    than mislabelling the entry.
+    """
+    match = EXIT_CODE_RE.search(error or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def build_record(payload: Mapping[str, Any], env: Mapping[str, str], now: dt.datetime) -> dict[str, Any]:
+    """One spool record from a PostToolUse or PostToolUseFailure payload."""
+    tool_input = payload.get("tool_input")
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    response = payload.get("tool_response")
+    response = response if isinstance(response, dict) else {}
+    event = str(payload.get("hook_event_name") or "")
+    error = payload.get("error")
+    error = error if isinstance(error, str) else ""
+
+    backgrounded = bool(tool_input.get("run_in_background")) or bool(response.get("backgroundTaskId"))
+    if event == "PostToolUseFailure":
+        status = STATUS_INTERRUPTED if payload.get("is_interrupt") else STATUS_FAILED
+    elif backgrounded:
+        status = STATUS_BACKGROUNDED
+    elif response.get("interrupted"):
+        status = STATUS_INTERRUPTED
+    else:
+        status = STATUS_OK
+
+    command = tool_input.get("command")
+    command = command if isinstance(command, str) else ""
+    record: dict[str, Any] = {
+        "ts": iso(now),
+        "event": event,
+        "status": status,
+        "command": command[:HARD_DROP_CHARS],
+        "session_id": str(payload.get("session_id") or ""),
+        "cwd": str(payload.get("cwd") or ""),
+        "workspace": env.get("HERDR_WORKSPACE_ID", ""),
+        "pane": env.get("HERDR_PANE_ID", ""),
+        "host": env.get("AGENT_CMD_AUDIT_HOST", "") or os.uname().nodename,
+        "agent": "claude",
+    }
+    if payload.get("agent_id"):
+        record["agent_id"] = str(payload["agent_id"])
+    if payload.get("agent_type"):
+        record["agent_type"] = str(payload["agent_type"])
+    if isinstance(payload.get("duration_ms"), (int, float)):
+        record["duration_ms"] = int(payload["duration_ms"])
+    if status == STATUS_FAILED:
+        code = parse_exit_code(error)
+        if code is not None:
+            record["exit_code"] = code
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Spool
+# ---------------------------------------------------------------------------
+
+
+class SpoolLock:
+    """flock on a file that is never renamed, so rotation stays atomic."""
+
+    def __init__(self, state_dir: Path, wait: float) -> None:
+        self.path = state_dir / ".lock"
+        self.wait = wait
+        self.fd: int | None = None
+
+    def __enter__(self) -> "SpoolLock":
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self.wait
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(self.fd)
+                    self.fd = None
+                    raise AuditError("another agent-cmd-audit run holds the lock") from None
+                time.sleep(0.02)
+
+    def __exit__(self, *exc: object) -> None:
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = None
+
+
+def append_record(state_dir: Path, record: Mapping[str, Any], wait: float = RECORD_LOCK_WAIT_SECS) -> str:
+    """Append one record. Returns "" on success or a drop reason.
+
+    The fd is opened inside the lock, so no writer can hold one across the
+    flusher's rename and a sealed batch can never be appended to.
+    """
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
+    if len(line.encode("utf-8")) > RECORD_MAX_BYTES:
+        trimmed = dict(record)
+        keep = max(RECORD_MAX_BYTES // 2, 256)
+        trimmed["command"] = str(record.get("command", ""))[:keep]
+        trimmed["truncated_at_record"] = True
+        line = json.dumps(trimmed, separators=(",", ":"), ensure_ascii=False)
+    data = (line + "\n").encode("utf-8")[:RECORD_MAX_BYTES]
+    if not data.endswith(b"\n"):
+        data += b"\n"
+
+    current = state_dir / "current.jsonl"
+    try:
+        with SpoolLock(state_dir, wait):
+            try:
+                if current.stat().st_size + len(data) > MAX_CURRENT_BYTES:
+                    return "spool_full"
+            except FileNotFoundError:
+                pass
+            fd = os.open(current, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+    except AuditError:
+        return "lock"
+    except OSError:
+        return "io"
+    return ""
+
+
+def seal_spool(state_dir: Path) -> Path | None:
+    """Rename the active spool into the inbox. The rename is the ledger."""
+    current = state_dir / "current.jsonl"
+    inbox = state_dir / "inbox"
+    with SpoolLock(state_dir, FLUSH_LOCK_WAIT_SECS):
+        if not current.exists() or current.stat().st_size == 0:
+            return None
+        inbox.mkdir(mode=0o700, parents=True, exist_ok=True)
+        sealed = inbox / f"{time.time_ns()}.jsonl"
+        os.rename(current, sealed)
+        return sealed
+
+
+def inbox_batches(state_dir: Path) -> list[Path]:
+    inbox = state_dir / "inbox"
+    if not inbox.is_dir():
+        return []
+    return sorted((p for p in inbox.iterdir() if p.name.endswith(".jsonl")), key=lambda p: p.name)
+
+
+def trim_inbox(state_dir: Path) -> int:
+    """Drop the OLDEST batches over the caps, so the feed stays live."""
+    batches = inbox_batches(state_dir)
+    dropped = 0
+    total = sum(p.stat().st_size for p in batches if p.exists())
+    while batches and (len(batches) > MAX_INBOX_FILES or total > MAX_INBOX_BYTES):
+        victim = batches.pop(0)
+        try:
+            size = victim.stat().st_size
+            with victim.open("rb") as handle:
+                dropped += sum(1 for _ in handle)
+            victim.unlink()
+            total -= size
+        except OSError:
+            break
+    return dropped
+
+
+def read_batch(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Parse a sealed batch. Returns (records, unparseable count)."""
+    records: list[dict[str, Any]] = []
+    bad = 0
+    try:
+        text = path.read_text("utf-8", errors="replace")
+    except OSError:
+        return [], 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            bad += 1
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+        else:
+            bad += 1
+    return records, bad
+
+
+def write_remainder(path: Path, records: list[dict[str, Any]]) -> None:
+    """Carry unposted records to the next tick, preserving order."""
+    if not records:
+        return
+    part = path.with_suffix(".part.jsonl")
+    body = "".join(json.dumps(r, separators=(",", ":"), ensure_ascii=False) + "\n" for r in records)
+    tmp = part.with_name("." + part.name + ".tmp")
+    tmp.write_text(body, "utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, part)
+
+
+# ---------------------------------------------------------------------------
+# State and metrics
+# ---------------------------------------------------------------------------
+
+
+def load_state(state_dir: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((state_dir / "state.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_state(state_dir: Path, state: Mapping[str, Any]) -> None:
+    path = state_dir / "state.json"
+    tmp = path.with_name(".state.json.tmp")
+    try:
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), "utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("state: could not be saved (%s)", type(exc).__name__)
+
+
+METRIC_HELP: tuple[tuple[str, str, str], ...] = (
+    ("agent_cmd_audit_enabled", "gauge", "Whether command recording is enabled (1) or switched off (0)."),
+    ("agent_cmd_audit_last_run_timestamp_seconds", "gauge", "Unix time of the last flush run."),
+    ("agent_cmd_audit_last_success_timestamp_seconds", "gauge", "Unix time of the last accepted Discord post."),
+    ("agent_cmd_audit_canary_posted_timestamp_seconds", "gauge", "Unix time Discord accepted the last canary."),
+    ("agent_cmd_audit_inbox_files", "gauge", "Sealed batches waiting to post."),
+    ("agent_cmd_audit_inbox_bytes", "gauge", "Bytes waiting to post."),
+    ("agent_cmd_audit_spool_bytes", "gauge", "Bytes in the active spool."),
+    ("agent_cmd_audit_posted_total", "counter", "Records accepted by Discord."),
+    ("agent_cmd_audit_post_failures_total", "counter", "Failed Discord posts."),
+    ("agent_cmd_audit_no_webhook_total", "counter", "Flushes with a batch but no usable webhook."),
+    ("agent_cmd_audit_unparseable_total", "counter", "Spool lines that would not parse."),
+    ("agent_cmd_audit_withheld_total", "counter", "Commands withheld instead of posted."),
+)
+
+
+def write_metrics(prom_file: Path, values: Mapping[str, float], dropped: Mapping[str, float]) -> None:
+    """Atomic textfile-collector write, the herdr-health-collector way.
+
+    The temp file is dot-prefixed so it sits outside node_exporter's *.prom
+    glob, the whole file is one write, and the rename is atomic.
+    """
+    lines: list[str] = []
+    for name, kind, help_text in METRIC_HELP:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {kind}")
+        lines.append(f"{name} {values.get(name, 0):g}")
+    lines.append("# HELP agent_cmd_audit_dropped_total Records dropped without reaching Discord.")
+    lines.append("# TYPE agent_cmd_audit_dropped_total counter")
+    for reason in ("lock", "spool_full", "backlog", "fail_closed", "oversize", "io"):
+        lines.append(f'agent_cmd_audit_dropped_total{{reason="{reason}"}} {dropped.get(reason, 0):g}')
+    body = "\n".join(lines) + "\n"
+    tmp = prom_file.with_name("." + prom_file.name + ".tmp")
+    try:
+        prom_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(body, "utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, prom_file)
+    except OSError as exc:
+        log.warning("metrics: could not be written (%s)", type(exc).__name__)
+
+
+# ---------------------------------------------------------------------------
+# Webhook secret, through the 1Password cache only
+# ---------------------------------------------------------------------------
+
+SECRET_SCRIPT = r"""
+set -u
+lib_dir=$1; slug=$2; ref=$3; token_file=$4
+source "$lib_dir/op-killswitch.sh" || exit 3
+source "$lib_dir/op-secret-cache.sh" || exit 3
+if ! op_secret_cache_is_fresh "$OP_SECRET_CACHE_DIR/$slug"; then
+    # A refresh would cost a 1Password read. Load the token FIRST: the quota
+    # check fails without one, and the systemd unit exports only HOME and PATH.
+    if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" && -r "$token_file" ]]; then
+        OP_SERVICE_ACCOUNT_TOKEN=$(<"$token_file")
+        export OP_SERVICE_ACCOUNT_TOKEN
+    fi
+    remaining=$(op_preflight_remaining)
+    # Fails CLOSED on an unreadable quota: an audit line is not worth a blind
+    # read. Without a token the cache can only serve a stale value.
+    if [[ -z "$remaining" ]]; then
+        logger -t agent-cmd-audit "1P quota unreadable; not refreshing the webhook cache"
+        unset OP_SERVICE_ACCOUNT_TOKEN
+    elif (( remaining <= OP_PREFLIGHT_MIN_REMAINING )); then
+        logger -t agent-cmd-audit "1P quota at ${remaining}; not refreshing the webhook cache"
+        unset OP_SERVICE_ACCOUNT_TOKEN
+    fi
+fi
+cached_op_read "$slug" "$ref"
+"""
+
+
+def webhook_cache_slug(reference: str) -> str | None:
+    """Cache slug for this reference, or None when no tag can be derived.
+
+    First 16 hex characters of sha256 over the exact reference string, the
+    same scheme lab-changelog uses. Changing the reference changes the slug,
+    so a stale cache entry can never post to the previous channel.
+    """
+    try:
+        tag = hashlib.sha256(reference.encode("utf-8")).hexdigest()[:16]
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not REFERENCE_TAG_RE.match(tag):
+        return None
+    return f"{WEBHOOK_CACHE_SLUG_PREFIX}.{tag}"
+
+
+def resolve_webhook(lib_dir: str, reference: str, token_file: str) -> str | None:
+    """Return the webhook URL, or None with the reason logged."""
+    if not OP_REFERENCE_RE.match(reference or ""):
+        log.warning("webhook: configured 1Password reference is malformed; not posting")
+        return None
+    slug = webhook_cache_slug(reference)
+    if slug is None:
+        log.warning("webhook: could not derive a cache slug tag; not posting")
+        return None
+    for lib in ("op-killswitch.sh", "op-secret-cache.sh"):
+        if not os.path.isfile(os.path.join(lib_dir, lib)):
+            log.warning("webhook: %s missing from the op library directory; not posting", lib)
+            return None
+    env = dict(os.environ)
+    env[CHILD_ENV] = "1"
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", SECRET_SCRIPT, "agent-cmd-audit-secret", lib_dir, slug, reference, token_file],
+            capture_output=True,
+            text=True,
+            timeout=SECRET_TIMEOUT_SECS,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("webhook: cache lookup timed out; not posting")
+        return None
+    except OSError as exc:
+        log.warning("webhook: cache lookup could not start (%s); not posting", type(exc).__name__)
+        return None
+    value = proc.stdout.strip()
+    register_secret(value)
+    if proc.returncode != 0 or not value:
+        log.warning(
+            "webhook: no value from the 1Password cache (rc=%s; kill switch active, rate limited or not cached); not posting",
+            proc.returncode,
+        )
+        return None
+    if not WEBHOOK_RE.match(value):
+        log.warning("webhook: cached value is not a Discord webhook URL; not posting")
+        return None
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Payload
+# ---------------------------------------------------------------------------
+
+
+def herdr_labels(herdr_bin: str, runner: Callable[..., Any] | None = None) -> dict[str, str]:
+    """Map workspace id to its human label. Best effort, never fatal."""
+    if not herdr_bin:
+        return {}
+    runner = runner or subprocess.run
+    try:
+        proc = runner(
+            [herdr_bin, "workspace", "list"],
+            capture_output=True,
+            text=True,
+            timeout=HERDR_TIMEOUT_SECS,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if getattr(proc, "returncode", 1) != 0:
+        return {}
+    try:
+        payload = json.loads(proc.stdout or "{}")
+        workspaces = payload["result"]["workspaces"]
+    except (ValueError, KeyError, TypeError):
+        return {}
+    labels: dict[str, str] = {}
+    for workspace in workspaces:
+        if isinstance(workspace, dict):
+            wid = str(workspace.get("workspace_id") or "")
+            label = str(workspace.get("label") or "")
+            if wid and label:
+                labels[wid] = label
+    return labels
+
+
+def entry_line(record: Mapping[str, Any], cap: int) -> tuple[str, str]:
+    """One rendered line, plus the withheld reason if there was one."""
+    status = str(record.get("status") or STATUS_OK)
+    icon = STATUS_ICON.get(status, "•")
+    stamp = str(record.get("ts") or "")[11:19] or "--:--:--"
+    command = str(record.get("command") or "")
+    safe, reason = sanitize_command(command)
+    text = discord_text(safe, cap)
+    suffix = ""
+    if status == STATUS_FAILED:
+        code = record.get("exit_code")
+        suffix = f" exit {code}" if isinstance(code, int) else " non-zero"
+    elif status == STATUS_BACKGROUNDED:
+        suffix = " backgrounded, outcome unknown"
+    elif status == STATUS_INTERRUPTED:
+        suffix = " interrupted"
+    if record.get("canary"):
+        return f"`{stamp}` 🐤 canary `{discord_text(str(record.get('nonce') or ''), 40)}`", ""
+    return f"`{stamp}` {icon}{suffix} `{text}`", reason
+
+
+def embed_size(embed: Mapping[str, Any]) -> int:
+    total = len(str(embed.get("title", ""))) + len(str(embed.get("description", "")))
+    footer = embed.get("footer")
+    if isinstance(footer, dict):
+        total += len(str(footer.get("text", "")))
+    return total
+
+
+def group_records(records: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group by session, keeping first-seen order."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        groups.setdefault(str(record.get("session_id") or "unknown"), []).append(record)
+    return list(groups.items())
+
+
+def build_embeds(
+    records: list[dict[str, Any]], labels: Mapping[str, str], cap: int
+) -> tuple[list[dict[str, Any]], int]:
+    embeds: list[dict[str, Any]] = []
+    withheld = 0
+    for session, group in group_records(records)[:EMBEDS_MAX]:
+        first = group[0]
+        workspace = str(first.get("workspace") or "")
+        label = labels.get(workspace, workspace) or "no workspace"
+        pane = str(first.get("pane") or "")
+        title_bits = [label]
+        if pane:
+            title_bits.append(pane)
+        title_bits.append(str(first.get("agent") or "agent"))
+        if first.get("agent_type"):
+            title_bits.append(f"subagent {first['agent_type']}")
+        lines: list[str] = []
+        for record in group:
+            line, reason = entry_line(record, cap)
+            if reason and reason != "empty":
+                withheld += 1
+            lines.append(line)
+        description = "\n".join(lines)[:EMBED_DESCRIPTION_MAX]
+        footer = f"session {session[:8]} · {first.get('host') or '?'}"
+        embeds.append({
+            "title": discord_text(" · ".join(title_bits), EMBED_TITLE_MAX),
+            "description": description,
+            "color": EMBED_COLOR,
+            "footer": {"text": discord_text(footer, EMBED_FOOTER_MAX)},
+        })
+    return embeds, withheld
+
+
+def build_payload(records: list[dict[str, Any]], labels: Mapping[str, str]) -> tuple[dict[str, Any], int]:
+    """Shrink the per-entry cap until the batch fits Discord's 6000 total."""
+    cap = COMMAND_MAX_CHARS
+    embeds, withheld = build_embeds(records, labels, cap)
+    while sum(embed_size(e) for e in embeds) > EMBED_TOTAL_MAX and cap > TRIM_FLOOR_CHARS:
+        cap = max(int(cap * 0.8), TRIM_FLOOR_CHARS)
+        embeds, withheld = build_embeds(records, labels, cap)
+    while embeds and sum(embed_size(e) for e in embeds) > EMBED_TOTAL_MAX:
+        embeds.pop()
+    return {
+        "username": "cmd audit",
+        "embeds": embeds,
+        "allowed_mentions": {"parse": []},
+    }, withheld
+
+
+# ---------------------------------------------------------------------------
+# Posting
+# ---------------------------------------------------------------------------
+
+
+def retry_after_secs(error: urllib.error.HTTPError) -> float:
+    try:
+        body = json.loads(error.read() or b"{}")
+        value = float(body.get("retry_after"))
+    except (ValueError, TypeError, AttributeError, OSError):
+        try:
+            value = float(error.headers.get("Retry-After", "1"))
+        except (ValueError, TypeError, AttributeError):
+            value = 1.0
+    return min(max(value, 0.0), POST_MAX_SLEEP_SECS)
+
+
+def post_payload(
+    webhook: str, payload: dict[str, Any], opener: Opener | None = None, sleep: Sleeper = time.sleep
+) -> None:
+    """POST one message. Raises PostError whose text never holds the URL."""
+    opener = opener or urllib.request.urlopen
+    data = json.dumps(payload).encode("utf-8")
+    delay = 1.0
+    for attempt in range(1, POST_MAX_ATTEMPTS + 1):
+        request = urllib.request.Request(
+            webhook + "?wait=true",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        )
+        try:
+            # WEBHOOK_RE already pinned the scheme to https.
+            with opener(request, timeout=HTTP_TIMEOUT_SECS) as response:  # noqa: S310
+                status = getattr(response, "status", 200)
+                if 200 <= status < 300:
+                    return
+                failure = f"HTTP {status}"
+                retryable = status >= 500
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            failure = f"HTTP {status}"
+            if status == 429:
+                wait = retry_after_secs(exc)
+                exc.close()
+                if attempt == POST_MAX_ATTEMPTS:
+                    break
+                log.info("discord rate limited; retrying in %.1fs", wait)
+                sleep(wait)
+                continue
+            exc.close()
+            retryable = status >= 500
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # These can carry the URL in their text. Keep only the type.
+            failure = type(exc).__name__
+            retryable = True
+        if not retryable or attempt == POST_MAX_ATTEMPTS:
+            raise PostError(f"discord post failed: {failure}") from None
+        sleep(min(delay, POST_MAX_SLEEP_SECS))
+        delay *= 2
+    raise PostError("discord post failed: still rate limited after retries") from None
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+CONFIG_KEYS = frozenset({
+    "AGENT_CMD_AUDIT_ENABLED",
+    "AGENT_CMD_AUDIT_OP_REFERENCE",
+    "AGENT_CMD_AUDIT_OP_LIB_DIR",
+    "AGENT_CMD_AUDIT_OP_TOKEN_FILE",
+    "AGENT_CMD_AUDIT_STATE_DIR",
+    "AGENT_CMD_AUDIT_PROM_FILE",
+    "AGENT_CMD_AUDIT_HOST",
+    "AGENT_CMD_AUDIT_HERDR_BIN",
+})
+
+DEFAULT_CONFIG_PATH = "/etc/default/agent-cmd-audit"
+DEFAULT_STATE_DIR = "~/.local/state/agent-cmd-audit"
+DEFAULT_PROM_FILE = "/var/lib/node_exporter/textfiles/agent_cmd_audit.prom"
+
+
+def load_config_file(path: str) -> dict[str, str]:
+    """KEY=VALUE lines. Only AGENT_CMD_AUDIT_* settings are honoured."""
+    values: dict[str, str] = {}
+    if not path:
+        return values
+    try:
+        text = Path(path).read_text("utf-8")
+    except OSError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key in CONFIG_KEYS:
+            values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+class Config:
+    def __init__(self, env: Mapping[str, str] | None = None) -> None:
+        env = dict(os.environ if env is None else env)
+        merged = load_config_file(env.get("AGENT_CMD_AUDIT_CONFIG", DEFAULT_CONFIG_PATH))
+        merged.update({k: v for k, v in env.items() if k in CONFIG_KEYS})
+        self.enabled = merged.get("AGENT_CMD_AUDIT_ENABLED", "1").strip() not in ("0", "false", "no")
+        self.reference = merged.get("AGENT_CMD_AUDIT_OP_REFERENCE", "")
+        self.lib_dir = merged.get("AGENT_CMD_AUDIT_OP_LIB_DIR", "")
+        self.token_file = merged.get("AGENT_CMD_AUDIT_OP_TOKEN_FILE", "")
+        self.state_dir = Path(os.path.expanduser(merged.get("AGENT_CMD_AUDIT_STATE_DIR", DEFAULT_STATE_DIR)))
+        self.prom_file = Path(merged.get("AGENT_CMD_AUDIT_PROM_FILE", DEFAULT_PROM_FILE))
+        self.host = merged.get("AGENT_CMD_AUDIT_HOST", "") or os.uname().nodename
+        self.herdr_bin = merged.get("AGENT_CMD_AUDIT_HERDR_BIN", "")
+
+    @property
+    def off_file(self) -> Path:
+        return self.state_dir / "OFF"
+
+    def recording_enabled(self) -> bool:
+        """Config switch and the runtime OFF file, which needs no deploy."""
+        return self.enabled and not self.off_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def bump(state: dict[str, Any], key: str, amount: float = 1) -> None:
+    state[key] = float(state.get(key, 0)) + amount
+
+
+def bump_drop(state: dict[str, Any], reason: str) -> None:
+    dropped = state.setdefault("dropped", {})
+    if isinstance(dropped, dict):
+        dropped[reason] = float(dropped.get(reason, 0)) + 1
+
+
+def cmd_record(args: argparse.Namespace, cfg: Config) -> int:
+    """Hook entry point. Never fails, never writes to stdout."""
+    if not cfg.recording_enabled():
+        return 0
+    raw = read_stdin_limited()
+    if not raw:
+        return 0
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        syslog("record: hook payload was not JSON")
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    if str(payload.get("tool_name") or "") != "Bash":
+        return 0
+    record = build_record(payload, os.environ, utcnow())
+    if not record["command"].strip():
+        return 0
+    reason = append_record(cfg.state_dir, record)
+    if reason:
+        # Counting happens in the flusher, which owns state.json; a dropped
+        # record leaves a breadcrumb so the reason is never invisible.
+        syslog(f"record: dropped ({reason})")
+    return 0
+
+
+def cmd_canary(args: argparse.Namespace, cfg: Config) -> int:
+    """Spool a synthetic record through the same path the hook uses."""
+    if not cfg.recording_enabled():
+        return 0
+    nonce = hashlib.sha256(os.urandom(16)).hexdigest()[:12]
+    record = {
+        "ts": iso(utcnow()),
+        "event": "Canary",
+        "status": STATUS_OK,
+        "command": "",
+        "canary": True,
+        "nonce": nonce,
+        "session_id": "canary",
+        "workspace": "",
+        "pane": "",
+        "host": cfg.host,
+        "agent": "canary",
+    }
+    reason = append_record(cfg.state_dir, record, wait=FLUSH_LOCK_WAIT_SECS)
+    if reason:
+        syslog(f"canary: dropped ({reason})")
+        return 0
+    return 0
+
+
+def flush_once(
+    cfg: Config,
+    dry_run: bool,
+    opener: Opener | None = None,
+    sleep: Sleeper = time.sleep,
+    runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """One flush pass. Returns the state it wrote, for tests."""
+    state = load_state(cfg.state_dir)
+    state["last_run"] = time.time()
+    dropped_backlog = 0
+
+    try:
+        seal_spool(cfg.state_dir)
+    except AuditError:
+        log.warning("spool: could not be sealed; another run holds the lock")
+    except OSError as exc:
+        log.warning("spool: could not be sealed (%s)", type(exc).__name__)
+
+    dropped_backlog = trim_inbox(cfg.state_dir)
+    if dropped_backlog:
+        for _ in range(dropped_backlog):
+            bump_drop(state, "backlog")
+        log.warning("inbox: dropped %d record(s) over the backlog cap", dropped_backlog)
+
+    batches = inbox_batches(cfg.state_dir)
+    if not batches:
+        finish_metrics(cfg, state)
+        save_state(cfg.state_dir, state)
+        return state
+
+    webhook: str | None = None
+    if not dry_run:
+        last = float(state.get("last_secret_lookup", 0) or 0)
+        if time.time() - last < MIN_SECRET_LOOKUP_INTERVAL_SECS and not state.get("webhook_ok"):
+            log.info("webhook: lookup floor not reached; leaving the batch for the next run")
+            finish_metrics(cfg, state)
+            save_state(cfg.state_dir, state)
+            return state
+        state["last_secret_lookup"] = time.time()
+        webhook = resolve_webhook(cfg.lib_dir, cfg.reference, cfg.token_file)
+        state["webhook_ok"] = bool(webhook)
+        if webhook is None:
+            bump(state, "no_webhook_total")
+            finish_metrics(cfg, state)
+            save_state(cfg.state_dir, state)
+            return state
+
+    labels = herdr_labels(cfg.herdr_bin, runner)
+    messages = 0
+    for batch in batches:
+        if messages >= MAX_MESSAGES_PER_FLUSH:
+            break
+        records, bad = read_batch(batch)
+        if bad:
+            bump(state, "unparseable_total", bad)
+        if not records:
+            batch.unlink(missing_ok=True)
+            continue
+        posted, remainder = records[:MAX_RECORDS_PER_FLUSH], records[MAX_RECORDS_PER_FLUSH:]
+        payload, withheld = build_payload(posted, labels)
+        if not payload["embeds"]:
+            batch.unlink(missing_ok=True)
+            continue
+        if dry_run:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            messages += 1
+            continue
+        if messages:
+            sleep(INTER_MESSAGE_SLEEP_SECS)
+        try:
+            assert webhook is not None
+            post_payload(webhook, payload, opener=opener, sleep=sleep)
+        except PostError as exc:
+            # Leave the batch for the next tick and exit 0: a Discord outage
+            # must not become a unit-failure alert.
+            log.warning("%s", exc)
+            bump(state, "post_failures_total")
+            break
+        messages += 1
+        bump(state, "posted_total", len(posted))
+        bump(state, "withheld_total", withheld)
+        state["last_success"] = time.time()
+        if any(r.get("canary") for r in posted):
+            state["canary_posted"] = time.time()
+        write_remainder(batch, remainder)
+        batch.unlink(missing_ok=True)
+
+    finish_metrics(cfg, state)
+    save_state(cfg.state_dir, state)
+    return state
+
+
+def finish_metrics(cfg: Config, state: Mapping[str, Any]) -> None:
+    batches = inbox_batches(cfg.state_dir)
+    inbox_bytes = sum(p.stat().st_size for p in batches if p.exists())
+    try:
+        spool_bytes = (cfg.state_dir / "current.jsonl").stat().st_size
+    except OSError:
+        spool_bytes = 0
+    dropped = state.get("dropped")
+    dropped = dropped if isinstance(dropped, dict) else {}
+    write_metrics(
+        cfg.prom_file,
+        {
+            "agent_cmd_audit_enabled": 1 if cfg.recording_enabled() else 0,
+            "agent_cmd_audit_last_run_timestamp_seconds": float(state.get("last_run", 0) or 0),
+            "agent_cmd_audit_last_success_timestamp_seconds": float(state.get("last_success", 0) or 0),
+            "agent_cmd_audit_canary_posted_timestamp_seconds": float(state.get("canary_posted", 0) or 0),
+            "agent_cmd_audit_inbox_files": len(batches),
+            "agent_cmd_audit_inbox_bytes": inbox_bytes,
+            "agent_cmd_audit_spool_bytes": spool_bytes,
+            "agent_cmd_audit_posted_total": float(state.get("posted_total", 0) or 0),
+            "agent_cmd_audit_post_failures_total": float(state.get("post_failures_total", 0) or 0),
+            "agent_cmd_audit_no_webhook_total": float(state.get("no_webhook_total", 0) or 0),
+            "agent_cmd_audit_unparseable_total": float(state.get("unparseable_total", 0) or 0),
+            "agent_cmd_audit_withheld_total": float(state.get("withheld_total", 0) or 0),
+        },
+        dropped,
+    )
+
+
+def cmd_flush(args: argparse.Namespace, cfg: Config) -> int:
+    flush_once(cfg, dry_run=bool(args.dry_run))
+    return 0
+
+
+class QuietParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise AuditError(f"usage: {message}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = QuietParser(prog="agent-cmd-audit", add_help=True)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("record", help="Claude Code PostToolUse hook")
+    sub.add_parser("canary", help="spool a synthetic record")
+    flush = sub.add_parser("flush", help="post spooled records")
+    flush.add_argument("--dry-run", action="store_true", help="print the payload, post nothing")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    quiet = bool(argv) and argv[0] in ("record", "canary")
+    setup_logging(to_stderr=not quiet)
+    try:
+        args = build_parser().parse_args(argv)
+        cfg = Config()
+        if args.command == "record":
+            return cmd_record(args, cfg)
+        if args.command == "canary":
+            return cmd_canary(args, cfg)
+        return cmd_flush(args, cfg)
+    except AuditError as exc:
+        if quiet:
+            syslog(str(exc))
+            return 0
+        log.error("%s", exc)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - the hook must never break a session
+        if quiet:
+            syslog(f"unexpected failure: {type(exc).__name__}")
+            return 0
+        raise
+
+
+if __name__ == "__main__":
+    sys.exit(main())

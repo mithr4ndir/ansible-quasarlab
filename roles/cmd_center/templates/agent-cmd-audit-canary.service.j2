@@ -1,0 +1,19 @@
+[Unit]
+Description=Spool a synthetic AI agent command audit record
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart=/usr/local/bin/agent-cmd-audit canary
+WorkingDirectory=/home/{{ ansible_user }}
+Environment=HOME=/home/{{ ansible_user }}
+Environment=PATH=/home/{{ ansible_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# See agent-cmd-audit.service: a Type=oneshot without this can wedge its timer.
+TimeoutStartSec=60
+Nice=19
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/{{ ansible_user }}/.local/state/agent-cmd-audit

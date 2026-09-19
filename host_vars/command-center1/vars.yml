@@ -9,6 +9,9 @@ unattended_upgrades_blacklist:
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:
   - docker.service
+  # The command audit flusher. An allowlist makes any rule on an unlisted unit
+  # vacuous, so this entry is what lets AgentCmdAuditStuck mean anything.
+  - agent-cmd-audit.service
   # node_exporter's systemd collector only sees the SYSTEM manager, so the
   # herdr.service user unit can never appear in node_systemd_unit_state and
   # listing it here would make any rule on it vacuous. user@1000.service is
@@ -23,3 +26,15 @@ cmd_center_herdr_enabled: true
 # Lab changelog to Discord (roles/cmd_center/tasks/changelog.yml).
 # Enabled on this host only.
 cmd_center_changelog_enabled: true
+
+# AI agent command audit posted to Discord (roles/cmd_center/tasks/cmd_audit.yml).
+# Enabled on this host only: it is the only host that runs coding agents.
+#
+# The webhook URL itself is never stored here. It lives in the 1Password item
+# referenced below and is resolved at run time through the secret cache, whose
+# slug is discord_cmds_webhook_url.0a56862b6fa353e3 (16 hex of sha256 over the
+# reference string). The cache entry is seeded on the host, so a normal run
+# spends no 1Password read. After editing the item in 1Password, refresh it
+# with scripts/op-secret-refresh.sh discord_cmds_webhook_url.0a56862b6fa353e3.
+cmd_center_cmd_audit_enabled: true
+cmd_center_cmd_audit_op_reference: "op://Infrastructure/lekwjyvwbl5witcrz2pnqyjpgy/webhook_url"

@@ -52,6 +52,10 @@
   ansible.builtin.import_tasks: changelog.yml
   when: cmd_center_changelog_enabled | bool
 
+- name: AI agent command audit posted to Discord
+  ansible.builtin.import_tasks: cmd_audit.yml
+  when: cmd_center_cmd_audit_enabled | bool
+
 - name: Herdr headless server systemd user service
   ansible.builtin.import_tasks: herdr.yml
   when: cmd_center_herdr_enabled | bool
