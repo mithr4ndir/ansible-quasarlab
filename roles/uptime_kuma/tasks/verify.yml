@@ -1,0 +1,55 @@
+---
+# Prove the deploy did what it claims, from Kuma's side:
+#   1. every monitor this role defines exists once, is active and notifies
+#      the Discord notification (AutoKuma synced, no duplicates);
+#   2. one real NFS probe run reads the sentinel and Kuma accepts the push.
+# Either failing fails the play.
+
+- name: Install the entity verifier
+  ansible.builtin.copy:
+    src: kuma-verify-entities
+    dest: /usr/local/bin/kuma-verify-entities
+    owner: root
+    group: root
+    mode: '0755'
+
+# AutoKuma syncs every uptime_kuma_autokuma_sync_interval seconds, and its
+# first sync waits for the admin account, so allow several intervals.
+- name: Wait until Kuma holds every managed monitor, wired to Discord
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/local/bin/kuma-verify-entities',
+          '--notification=' ~ uptime_kuma_discord_notification_name]
+         + (uptime_kuma_expected_monitor_names | map('regex_replace', '^', '--monitor=') | list) }}
+  register: uptime_kuma_verify
+  changed_when: false
+  retries: "{{ ((uptime_kuma_autokuma_sync_interval | int) * 4 / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  until: uptime_kuma_verify.rc == 0
+  when: not ansible_check_mode
+
+- name: Run the NFS probe once and require an accepted UP heartbeat
+  when:
+    - uptime_kuma_nfs_probe_enabled | bool
+    - not ansible_check_mode
+  block:
+    # A oneshot start waits for the run to finish and fails if it failed:
+    # NFS read failed (exit 1) or Kuma refused the push (exit 2).
+    - name: Start one NFS probe run
+      ansible.builtin.systemd:
+        name: kuma-nfs-probe.service
+        state: started
+
+  rescue:
+    - name: Read the failed probe run's result
+      ansible.builtin.command: journalctl -u kuma-nfs-probe.service -n 3 --no-pager -o cat
+      register: uptime_kuma_probe_journal
+      changed_when: false
+
+    - name: Fail with the probe's own explanation
+      ansible.builtin.fail:
+        msg: >-
+          The NFS probe did not report UP. Its last output:
+          {{ uptime_kuma_probe_journal.stdout_lines | join(' | ') }}.
+          Everything else is deployed; the timer keeps probing and Kuma will
+          alert until it succeeds.

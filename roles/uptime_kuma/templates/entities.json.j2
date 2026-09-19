@@ -1,0 +1,59 @@
+{#- Every Kuma entity this role manages, keyed by AutoKuma id. Rendered to one
+    JSON file per entity by tasks/monitors.yml. Field names follow AutoKuma's
+    entity types (docs/entity-types in BigBoot/AutoKuma at v2.1.0-rc.2). -#}
+{%- set notification_id = 'discord-alerts' -%}
+{%- set description = 'Managed by Ansible (ansible-quasarlab roles/uptime_kuma). UI edits are reverted on the next AutoKuma sync.' -%}
+{%- set entities = {} -%}
+{%- set _ = entities.update({
+  notification_id: {
+    'type': 'notification',
+    'name': uptime_kuma_discord_notification_name,
+    'active': true,
+    'isDefault': false,
+    'config': {
+      'type': 'discord',
+      'name': uptime_kuma_discord_notification_name,
+      'discordWebhookUrl': uptime_kuma_discord_webhook_url,
+      'discordUsername': uptime_kuma_discord_username,
+      'isDefault': false,
+      'active': true,
+      'applyExisting': false,
+    },
+  }
+}) -%}
+{%- for m in uptime_kuma_http_monitors -%}
+{%- set _ = entities.update({
+  m.id: {
+    'type': 'http',
+    'name': m.name,
+    'description': m.description | default(description),
+    'url': m.url,
+    'method': 'GET',
+    'interval': uptime_kuma_monitor_interval | int,
+    'retry_interval': uptime_kuma_monitor_retry_interval | int,
+    'max_retries': uptime_kuma_monitor_max_retries | int,
+    'timeout': uptime_kuma_monitor_timeout | int,
+    'resend_interval': uptime_kuma_monitor_resend_interval | int,
+    'ignore_tls': m.ignore_tls | default(false) | bool,
+    'max_redirects': 0,
+    'accepted_statuscodes': ['200-299'],
+    'notification_name_list': [notification_id],
+  }
+}) -%}
+{%- endfor -%}
+{%- if uptime_kuma_nfs_probe_enabled | bool -%}
+{%- set _ = entities.update({
+  uptime_kuma_nfs_probe_monitor_id: {
+    'type': 'push',
+    'name': uptime_kuma_nfs_probe_monitor_name,
+    'description': description ~ ' Fed by kuma-nfs-probe.timer on this VM: a real NFS read with a hard time bound. No push for ' ~ uptime_kuma_nfs_probe_heartbeat ~ 's also counts as a failure.',
+    'push_token': uptime_kuma_nfs_push_token,
+    'interval': uptime_kuma_nfs_probe_heartbeat | int,
+    'retry_interval': uptime_kuma_nfs_probe_heartbeat | int,
+    'max_retries': uptime_kuma_nfs_probe_max_retries | int,
+    'resend_interval': uptime_kuma_monitor_resend_interval | int,
+    'notification_name_list': [notification_id],
+  }
+}) -%}
+{%- endif -%}
+{{ entities | to_json }}

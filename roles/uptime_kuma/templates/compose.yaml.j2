@@ -1,0 +1,76 @@
+# Managed by Ansible (roles/uptime_kuma). Local edits are overwritten.
+# Holds no secrets: the admin password is a file secret, readable in both
+# containers through the supplementary group {{ uptime_kuma_secrets_gid }}.
+name: uptime-kuma
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  uptime-kuma:
+    image: "{{ uptime_kuma_image }}"
+    container_name: uptime-kuma
+    restart: unless-stopped
+    user: "{{ uptime_kuma_uid }}:{{ uptime_kuma_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    environment:
+      # Skip Kuma 2's database-choice page; SQLite in /app/data.
+      UPTIME_KUMA_DB_TYPE: sqlite
+    # Kuma never reads this itself; roles/uptime_kuma's bootstrap script does,
+    # inside this container, to create and verify the admin account.
+    secrets:
+      - kuma_admin_password
+    ports:
+      # 127.0.0.1 until the admin account exists, then the LAN; see tasks/kuma.yml.
+      - "{{ uptime_kuma_bind_address }}:{{ uptime_kuma_port }}:3001"
+    volumes:
+      - "{{ uptime_kuma_data_dir }}:/app/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 512
+    logging: *logging
+
+  autokuma:
+    image: "{{ uptime_kuma_autokuma_image }}"
+    container_name: autokuma
+    restart: unless-stopped
+    user: "{{ uptime_kuma_autokuma_uid }}:{{ uptime_kuma_autokuma_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    depends_on:
+      - uptime-kuma
+    environment:
+      AUTOKUMA__KUMA__URL: http://uptime-kuma:3001
+      AUTOKUMA__KUMA__USERNAME: "{{ uptime_kuma_admin_username }}"
+      AUTOKUMA__KUMA__PASSWORD: "@/run/secrets/kuma_admin_password"
+      AUTOKUMA__STATIC_MONITORS: /monitors
+      AUTOKUMA__DATA_PATH: /data
+      AUTOKUMA__SYNC_INTERVAL: "{{ uptime_kuma_autokuma_sync_interval }}"
+      AUTOKUMA__ON_DELETE: delete
+      AUTOKUMA__FILES__ENABLED: "true"
+      # No Docker socket and no Kubernetes: monitors come from files only.
+      AUTOKUMA__DOCKER__ENABLED: "false"
+      AUTOKUMA__KUBERNETES__ENABLED: "false"
+    secrets:
+      - kuma_admin_password
+    volumes:
+      - "{{ uptime_kuma_monitors_dir }}:/monitors:ro"
+      - "{{ uptime_kuma_autokuma_data_dir }}:/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 128
+    logging: *logging
+
+secrets:
+  kuma_admin_password:
+    file: "{{ uptime_kuma_secrets_dir }}/admin_password"

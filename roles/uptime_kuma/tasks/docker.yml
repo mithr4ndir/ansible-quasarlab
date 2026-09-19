@@ -1,0 +1,131 @@
+---
+# Docker CE with the compose v2 plugin, from Docker's apt repo.
+#
+# The labctl run that first provisioned this VM used roles/k8s/docker, which
+# installs Debian's docker.io. On Debian 12 that is 20.10.24 with no compose
+# plugin, so its final `docker compose up -d` failed with "docker: 'compose'
+# is not a docker command" and Kuma never started. The last task here proves
+# `docker compose` works before anything relies on it.
+#
+# Signing key: pinned by full fingerprint and converged by the same helper
+# roles/cmd_center uses for HashiCorp (apt_pinned_key.py), so a rotated or
+# swapped key fails the play instead of being trusted.
+
+- name: Install Docker apt prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# docker-ce and containerd.io declare conflicts with these. On vm117 only
+# docker.io and containerd were ever installed, and no container, image or
+# volume existed (checked 2026-09-19), so nothing is lost. Removal keeps
+# /var/lib/docker.
+- name: Remove Debian's Docker packages that conflict with Docker CE
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-doc
+      - docker-compose
+      - podman-docker
+      - containerd
+      - runc
+    state: absent
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: "{{ uptime_kuma_docker_apt_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Check the Docker apt keyring holds exactly the pinned signing key
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/../cmd_center/files/apt_pinned_key.py check
+      --keyring {{ uptime_kuma_docker_apt_keyring | quote }}
+      --fingerprint {{ uptime_kuma_docker_apt_key_fingerprint | quote }}
+    executable: python3
+  register: uptime_kuma_docker_key_check
+  changed_when: false
+  check_mode: false
+  failed_when: uptime_kuma_docker_key_check.rc not in [0, 1]
+  # Under --check on a fresh host gpg may not be installed yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Replace a missing or stale Docker apt keyring
+  when: uptime_kuma_docker_key_check.rc == 1
+  block:
+    - name: Create private scratch directory for the Docker key download
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: docker-apt-key-
+      register: uptime_kuma_docker_key_tmp
+
+    - name: Download the Docker apt signing key
+      ansible.builtin.get_url:
+        url: "{{ uptime_kuma_docker_apt_key_url }}"
+        dest: "{{ uptime_kuma_docker_key_tmp.path }}/docker.asc"
+        mode: '0600'
+        force: true
+
+    - name: Install only the pinned Docker key into the keyring
+      ansible.builtin.script:
+        cmd: >-
+          {{ role_path }}/../cmd_center/files/apt_pinned_key.py install
+          --source {{ (uptime_kuma_docker_key_tmp.path ~ '/docker.asc') | quote }}
+          --keyring {{ uptime_kuma_docker_apt_keyring | quote }}
+          --fingerprint {{ uptime_kuma_docker_apt_key_fingerprint | quote }}
+        executable: python3
+      changed_when: true
+
+  always:
+    - name: Remove Docker key scratch directory
+      ansible.builtin.file:
+        path: "{{ uptime_kuma_docker_key_tmp.path }}"
+        state: absent
+      when: uptime_kuma_docker_key_tmp.path is defined
+
+- name: Write the Docker apt source definition
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (roles/uptime_kuma/tasks/docker.yml). Local edits are overwritten.
+      deb [arch={{ uptime_kuma_docker_arch_map[ansible_facts['architecture']] }} signed-by={{ uptime_kuma_docker_apt_keyring }}] {{ uptime_kuma_docker_apt_repo_url }} {{ ansible_facts['distribution_release'] }} stable
+
+- name: Install Docker CE and the compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Prove `docker compose` works before relying on it
+  ansible.builtin.command: docker compose version --short
+  register: uptime_kuma_compose_version
+  changed_when: false
+  check_mode: false
+  # Compose v2 or later: Docker's repo ships v5 as of 2026-09. community.docker's
+  # docker_compose_v2 needs at least 2.18.
+  failed_when: >-
+    uptime_kuma_compose_version.rc != 0
+    or not (uptime_kuma_compose_version.stdout | trim is match('^v?([2-9]|[1-9][0-9]+)\.'))
+  # Under --check the plugin is only simulated as installed.
+  ignore_errors: "{{ ansible_check_mode }}"

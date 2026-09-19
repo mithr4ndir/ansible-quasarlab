@@ -1,0 +1,124 @@
+---
+# Start Kuma and AutoKuma, create the admin account, then open the UI to the
+# LAN.
+#
+# Kuma's first-run /setup page makes the FIRST visitor admin. So until the
+# admin exists (marker file in Kuma's own data dir) the port is published on
+# 127.0.0.1 only. The marker lives in the data dir so that wiping the data
+# also puts Kuma back behind loopback until the next bootstrap.
+#
+# Nothing here trusts `docker compose up`: the play fails unless Kuma answers
+# on the port, first from the host and then from the controller over the LAN.
+
+- name: Create the Kuma directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ uptime_kuma_dir }}", owner: 0, mode: '0755' }
+    - { path: "{{ uptime_kuma_data_dir }}", owner: "{{ uptime_kuma_uid }}", mode: '0700' }
+    - { path: "{{ uptime_kuma_autokuma_data_dir }}", owner: "{{ uptime_kuma_autokuma_uid }}", mode: '0700' }
+  loop_control:
+    label: "{{ item.path }}"
+
+# The labctl run wrote this; it is replaced by compose.yaml below.
+- name: Remove the old labctl compose file
+  ansible.builtin.file:
+    path: "{{ uptime_kuma_dir }}/docker-compose.yml"
+    state: absent
+
+- name: Check whether the Kuma admin account was already bootstrapped
+  ansible.builtin.stat:
+    path: "{{ uptime_kuma_data_dir }}/.ansible-admin-bootstrapped"
+  register: uptime_kuma_bootstrap_marker
+
+- name: Keep Kuma on loopback until the admin account exists
+  ansible.builtin.set_fact:
+    uptime_kuma_bind_address: "{{ uptime_kuma_listen_address if uptime_kuma_bootstrap_marker.stat.exists else '127.0.0.1' }}"
+
+- name: Start Kuma and AutoKuma
+  ansible.builtin.include_tasks: compose_up.yml
+
+- name: Copy the admin bootstrap script
+  ansible.builtin.copy:
+    src: kuma-bootstrap-admin.js
+    dest: "{{ uptime_kuma_dir }}/kuma-bootstrap-admin.js"
+    owner: root
+    group: root
+    mode: '0644'
+
+# Runs every time: it creates the admin only when Kuma has none, and then
+# always proves our password logs in. A login failure means someone else
+# owns this Kuma (or the password file changed): stop.
+# SECURITY: the password never passes through Ansible here. The script reads
+# the file secret inside the container; see its header. Its one JSON output
+# line holds no secret, so this task is not no_log and a failure shows why.
+- name: Create the Kuma admin account if missing and prove the login works
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e KUMA_ADMIN_USERNAME={{ uptime_kuma_admin_username | quote }}
+      uptime-kuma node - < {{ (uptime_kuma_dir ~ '/kuma-bootstrap-admin.js') | quote }}
+  register: uptime_kuma_bootstrap
+  changed_when: "'\"created\":true' in uptime_kuma_bootstrap.stdout"
+  failed_when: >-
+    uptime_kuma_bootstrap.rc != 0
+    or '"ok":true' not in uptime_kuma_bootstrap.stdout
+  when: not ansible_check_mode
+
+- name: Record that the admin account exists
+  ansible.builtin.copy:
+    dest: "{{ uptime_kuma_data_dir }}/.ansible-admin-bootstrapped"
+    content: "Admin account created and login verified by roles/uptime_kuma.\n"
+    owner: "{{ uptime_kuma_uid }}"
+    group: "{{ uptime_kuma_uid }}"
+    mode: '0600'
+  when: not ansible_check_mode
+
+# A block's `when` is re-evaluated for every task inside it, so it must not
+# test uptime_kuma_bind_address, which the first task changes.
+- name: Decide whether Kuma still has to move from loopback to the LAN
+  ansible.builtin.set_fact:
+    uptime_kuma_needs_lan_rebind: "{{ uptime_kuma_bind_address != uptime_kuma_listen_address }}"
+
+- name: Open the Kuma UI to the LAN now that the admin account exists
+  when:
+    - uptime_kuma_needs_lan_rebind | bool
+    - not ansible_check_mode
+  block:
+    - name: Publish Kuma on the LAN address
+      ansible.builtin.set_fact:
+        uptime_kuma_bind_address: "{{ uptime_kuma_listen_address }}"
+
+    - name: Recreate Kuma with the LAN binding
+      ansible.builtin.include_tasks: compose_up.yml
+
+# AutoKuma 2.1.0-rc.2 can keep a dead session after Kuma restarts and then
+# never sync again (AutoKuma#191; the fix, #196, is not released). It also
+# started before the admin account existed on a first deploy. A restart
+# after any Kuma (re)creation or bootstrap gives it a clean login.
+- name: Restart AutoKuma so it logs in to the current Kuma
+  community.docker.docker_compose_v2:
+    project_src: "{{ uptime_kuma_dir }}"
+    files:
+      - compose.yaml
+    services:
+      - autokuma
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - (uptime_kuma_stack_changed | default(false) | bool) or uptime_kuma_bootstrap is changed
+
+- name: Prove Kuma answers from the controller over the LAN
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host }}:{{ uptime_kuma_port }}/"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: uptime_kuma_lan_check
+  retries: 12
+  delay: 5
+  until: uptime_kuma_lan_check.status == 200
+  when: not ansible_check_mode

@@ -1,0 +1,66 @@
+---
+# Monitors and the Discord notification as AutoKuma static entity files, one
+# JSON file per entity; the file name is the AutoKuma id. AutoKuma creates,
+# updates and (with AUTOKUMA__ON_DELETE=delete) deletes Kuma entities to
+# match. Losing Kuma's SQLite database therefore loses history, not config:
+# the next sync recreates everything here.
+#
+# The files are the only place the webhook URL and the push token sit on
+# disk outside Kuma's own database, so the directory and files belong to the
+# AutoKuma uid with no access for anyone else, and every task that renders a
+# secret is no_log.
+
+- name: Create the AutoKuma monitor definitions directory
+  ansible.builtin.file:
+    path: "{{ uptime_kuma_monitors_dir }}"
+    state: directory
+    owner: "{{ uptime_kuma_autokuma_uid }}"
+    group: "{{ uptime_kuma_autokuma_uid }}"
+    mode: '0500'
+
+- name: Build the managed Kuma entities
+  ansible.builtin.set_fact:
+    uptime_kuma_entities: "{{ lookup('ansible.builtin.template', 'entities.json.j2') | from_json }}"
+  no_log: true
+
+- name: Write the AutoKuma entity files
+  ansible.builtin.copy:
+    dest: "{{ uptime_kuma_monitors_dir }}/{{ item.key }}.json"
+    content: "{{ item.value | to_nice_json }}\n"
+    owner: "{{ uptime_kuma_autokuma_uid }}"
+    group: "{{ uptime_kuma_autokuma_uid }}"
+    mode: '0400'
+  loop: "{{ uptime_kuma_entities | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  # The notification carries the webhook URL and the push monitor the token.
+  # SECURITY: no_log for the whole loop rather than per item: a templated
+  # per-item no_log could not be verified here without running a playbook,
+  # and a wrong guess would put the webhook in the wrapper's log file.
+  no_log: true
+  register: uptime_kuma_entity_writes
+
+- name: Show which entity files changed
+  ansible.builtin.debug:
+    msg: "{{ uptime_kuma_entity_writes.results | selectattr('changed') | map(attribute='item.key') | list }}"
+  when: uptime_kuma_entity_writes.changed
+
+- name: Find entity files this role no longer defines
+  ansible.builtin.find:
+    paths: "{{ uptime_kuma_monitors_dir }}"
+    patterns:
+      - '*.json'
+      - '*.toml'
+    hidden: true
+  register: uptime_kuma_entity_files
+
+# Deleting the file is how a monitor is removed: AutoKuma deletes the Kuma
+# entity after its grace period (60s).
+- name: Remove entity files this role no longer defines
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ uptime_kuma_entity_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename | splitext | first) not in uptime_kuma_entities

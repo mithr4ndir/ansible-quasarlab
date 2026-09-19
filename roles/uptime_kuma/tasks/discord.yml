@@ -1,0 +1,47 @@
+---
+# Check the webhook before handing it to Kuma: its shape, and which Discord
+# channel it actually posts to. GET on a webhook URL needs no auth, posts
+# nothing, and returns the webhook's name and channel id. Runs on the
+# controller, once.
+
+- name: Check the Discord webhook URL is a Discord webhook
+  ansible.builtin.assert:
+    that:
+      - uptime_kuma_discord_webhook_url is match('^https://(discord\\.com|discordapp\\.com)/api/webhooks/[0-9]{15,25}/[A-Za-z0-9_-]{20,100}$')
+    fail_msg: >-
+      uptime_kuma_discord_webhook_url is empty or not a Discord webhook URL.
+      Run through scripts/run-uptime-kuma.sh, which resolves it from the
+      1Password cache.
+    quiet: true
+  no_log: true
+
+- name: Ask Discord which channel the webhook posts to
+  ansible.builtin.uri:
+    url: "{{ uptime_kuma_discord_webhook_url }}"
+    method: GET
+    return_content: true
+    timeout: 15
+  register: uptime_kuma_webhook_info
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  # A read-only GET, so it runs under --check too.
+  check_mode: false
+
+- name: Show the webhook's name and channel
+  ansible.builtin.debug:
+    msg: >-
+      Kuma alerts will post as webhook "{{ uptime_kuma_webhook_info.json.name | default('?') }}"
+      to channel {{ uptime_kuma_webhook_info.json.channel_id | default('?') }}.
+  run_once: true
+
+- name: Require the expected Discord channel
+  ansible.builtin.assert:
+    that:
+      - (uptime_kuma_webhook_info.json.channel_id | default('') | string) == (uptime_kuma_discord_expected_channel_id | string)
+    fail_msg: >-
+      The webhook posts to channel {{ uptime_kuma_webhook_info.json.channel_id | default('?') }},
+      not {{ uptime_kuma_discord_expected_channel_id }}. Check the 1Password item.
+  run_once: true
+  when: uptime_kuma_discord_expected_channel_id | string | length > 0

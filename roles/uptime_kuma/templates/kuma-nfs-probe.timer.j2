@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/uptime_kuma). Local edits are overwritten.
+[Unit]
+Description=Run the Uptime Kuma NFS read probe every {{ uptime_kuma_nfs_probe_every }}s
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec={{ uptime_kuma_nfs_probe_every }}s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,35 @@
+---
+# Uptime Kuma on vm117: the monitor that watches the cluster from outside it.
+# See roles/uptime_kuma/README.md.
+#
+# Run it through scripts/run-uptime-kuma.sh. The Discord webhook comes from
+# the UPTIME_KUMA_DISCORD_WEBHOOK_URL env var, which the wrapper fills from
+# the shared 1Password cache (scripts/lib/op-secret-cache.sh), served stale
+# when 1Password is down or kill-switched. Do not fill it from a live
+# 1Password read by hand: that bypasses the cache and the kill switch.
+#
+# The host is in inventory.static.ini, so the wrapper runs with that
+# inventory alone and never needs the Proxmox API.
+- name: Deploy Uptime Kuma, its monitors and the NFS read probe
+  hosts: uptime_kuma
+  become: true
+  pre_tasks:
+    - name: Assert UPTIME_KUMA_DISCORD_WEBHOOK_URL env is populated
+      delegate_to: localhost
+      become: false
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'UPTIME_KUMA_DISCORD_WEBHOOK_URL') | length > 0
+        fail_msg: >-
+          UPTIME_KUMA_DISCORD_WEBHOOK_URL is empty or unset. Run via
+          scripts/run-uptime-kuma.sh, which resolves it from the shared
+          1Password cache.
+        quiet: true
+
+    - name: Resolve the Discord webhook from env
+      ansible.builtin.set_fact:
+        uptime_kuma_discord_webhook_url: "{{ lookup('env', 'UPTIME_KUMA_DISCORD_WEBHOOK_URL') }}"
+      no_log: true
+  roles:
+    - uptime_kuma

@@ -67,11 +67,12 @@ Proxmox hosts additionally get:
 | npm | 192.168.1.150 | Nginx Proxy Manager (reverse proxy) |
 | timescaledb | 192.168.1.122 | TimescaleDB (Docker, port 5432) |
 | TrueNAS | 192.168.1.15 | NAS (NFS, iSCSI), corosync qdevice |
+| uptime-kuma | 192.168.1.129 | Uptime Kuma, the monitor outside the cluster: monitors as code via AutoKuma, NFS read probe, alerts straight to Discord. Static inventory; see `roles/uptime_kuma/README.md` |
 
 ## Inventory
 
 - **Dynamic:** `inventory.proxmox.yml`, auto-discovers VMs via Proxmox API (tag-based grouping)
-- **Static:** `inventory.static.ini`, bare-metal/non-VM hosts (PVE nodes, TrueNAS)
+- **Static:** `inventory.static.ini`, bare-metal/non-VM hosts (PVE nodes, TrueNAS), plus the untagged `uptime-kuma` VM, kept static so the out-of-cluster monitor can be deployed without the Proxmox API
 - Proxmox API token sourced from `PROXMOX_TOKEN_SECRET` env var, decrypted from ansible-vault by `scripts/lib/proxmox-vault.sh` at wrapper start. See `docs/vault.md` for the rotation runbook and disaster-recovery bootstrap.
 
 ## Playbooks
@@ -94,6 +95,14 @@ a log, like the timers:
 ```bash
 scripts/run-cmd-center.sh --check                 # defaults to --limit command-center1
 scripts/run-cmd-center.sh --limit k8cluster1      # override the limit
+```
+
+`playbooks/uptime-kuma.yml` (vm117) has its own wrapper, which resolves the Discord #alerts
+webhook from the 1Password cache and runs with `inventory.static.ini` alone:
+
+```bash
+scripts/run-uptime-kuma.sh --check
+scripts/run-uptime-kuma.sh
 ```
 
 `playbooks/ups-shutdown.yml` (NUT upsmon on the Proxmox hosts) has its own wrapper, which

@@ -1,0 +1,25 @@
+---
+# Uptime Kuma, monitors as code, and the NFS read probe. See README.md.
+
+- name: Check the Discord webhook before anything else
+  ansible.builtin.import_tasks: discord.yml
+
+- name: Install Docker CE with the compose plugin
+  ansible.builtin.import_tasks: docker.yml
+
+- name: Generate the host-local secrets
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: Write the monitor and notification definitions
+  ansible.builtin.import_tasks: monitors.yml
+  when: not ansible_check_mode
+
+- name: Start Kuma and AutoKuma and bootstrap the admin account
+  ansible.builtin.import_tasks: kuma.yml
+
+- name: Install the NFS read probe
+  ansible.builtin.import_tasks: nfs_probe.yml
+  when: uptime_kuma_nfs_probe_enabled | bool
+
+- name: Verify monitors, notification wiring and one live probe
+  ansible.builtin.import_tasks: verify.yml
