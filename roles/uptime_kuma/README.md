@@ -52,18 +52,30 @@ unofficial socket.io API, so a Kuma upgrade can break it. That only stops
 drift correction, never monitoring, and the deploy's verify step fails
 loudly if it happens.
 
-Known 2.0.0 limits, seen in the end-to-end test: a newly created monitor can
-send its first DOWN notification twice (AutoKuma#166), the push monitor's
-resend interval is not applied (#152, so the NFS monitor alerts once per
-outage rather than hourly), and 2.0.0 cannot read a password from a file
-reference in the environment, so it gets a mounted config file.
+Stable 2.0.0 against release candidate 2.1.0-rc.2, same role, same eight
+monitors, same Kuma 2.5.5 (2026-09-19):
+
+| | 2.0.0 (pinned) | 2.1.0-rc.2 |
+|---|---|---|
+| Monitors created once each, wired to Discord | yes | yes |
+| Duplicate monitors (AutoKuma#177) | not seen | not seen |
+| First DOWN alert of a new monitor | sent twice (#166) | once |
+| Kuma log | 2 `SQLITE_CONSTRAINT: UNIQUE` on stat_daily | clean |
+| After a Kuma-only restart | never syncs again, "You are not logged in" x10 in 90s (#157) | new monitor file picked up in 10s |
+| Push monitor resend interval | 0 in Kuma's log, i.e. ignored (#152) | not observed (fixed per its changelog) |
+
+The 2.0.0 restart failure does not stop monitoring, only drift correction,
+and the role restarts AutoKuma whenever a deploy recreates Kuma. An
+unplanned Kuma restart (crash, OOM) leaves AutoKuma stale until the next
+deploy. Moving to rc.2 is a one-line change of `uptime_kuma_autokuma_image`.
 
 ### Tested end to end (2026-09-19)
 
-On cmd-center1, in throwaway containers from the pinned images, bound to
-127.0.0.1, with Discord and the monitored endpoints replaced by a local
-capture listener. The compose file, ownership and modes came from this
-role's templates and tasks. Everything was removed afterwards.
+On cmd-center1, in throwaway containers from the pinned images, with this
+role's compose file (bridge network, Kuma published on 127.0.0.1 only) and
+its ownership and modes. Discord and the monitored endpoints were replaced by
+a capture service on the compose network. Everything was removed
+afterwards.
 
 - Kuma started on SQLite with no setup page; `kuma-admin.js` created the
   admin, a rerun changed nothing, and a wrong password was refused.
