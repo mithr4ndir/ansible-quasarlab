@@ -93,6 +93,24 @@ configured from a mutable tree.
 | `ansible_run_repo_sync_success` | 0 when a run refused to start because it could not pin a checkout |
 | `ansible_security_run_repo_sync_success` | same, for the security timer |
 | `ansible_playbook_changed_tasks` | drives `AnsiblePlaybookMadeChanges` (info) |
+| `ansible_playbook_last_run_info` | ARA report URL of the last run of each playbook |
+
+`ansible_playbook_last_run_info` is what puts a clickable ARA link in the
+Discord alert. Each wrapper run tags its playbooks with one ARA label,
+`run:<wrapper>:<uuid>`, through the callback's `ARA_DEFAULT_LABELS`, then asks
+the ARA API which playbook ids carry that label
+(`scripts/lib/ara-run-links.sh`). Correlating on the label rather than "the
+newest run of this playbook" is what keeps the link right when a manual run
+overlaps a timer run. The lookup is time-bounded and fails open: if ARA is down
+the series is simply absent that run, every other metric is written as usual,
+and the alert carries no link rather than a generic one. The ARA address lives
+in one place, `ARA_BASE_URL` in `scripts/lib/ara-run-links.sh`.
+
+Failed runs are linked too, and they are the ones worth opening: the lookup
+runs after the playbook loop, which never exits early on a non-zero
+`ansible-playbook`. The one gap is a run that dies before its first play
+starts (a syntax or inventory error), because the ARA callback attaches labels
+at play start; such a run has an ARA record but no label, so it gets no link.
 
 `AnsibleRepoSyncFailed` is **critical**: while it fires, no configuration is
 being enforced anywhere. See the k8s-argocd `ansible-automation` rule group.

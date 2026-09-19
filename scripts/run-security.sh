@@ -8,9 +8,10 @@ set -uo pipefail
 # Automation checkout, NOT the operator working tree. Force-synced to
 # origin/main below so scheduled runs only ever apply merged code.
 REPO_DIR="${ANSIBLE_AUTOMATION_REPO_DIR:-/var/lib/ansible-quasarlab/repo}"
-LOG_DIR="/var/log/ansible-quasarlab"
+LOG_DIR="${ANSIBLE_LOG_DIR:-/var/log/ansible-quasarlab}"
 LOGFILE="${LOG_DIR}/security-$(date +%Y%m%d-%H%M%S).log"
-TEXTFILE_DIR="/var/lib/node_exporter/textfiles"
+TEXTFILE_DIR="${ANSIBLE_TEXTFILE_DIR:-/var/lib/node_exporter/textfiles}"
+ARA_ENV_FILE="${ARA_ENV_FILE:-/etc/profile.d/ara-ansible-env.sh}"
 PROM_FILE="${TEXTFILE_DIR}/ansible_security.prom"
 
 mkdir -p "$LOG_DIR" "$TEXTFILE_DIR"
@@ -43,6 +44,8 @@ source "${REPO_DIR}/scripts/lib/op-killswitch.sh"
 source "${REPO_DIR}/scripts/lib/op-secret-cache.sh"
 # shellcheck source=lib/proxmox-vault.sh
 source "${REPO_DIR}/scripts/lib/proxmox-vault.sh"
+# shellcheck source=lib/ara-run-links.sh
+source "${REPO_DIR}/scripts/lib/ara-run-links.sh"
 # If 1P is currently rate-limited (known via the shared lock file),
 # skip this run entirely so we do not keep the rolling window pinned.
 op_killswitch_check_or_exit
@@ -71,9 +74,14 @@ WAZUH_INDEXER_ADMIN_PASSWORD     wazuh_indexer_admin_password        op://Infras
 SECRETS
 
 # Source ARA callback plugin environment
-if [[ -f /etc/profile.d/ara-ansible-env.sh ]]; then
-    source /etc/profile.d/ara-ansible-env.sh
+if [[ -f "$ARA_ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$ARA_ENV_FILE"
 fi
+
+# One ARA label for this run, so the alerts link to the report of the run that
+# fired them. See lib/ara-run-links.sh and run-proxmox.sh.
+ara_tag_run security
 
 # Resolve inventory with fallback to cache
 source "${REPO_DIR}/scripts/resolve-inventory.sh"
@@ -130,6 +138,10 @@ echo "=== Syncing Prometheus targets ===" >> "$LOGFILE"
 end_time=$(date +%s)
 duration=$(( end_time - start_time ))
 
+# Looked up before the metrics block so a slow or dead ARA cannot interrupt the
+# write. Empty on any failure.
+ara_links=$(ara_run_link_metrics "${!playbook_results[@]}" 2>> "$LOGFILE")
+
 if [[ $exit_code -eq 0 ]]; then
     success=1
 else
@@ -176,6 +188,10 @@ for playbook in "${!playbook_total_changed[@]}"; do
     total=${playbook_total_changed[$playbook]}
     echo "ansible_playbook_changed_tasks{playbook=\"${playbook}\",changed_hosts=\"${hosts}\"} ${total}"
 done
+
+# ARA links, in the same atomic write as everything above. Absent when the
+# lookup failed; the alerts then link to the ARA index instead.
+[[ -n "$ara_links" ]] && printf '%s\n' "$ara_links"
 } > "${PROM_FILE}.tmp"
 
 mv "${PROM_FILE}.tmp" "$PROM_FILE"
