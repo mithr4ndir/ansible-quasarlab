@@ -58,14 +58,22 @@
   # Under --check on a fresh host gpg may not be installed yet.
   ignore_errors: "{{ ansible_check_mode }}"
 
+# `| default(1)`: if the check above could not run at all (no gpg yet under
+# --check, for instance) it leaves no rc, and the keyring is then treated as
+# needing replacement rather than blowing up on an undefined attribute.
 - name: Replace a missing or stale Docker apt keyring
-  when: uptime_kuma_docker_key_check.rc == 1
+  when: uptime_kuma_docker_key_check.rc | default(1) == 1
   block:
+    # check_mode: false, because tempfile has no check mode: it would be
+    # skipped and every task below would then reference an undefined .path.
+    # Creating (and removing, below) a private empty directory is not a
+    # change worth suppressing under --check.
     - name: Create private scratch directory for the Docker key download
       ansible.builtin.tempfile:
         state: directory
         prefix: docker-apt-key-
       register: uptime_kuma_docker_key_tmp
+      check_mode: false
 
     - name: Download the Docker apt signing key
       ansible.builtin.get_url:
@@ -85,11 +93,14 @@
       changed_when: true
 
   always:
+    # Also check_mode: false, so the directory created above is really
+    # removed again during a --check run.
     - name: Remove Docker key scratch directory
       ansible.builtin.file:
         path: "{{ uptime_kuma_docker_key_tmp.path }}"
         state: absent
       when: uptime_kuma_docker_key_tmp.path is defined
+      check_mode: false
 
 - name: Write the Docker apt source definition
   ansible.builtin.copy:
