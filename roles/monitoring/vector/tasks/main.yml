@@ -5,11 +5,25 @@
     state: absent
   when: ansible_local.vector_keyring_valid is not defined
 
+# A minimal cloud image has neither. Without gpg the key task fails outright
+# (seen on uptime-kuma, 2026-09-19); without pipefail a failed download still
+# writes an empty keyring, which is what the cleanup task above exists for.
+- name: Install prerequisites for the Vector repository key
+  ansible.builtin.apt:
+    name:
+      - gnupg
+      - curl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
 - name: Install Datadog GPG keys for Vector
   ansible.builtin.shell:
     cmd: |
+      set -euo pipefail
       curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public | gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
       curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_F14F620E.public | gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring-f14f620e.gpg
+    executable: /bin/bash
     creates: /usr/share/keyrings/datadog-archive-keyring.gpg
 
 - name: Add Vector repository
