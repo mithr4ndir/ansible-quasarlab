@@ -38,3 +38,8 @@
   ansible.builtin.systemd:
     name: lab-changelog.timer
     state: restarted
+
+- name: Restart agent-cmd-audit timer
+  ansible.builtin.systemd:
+    name: agent-cmd-audit.timer
+    state: restarted

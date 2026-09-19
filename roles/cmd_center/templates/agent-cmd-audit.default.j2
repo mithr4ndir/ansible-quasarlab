@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Settings for /usr/local/bin/agent-cmd-audit (roles/cmd_center/tasks/cmd_audit.yml).
+# Read by the flush timer, the canary timer and the Claude Code PostToolUse
+# hook. Only AGENT_CMD_AUDIT_* keys are honoured. No secrets belong here: the
+# webhook URL is resolved at run time through the 1Password secret cache.
+#
+# Set AGENT_CMD_AUDIT_ENABLED=0 to stop recording fleet-wide. To stop it right
+# now without a deploy, touch the OFF file in the state directory; the recorder
+# checks it on every call.
+AGENT_CMD_AUDIT_ENABLED={{ '1' if cmd_center_cmd_audit_recording_enabled | bool else '0' }}
+AGENT_CMD_AUDIT_OP_REFERENCE={{ cmd_center_cmd_audit_op_reference }}
+AGENT_CMD_AUDIT_OP_LIB_DIR={{ ansible_automation_repo_path }}/scripts/lib
+AGENT_CMD_AUDIT_OP_TOKEN_FILE=/home/{{ ansible_user }}/.config/op/service-account-token
+AGENT_CMD_AUDIT_PROM_FILE={{ cmd_center_cmd_audit_prom_file }}
+AGENT_CMD_AUDIT_HOST={{ inventory_hostname }}
+AGENT_CMD_AUDIT_HERDR_BIN={{ cmd_center_herdr_bin_path if cmd_center_herdr_enabled | bool else '' }}
+# Pinned so the hook (interactive environment, which may set XDG_STATE_HOME)
+# and the timers share one spool and one lock, instead of each writing its own.
+AGENT_CMD_AUDIT_STATE_DIR=/home/{{ ansible_user }}/.local/state/agent-cmd-audit

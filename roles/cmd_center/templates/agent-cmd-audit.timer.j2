@@ -1,0 +1,16 @@
+[Unit]
+Description=Flush the AI agent command audit spool
+
+[Timer]
+# OnUnitActiveSec measures from the last deactivation, so runs never overlap.
+# OnBootSec is already in the past on a running host, which primes the metric
+# file immediately on first install instead of one interval later.
+OnBootSec=1min
+OnUnitActiveSec={{ cmd_center_cmd_audit_interval }}
+AccuracySec=1s
+# Deliberately NOT Persistent: a catch-up burst after downtime would post a
+# stale batch all at once, and the spool is drained on the next tick anyway.
+Unit=agent-cmd-audit.service
+
+[Install]
+WantedBy=timers.target

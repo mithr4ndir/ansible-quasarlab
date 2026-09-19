@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly end-to-end proof that the command audit feed still works
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ cmd_center_cmd_audit_canary_interval }}
+AccuracySec=1min
+# Persistent would fire a backlog of canaries after downtime, which proves
+# nothing extra: one canary per interval is the whole signal.
+Unit=agent-cmd-audit-canary.service
+
+[Install]
+WantedBy=timers.target

@@ -9,6 +9,9 @@ unattended_upgrades_blacklist:
 node_exporter_systemd_enabled: true
 node_exporter_systemd_units:
   - docker.service
+  # The command audit flusher. An allowlist makes any rule on an unlisted unit
+  # vacuous, so this entry is what lets AgentCmdAuditStuck mean anything.
+  - agent-cmd-audit.service
   # node_exporter's systemd collector only sees the SYSTEM manager, so the
   # herdr.service user unit can never appear in node_systemd_unit_state and
   # listing it here would make any rule on it vacuous. user@1000.service is
@@ -23,3 +26,19 @@ cmd_center_herdr_enabled: true
 # Lab changelog to Discord (roles/cmd_center/tasks/changelog.yml).
 # Enabled on this host only.
 cmd_center_changelog_enabled: true
+
+# AI agent command audit posted to Discord (roles/cmd_center/tasks/cmd_audit.yml).
+# Enabled on this host only: it is the only host that runs coding agents.
+#
+# STILL false because the 1Password item does not exist yet. Before flipping
+# this to true:
+#   1. Create the webhook item in the Infrastructure vault, then put its id in
+#      cmd_center_cmd_audit_op_reference below.
+#   2. Seed the secret cache without spending a 1Password read:
+#        slug=discord_cmds_webhook_url.$(printf '%s' '<the op:// reference>' \
+#              | sha256sum | cut -c1-16)
+#        printf '%s' '<the webhook URL>' > /var/lib/ansible-quasarlab/secrets/$slug
+#        chmod 0600 /var/lib/ansible-quasarlab/secrets/$slug
+# Until then the flusher resolves no webhook and deliberately posts nothing.
+cmd_center_cmd_audit_enabled: false
+# cmd_center_cmd_audit_op_reference: "op://Infrastructure/<item id>/webhook_url"

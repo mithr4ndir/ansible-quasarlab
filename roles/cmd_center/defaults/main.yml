@@ -142,3 +142,36 @@ cmd_center_changelog_highlights_enabled: false
 cmd_center_changelog_claude_bin: "/home/{{ ansible_user }}/.local/bin/claude"
 cmd_center_changelog_claude_model: haiku
 cmd_center_changelog_claude_timeout: 90
+
+# AI agent command audit posted to Discord (tasks/cmd_audit.yml). Off by
+# default; enabled only for command-center1 in its host_vars.
+cmd_center_cmd_audit_enabled: false
+# Recording switch, separate from installing the units. Set false to keep the
+# flusher draining what is already spooled while new commands stop being
+# recorded. To stop recording immediately with no deploy, touch
+# ~/.local/state/agent-cmd-audit/OFF.
+cmd_center_cmd_audit_recording_enabled: true
+# 1Password reference for the Discord webhook URL, resolved only through the
+# secret cache. The default is the webhook named cmds, in the channel of the
+# same name. Never reuse another consumer's webhook item: 6pu46lg6... is the
+# #activity changelog and rmmf24ed... is the Donchian trading channel.
+#
+# The cache slug is keyed by this reference:
+#   discord_cmds_webhook_url.<first 16 hex chars of sha256(reference)>
+# so changing the reference starts a new cache entry instead of posting to the
+# previous channel. Get the slug with
+#   printf '%s' 'op://...' | sha256sum | cut -c1-16
+# Seed it without a 1Password read by writing the URL, no trailing newline, to
+# /var/lib/ansible-quasarlab/secrets/<slug> (ansible_user, mode 0600). Refresh
+# it after editing the item with scripts/op-secret-refresh.sh <slug>.
+cmd_center_cmd_audit_op_reference: "op://Infrastructure/PLACEHOLDER_SET_IN_HOST_VARS/webhook_url"
+# How often the spool is flushed. Batching is what keeps a busy agent from
+# tripping Discord's rate limit.
+cmd_center_cmd_audit_interval: 30s
+# Above the 60s a 429 backoff can legitimately reach, so a slow run delays the
+# next tick instead of being killed mid-post.
+cmd_center_cmd_audit_timeout_start_sec: 120
+# End-to-end proof of life. Liveness on the units proves only that they ran;
+# the canary proves Discord accepted a record that went through the real path.
+cmd_center_cmd_audit_canary_interval: 1h
+cmd_center_cmd_audit_prom_file: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/agent_cmd_audit.prom"

@@ -1,0 +1,33 @@
+[Unit]
+Description=Post spooled AI agent commands to Discord
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart=/usr/local/bin/agent-cmd-audit flush
+WorkingDirectory=/home/{{ ansible_user }}
+Environment=HOME=/home/{{ ansible_user }}
+# herdr (workspace labels) lives in ~/.local/bin. The service account token
+# path is in /etc/default/agent-cmd-audit, read by the script itself, and only
+# when the secret cache needs a refresh.
+Environment=PATH=/home/{{ ansible_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Type=oneshot has NO start timeout by default. Without this a hung run pins
+# the unit in `activating` and systemd never re-triggers the timer, which is
+# how apt patching silently stopped for 11 days (PR #138). Set above the 60s
+# a 429 backoff can legitimately reach.
+TimeoutStartSec={{ cmd_center_cmd_audit_timeout_start_sec }}
+Nice=10
+# The spool holds unredacted command text until it is posted. Nothing else on
+# the box needs to read it.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# The third path is OP_SECRET_CACHE_DIR: a cache refresh rewrites the entry.
+ReadWritePaths=/home/{{ ansible_user }}/.local/state/agent-cmd-audit {{ cmd_center_cmd_audit_prom_file | dirname }} {{ ansible_automation_root }}/secrets
+
+[Install]
+WantedBy=multi-user.target

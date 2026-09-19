@@ -1,0 +1,90 @@
+---
+# Agent command audit: every Bash command a Claude Code session runs on this
+# host, posted to the Discord #cmds channel. See files/agent-cmd-audit.
+#
+#   /usr/local/bin/agent-cmd-audit        the script, root-owned so the user
+#                                         it audits cannot rewrite it
+#   /etc/default/agent-cmd-audit          settings read by all entry points
+#   agent-cmd-audit.timer (system)        `flush` every 30s as ansible_user
+#   agent-cmd-audit-canary.timer          hourly end-to-end proof
+#
+# The other entry point, `agent-cmd-audit record`, is a Claude Code
+# PostToolUse and PostToolUseFailure hook registered in claude-config, not
+# here. Both sides are guarded, so either can be deployed first.
+#
+# Gated in main.yml on cmd_center_cmd_audit_enabled, which defaults to false
+# and is set true only in host_vars/command-center1.
+#
+# Depends on:
+#   - ansible_timers.yml   the automation checkout whose scripts/lib provides
+#                          the 1Password kill switch and secret cache
+#
+# The webhook URL is never templated or stored by this role. The script reads
+# it at run time through the 1Password secret cache and posts nothing when the
+# cache has no value. The slug is discord_cmds_webhook_url.<tag>, where the tag
+# is 16 hex chars of sha256 over cmd_center_cmd_audit_op_reference; see
+# defaults/main.yml for seeding and refreshing it.
+
+- name: Install agent-cmd-audit script
+  ansible.builtin.copy:
+    src: agent-cmd-audit
+    dest: /usr/local/bin/agent-cmd-audit
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - cmd_audit
+
+- name: Deploy agent-cmd-audit settings
+  ansible.builtin.template:
+    src: agent-cmd-audit.default.j2
+    dest: /etc/default/agent-cmd-audit
+    owner: root
+    group: root
+    mode: '0644'
+  tags:
+    - cmd_audit
+
+# ReadWritePaths= refuses to start a unit whose listed path does not exist, so
+# the state directory is created here rather than on first record.
+- name: Create the agent-cmd-audit state directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.local/state/agent-cmd-audit"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+  tags:
+    - cmd_audit
+
+- name: Deploy agent-cmd-audit systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - agent-cmd-audit.service
+    - agent-cmd-audit.timer
+    - agent-cmd-audit-canary.service
+    - agent-cmd-audit-canary.timer
+  notify:
+    - Reload systemd
+    - Restart agent-cmd-audit timer
+  tags:
+    - cmd_audit
+
+# daemon_reload here as well as in the handler: on the first run the timers are
+# enabled before handlers fire, and systemd would not know the new units yet.
+- name: Enable and start agent-cmd-audit timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - agent-cmd-audit.timer
+    - agent-cmd-audit-canary.timer
+  tags:
+    - cmd_audit
