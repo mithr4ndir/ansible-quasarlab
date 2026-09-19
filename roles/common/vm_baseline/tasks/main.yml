@@ -79,3 +79,10 @@
   ansible.builtin.command: "journalctl --vacuum-size={{ vm_baseline_journald_max_use }}"
   register: vm_baseline_journal_vacuum
   changed_when: vm_baseline_journal_vacuum.stderr is search('freed (?!0B)')
+
+- name: Authorize the operator SSH keys for the ansible user
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user }}"
+    key: '{{ vm_baseline_authorized_keys | join("\n") }}'
+    state: present
+    exclusive: "{{ vm_baseline_authorized_keys_exclusive }}"
