@@ -19,9 +19,15 @@
 # Usage:
 #   scripts/run-uptime-kuma.sh [ansible-playbook args...]
 #
-#   Everything is passed through to ansible-playbook, e.g. --check or --diff.
-#   -i/--inventory and -l/--limit are refused: the play has one host, and the
-#   inventory is fixed.
+#   Only these ansible-playbook options are passed through, spelled exactly:
+#     -C/--check  -D/--diff  --step  --syntax-check  --list-tasks  --list-tags
+#     -v ... -vvvvv/--verbose
+#     -t/--tags X  --skip-tags X  --start-at-task X  -e/--extra-vars X
+#   (value options also as --opt=X). Anything else is refused with exit 2:
+#   the inventory is always inventory.static.ini, there is no --limit, and
+#   no second playbook. An allowlist, not a denylist, because ansible-playbook
+#   accepts abbreviations (--lim, --inventory-f) and clustered short flags
+#   (-vi x.yml, -Dlh), which a denylist keeps missing.
 #
 # Webhook resolution, first match wins:
 #   1. UPTIME_KUMA_DISCORD_WEBHOOK_URL already set: used as is. No op call,
@@ -63,23 +69,36 @@ usage() {
 }
 
 # --- Arguments ---------------------------------------------------------------
+# SECURITY: allowlist. Every argument must be one of the exact spellings
+# below; a value option consumes the next argument, which must not itself
+# look like an option.
+refuse() {
+    echo "ERROR: ${1//[^A-Za-z0-9_.=:@\/-]/?} is not allowed. $2" >&2
+    echo "       Allowed: --check --diff --step --syntax-check --list-tasks --list-tags -v... --tags --skip-tags --start-at-task --extra-vars (see --help)." >&2
+    exit 2
+}
 passthrough=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -i|--inventory|--inventory-file|-i*|--inventory=*|--inventory-file=*)
-            echo "ERROR: $1 is not allowed; the inventory is always ${INVENTORY}." >&2
-            exit 2
-            ;;
-        -l|--limit|-l*|--limit=*)
-            echo "ERROR: $1 is not allowed; the play targets the uptime_kuma group only." >&2
-            exit 2
-            ;;
         -h|--help)
             usage
             ;;
-        *)
+        -C|--check|-D|--diff|--step|--syntax-check|--list-tasks|--list-tags|--verbose|-v|-vv|-vvv|-vvvv|-vvvvv)
             passthrough+=("$1")
             shift
+            ;;
+        -t|--tags|--skip-tags|--start-at-task|-e|--extra-vars)
+            [[ $# -ge 2 ]] || refuse "$1" "It needs a value."
+            [[ "$2" == -* ]] && refuse "$1 $2" "A value may not start with '-'."
+            passthrough+=("$1" "$2")
+            shift 2
+            ;;
+        --tags=?*|--skip-tags=?*|--start-at-task=?*|--extra-vars=?*)
+            passthrough+=("$1")
+            shift
+            ;;
+        *)
+            refuse "$1" "The inventory is always ${INVENTORY}, there is no --limit, and no other playbook."
             ;;
     esac
 done

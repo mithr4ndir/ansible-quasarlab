@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -363,15 +364,6 @@ class ArgumentAndFailureTests(WrapperSandbox):
         super().setUp()
         self.seed(SLUG, CACHED)
 
-    def test_inventory_and_limit_overrides_are_refused(self) -> None:
-        for bad in (["-i", "inventory.proxmox.yml"], ["--inventory=x"], ["-ix"],
-                    ["--limit", "k8cluster1"], ["-l", "all"], ["--limit=all"], ["-lall"]):
-            with self.subTest(args=bad):
-                proc = self.run_wrapper(*bad)
-                self.assertEqual(proc.returncode, 2)
-                self.assertIn("not allowed", proc.stderr)
-        self.assertEqual(self.calls(), [])
-
     def test_passthrough(self) -> None:
         proc = self.run_wrapper("--check", "--tags", "nfs")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -396,6 +388,126 @@ class ArgumentAndFailureTests(WrapperSandbox):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("OP_QUOTA_GATE_BYPASS=1", proc.stderr)
         self.assertEqual(self.calls("ansible-playbook"), [])
+
+
+# ---------------------------------------------------------------------------
+# The argument guard, checked against the REAL ansible-playbook parser
+# ---------------------------------------------------------------------------
+
+# Runs ansible-core's own PlaybookCLI.parse() on an argv and reports what it
+# would do. One process per argv: context.CLIARGS can only be set once.
+REAL_PARSE = r"""
+import io, contextlib, json, sys
+from ansible.cli.playbook import PlaybookCLI
+from ansible import context
+cli = PlaybookCLI(["ansible-playbook", *json.loads(sys.argv[1])])
+err = io.StringIO()
+try:
+    with contextlib.redirect_stderr(err):
+        cli.parse()
+except SystemExit:
+    print(json.dumps({"error": True}))
+    sys.exit(0)
+a = context.CLIARGS
+print(json.dumps({"inventory": [i.rsplit("/", 1)[-1] for i in (a.get("inventory") or [])],
+                  "subset": a.get("subset"), "args": list(a.get("args") or [])}))
+"""
+
+SAFE = [
+    ["--check"], ["-C"], ["--diff"], ["-D"], ["-vvv"], ["--verbose"], ["--step"],
+    ["--syntax-check"], ["--list-tasks"], ["--list-tags"],
+    ["--tags", "nfs"], ["-t", "nfs"], ["--tags=nfs"], ["--skip-tags", "docker"],
+    ["--start-at-task", "Install the NFS probe"], ["-e", "uptime_kuma_nfs_probe_uid=1000"],
+    ["--extra-vars=uptime_kuma_nfs_probe_uid=1000"], ["-t", "nfs", "--check", "-D"],
+]
+
+
+def bypass_candidates() -> list[list[str]]:
+    cands: list[list[str]] = []
+    for opt in ("--inventory", "--inventory-file", "--limit", "--list-hosts"):
+        for n in range(3, len(opt) + 1):
+            prefix = opt[:n]
+            cands += [[prefix, "x.yml"], [prefix + "=x.yml"]]
+    for flags in ("", "v", "vv", "C", "D", "Cv", "vD"):
+        cands += [["-" + flags + "i", "x.yml"], ["-" + flags + "ix.yml"],
+                  ["-" + flags + "l", "h"], ["-" + flags + "lh"]]
+    cands += [["extra.yml"], ["--", "extra.yml"], ["-e", "-lh"], ["--tags", "-ix.yml"],
+              ["-e"], ["--tags="], ["-eall"], ["--check", "--lim", "h"], ["-tnfs"]]
+    return cands
+
+
+class RealParserGuardTests(WrapperSandbox):
+    """Whatever the wrapper lets through, Ansible itself must see exactly
+    inventory.static.ini, no --limit and only playbooks/uptime-kuma.yml."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed(SLUG, CACHED)
+        try:
+            import ansible  # noqa: F401
+        except ImportError:
+            self.skipTest("ansible-core not importable by this interpreter")
+        self.parse_dir = self.tmp / "parse"
+        (self.parse_dir / "playbooks").mkdir(parents=True)
+        (self.parse_dir / "playbooks" / "uptime-kuma.yml").write_text("[]\n")
+        (self.parse_dir / "empty.cfg").write_text("")
+
+    def real_parse(self, argv: list[str]) -> dict:
+        proc = subprocess.run(
+            [sys.executable, "-c", REAL_PARSE, json.dumps(argv)], cwd=self.parse_dir,
+            env={**os.environ, "ANSIBLE_CONFIG": str(self.parse_dir / "empty.cfg")},
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def honoured_bypass(self, extra: list[str]) -> bool:
+        """Would ansible-playbook, given these args directly, change the
+        inventory, set a limit, or run another playbook?"""
+        seen = self.real_parse(["playbooks/uptime-kuma.yml", "-i", "inventory.static.ini", *extra])
+        return not seen.get("error") and (
+            seen["inventory"] != ["inventory.static.ini"] or seen["subset"] is not None
+            or seen["args"] != ["playbooks/uptime-kuma.yml"])
+
+    def test_nothing_the_wrapper_passes_can_change_inventory_limit_or_playbook(self) -> None:
+        honoured = 0
+        for cand in bypass_candidates() + SAFE:
+            with self.subTest(args=cand):
+                self.fake_log.write_text("")
+                if self.honoured_bypass(cand):
+                    honoured += 1
+                proc = self.run_wrapper(*cand)
+                if proc.returncode != 0:
+                    self.assertEqual(proc.returncode, 2, proc.stderr)
+                    self.assertEqual(self.calls("ansible-playbook"), [])
+                    continue
+                seen = self.real_parse(self.playbook_run()["argv"])
+                self.assertEqual(seen.get("inventory"), ["inventory.static.ini"], seen)
+                self.assertIsNone(seen.get("subset"), seen)
+                self.assertEqual(seen.get("args"), ["playbooks/uptime-kuma.yml"], seen)
+        # Not vacuous: the candidates include real bypasses of the old guard
+        # (--inventory-f, --lim, -vi, -Dlh, ...).
+        self.assertGreaterEqual(honoured, 20)
+
+    def test_known_bypasses_are_real_and_refused(self) -> None:
+        # A trailing extra playbook is NOT in this list: after the wrapper's
+        # `-i inventory.static.ini` argparse rejects it ("unrecognized
+        # arguments"). The wrapper refuses it anyway.
+        for cand in (["--inventory-f", "x.yml"], ["--lim", "h"], ["--lim=h"], ["-vi", "x.yml"],
+                     ["-Dlh"], ["-Ci", "x.yml"], ["-vvl", "h"], ["-ix.yml"]):
+            with self.subTest(args=cand):
+                self.assertTrue(self.honoured_bypass(cand), f"ansible no longer honours {cand}")
+                proc = self.run_wrapper(*cand)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn("is not allowed", proc.stderr)
+
+    def test_allowed_forms_pass_through_verbatim(self) -> None:
+        for cand in SAFE:
+            with self.subTest(args=cand):
+                self.fake_log.write_text("")
+                proc = self.run_wrapper(*cand)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(self.playbook_run()["argv"][3:], cand)
 
 
 if __name__ == "__main__":
