@@ -47,6 +47,18 @@ postgresql_hba_entries:
   - { type: host, database: all, user: all, address: "10.244.0.0/16", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: all, user: all, address: "192.168.1.88/32", method: "{{ postgresql_auth_method }}" }
   - { type: host, database: grafana, user: grafana, address: "192.168.1.121/32", method: "{{ postgresql_auth_method }}" }
+  # K8s node IPs. These are NOT redundant with the 10.244.0.0/16 rule above.
+  # A pod connecting to an address outside the cluster is SNATed to its node's
+  # IP, so Postgres sees 192.168.1.89/.90/.91, never a pod address. The pod
+  # CIDR rule only covers traffic that arrives with a pod source address.
+  #
+  # Added to the role 2026-09-19. They were applied to the live host during the
+  # 2026-05-03 incident but never written back here, and pg_hba.conf.j2 renders
+  # the WHOLE file from this list, so any run of playbooks/postgresql.yml would
+  # have deleted them and re-broken Grafana. See tests/test_pg_hba_k8s_nodes.py.
+  - { type: host, database: all, user: all, address: "192.168.1.89/32", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "192.168.1.90/32", method: "{{ postgresql_auth_method }}" }
+  - { type: host, database: all, user: all, address: "192.168.1.91/32", method: "{{ postgresql_auth_method }}" }
 
 # Databases to create (list of dicts with name, owner)
 postgresql_databases:
