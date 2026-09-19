@@ -19,8 +19,8 @@ flush        Seals the spool, posts one batch per run and deletes the batch
              post: a Discord outage must not turn into a unit-failure alert.
 canary       Proves the whole path end to end, including Discord acceptance.
              Liveness checks on the units prove only that they ran.
---dry-run    Print the payload as JSON. Posts nothing, fetches no secret and
-             deletes no batch.
+--dry-run    Print the message and the file it would attach. Posts nothing,
+             fetches no secret and deletes no batch.
 
 What this CANNOT see, by construction:
   - commands denied or blocked before they ran (no post-hook fires at all)
@@ -103,26 +103,25 @@ INTER_MESSAGE_SLEEP_SECS = 2.0
 MIN_SECRET_LOOKUP_INTERVAL_SECS = 300
 
 # Discord limits (https://discord.com/developers/docs/resources/message).
-EMBED_TITLE_MAX = 256
-EMBED_DESCRIPTION_MAX = 4096
-EMBED_FOOTER_MAX = 2048
-EMBED_TOTAL_MAX = 6000
-EMBEDS_MAX = 10
 CONTENT_MAX = 2000
+TEXT_MAX = 256
 
-COMMAND_MAX_CHARS = 300
-# When a batch has a line the embed had to cut, the whole batch is attached as
-# a text file so the full command is one click away. Discord embeds have no
-# collapsible block, and raising the cap just spends the 6000-char budget.
+# The batch goes up as a file and the message is one summary line, so nothing
+# is truncated in the place people read it. What the summary shows of a failed
+# command is a pointer into the file, not the record.
+FAILED_SNIPPET_CHARS = 120
+MAX_SESSIONS_PER_MESSAGE = 10
+MAX_LABELS_IN_SUMMARY = 3
+# Every batch goes up as a text file: it is the record, so nothing in it is cut
+# to fit a message budget. The message beside it is one summary line, because
+# an embed repeating the same records was the same content twice.
 TRANSCRIPT_FILENAME = "commands.txt"
 TRANSCRIPT_MAX_BYTES = 64 * 1024
 TRANSCRIPT_LINE_MAX = 4000
 # Beyond this a command is withheld outright: redaction over something this
 # long is not a bet worth taking.
 HARD_DROP_CHARS = 4096
-TRIM_FLOOR_CHARS = 60
 
-EMBED_COLOR = 0x5865F2
 USER_AGENT = "DiscordBot (https://github.com/mithr4ndir/ansible-quasarlab, 1.0)"
 
 WEBHOOK_RE = re.compile(
@@ -223,7 +222,7 @@ def iso(value: dt.datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Text that is safe in a Discord embed
+# Text that is safe in a Discord message
 # ---------------------------------------------------------------------------
 
 MARKDOWN_CHARS_RE = re.compile(r"([\\\[\]()*_~`|>#<@-])")
@@ -248,8 +247,22 @@ def clean_text(value: str, limit: int) -> str:
     return text
 
 
-def discord_text(value: str, limit: int = EMBED_TITLE_MAX) -> str:
-    """Make untrusted text inert in a Discord embed.
+BACKTICK_RE = re.compile(r"`+")
+
+
+def code_text(value: str, limit: int) -> str:
+    """Text for inside a code span, where markdown is not interpreted.
+
+    Escaping in there is what put `systemctl list\\-timers` in the feed, so
+    only the two things that actually matter are handled: a backtick could
+    close the span, and a mention form could ping the channel.
+    """
+    text = MENTION_FORMS_RE.sub("", value)
+    return BACKTICK_RE.sub("'", clean_text(text, limit))
+
+
+def discord_text(value: str, limit: int = TEXT_MAX) -> str:
+    """Make untrusted text inert in a Discord message.
 
     Order matters: strip mentions, clean and cap first (so the cap cannot cut
     an escape in half), defang URL schemes so nothing auto-links, then escape
@@ -854,136 +867,124 @@ def herdr_labels(herdr_bin: str, runner: Callable[..., Any] | None = None) -> di
     return labels
 
 
-def entry_line(record: Mapping[str, Any], cap: int) -> tuple[str, str]:
-    """One rendered line, plus the withheld reason if there was one."""
+def group_records(records: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group by session and subagent, keeping first-seen order.
+
+    A subagent shares its parent's session id, so grouping on the session
+    alone filed its commands under the parent's heading and lost the
+    attribution that says which agent actually ran them.
+    """
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for record in records:
+        key = (str(record.get("session_id") or "unknown"), str(record.get("agent_type") or ""))
+        groups.setdefault(key, []).append(record)
+    return [(session, group) for (session, _), group in groups.items()]
+
+
+def session_label(first: Mapping[str, Any], labels: Mapping[str, str]) -> str:
+    """How a session is named: its herdr workspace label, then the agent."""
+    workspace = str(first.get("workspace") or "")
+    label = labels.get(workspace, workspace) or "no workspace"
+    bits = [label, str(first.get("agent") or "agent")]
+    if first.get("agent_type"):
+        bits.append(f"subagent {first['agent_type']}")
+    return " · ".join(bits)
+
+
+def status_word(record: Mapping[str, Any]) -> str:
+    """Status as it reads in the file, with the exit code when there is one."""
     status = str(record.get("status") or STATUS_OK)
-    icon = STATUS_ICON.get(status, "•")
-    stamp = str(record.get("ts") or "")[11:19] or "--:--:--"
-    command = str(record.get("command") or "")
-    safe, reason = sanitize_command(command)
-    text = discord_text(safe, cap)
-    suffix = ""
     if status == STATUS_FAILED:
         code = record.get("exit_code")
-        suffix = f" exit {code}" if isinstance(code, int) else " non-zero"
-    elif status == STATUS_BACKGROUNDED:
-        suffix = " backgrounded, outcome unknown"
-    elif status == STATUS_INTERRUPTED:
-        suffix = " interrupted"
-    if record.get("canary"):
-        return f"`{stamp}` 🐤 canary `{discord_text(str(record.get('nonce') or ''), 40)}`", ""
-    return f"`{stamp}` {icon}{suffix} `{text}`", reason
+        return f"failed({code})" if isinstance(code, int) else "failed"
+    return status
 
 
-def embed_size(embed: Mapping[str, Any]) -> int:
-    total = len(str(embed.get("title", ""))) + len(str(embed.get("description", "")))
-    footer = embed.get("footer")
-    if isinstance(footer, dict):
-        total += len(str(footer.get("text", "")))
-    return total
+def transcript_entry(record: Mapping[str, Any]) -> str:
+    """One line of the file: time, status, and the sanitized command in full.
 
-
-def group_records(records: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Group by session, keeping first-seen order."""
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for record in records:
-        groups.setdefault(str(record.get("session_id") or "unknown"), []).append(record)
-    return list(groups.items())
-
-
-def build_embeds(
-    records: list[dict[str, Any]], labels: Mapping[str, str], cap: int
-) -> tuple[list[dict[str, Any]], int]:
-    embeds: list[dict[str, Any]] = []
-    withheld = 0
-    for session, group in group_records(records)[:EMBEDS_MAX]:
-        first = group[0]
-        workspace = str(first.get("workspace") or "")
-        label = labels.get(workspace, workspace) or "no workspace"
-        pane = str(first.get("pane") or "")
-        title_bits = [label]
-        if pane:
-            title_bits.append(pane)
-        title_bits.append(str(first.get("agent") or "agent"))
-        if first.get("agent_type"):
-            title_bits.append(f"subagent {first['agent_type']}")
-        lines: list[str] = []
-        for record in group:
-            line, reason = entry_line(record, cap)
-            if reason and reason != "empty":
-                withheld += 1
-            lines.append(line)
-        description = "\n".join(lines)[:EMBED_DESCRIPTION_MAX]
-        footer = f"session {session[:8]} · {first.get('host') or '?'}"
-        embeds.append({
-            "title": discord_text(" · ".join(title_bits), EMBED_TITLE_MAX),
-            "description": description,
-            "color": EMBED_COLOR,
-            "footer": {"text": discord_text(footer, EMBED_FOOTER_MAX)},
-        })
-    return embeds, withheld
-
-
-def transcript_entry(record: Mapping[str, Any]) -> tuple[str, str]:
-    """One transcript line, plus the full command text it was built from.
-
-    The text is the same sanitized string the embed shows, so a withheld body
-    stays withheld here: the attachment lifts the display cap, never redaction.
+    Same sanitize_command output the summary quotes from, so a withheld body
+    stays withheld here. The file lifts the display cap, never redaction.
     """
     stamp = str(record.get("ts") or "")[11:19] or "--:--:--"
-    status = str(record.get("status") or STATUS_OK)
     if record.get("canary"):
-        return f"{stamp}  {status:<12}  canary {record.get('nonce') or ''}", ""
+        return f"{stamp}  {'canary':<12}  {record.get('nonce') or ''}"
     safe, _ = sanitize_command(str(record.get("command") or ""))
-    full = clean_text(safe, TRANSCRIPT_LINE_MAX)
-    return f"{stamp}  {status:<12}  {full}", full
+    return f"{stamp}  {status_word(record):<12}  {clean_text(safe, TRANSCRIPT_LINE_MAX)}"
 
 
-def build_transcript(
-    records: list[dict[str, Any]], labels: Mapping[str, str], cap: int, host: str = ""
-) -> bytes | None:
-    """The batch as a text file, or None when nothing was cut.
+def build_transcript(records: list[dict[str, Any]], labels: Mapping[str, str], host: str = "") -> bytes:
+    """The whole batch as a text file, grouped by session.
 
-    Attached only when at least one line lost characters to the embed cap, so
-    an ordinary batch stays a plain message with no file hanging off it.
+    This is the record people read, so nothing in it is cut to fit a message
+    budget. Capped only by TRANSCRIPT_MAX_BYTES, on a line boundary.
     """
-    lines = [f"# agent command audit · {host or '?'} · {iso(dt.datetime.now(dt.timezone.utc))}", ""]
-    trimmed = False
-    for session, group in group_records(records)[:EMBEDS_MAX]:
-        first = group[0]
-        workspace = str(first.get("workspace") or "")
-        label = labels.get(workspace, workspace) or "no workspace"
-        lines.append(f"## {label} · {first.get('agent') or 'agent'} · session {session[:8]}")
-        for record in group:
-            line, full = transcript_entry(record)
-            if full and len(full) > cap:
-                trimmed = True
-            lines.append(line)
+    lines = [f"# {host or '?'} · {iso(dt.datetime.now(dt.timezone.utc))}", ""]
+    for session, group in group_records(records)[:MAX_SESSIONS_PER_MESSAGE]:
+        lines.append(f"## {session_label(group[0], labels)} · session {session[:8]}")
+        lines.extend(transcript_entry(record) for record in group)
         lines.append("")
-    if not trimmed:
-        return None
     body = "\n".join(lines).encode("utf-8", "replace")
     if len(body) > TRANSCRIPT_MAX_BYTES:
         body = body[:TRANSCRIPT_MAX_BYTES].rsplit(b"\n", 1)[0] + b"\n# truncated at file size limit\n"
     return body
 
 
+def summarize_batch(records: list[dict[str, Any]], labels: Mapping[str, str]) -> tuple[str, int]:
+    """The message beside the file: what ran, where, and what needs a look.
+
+    Returns the text and the withheld count. Every fragment of command text in
+    it goes inside a code span through code_text, and mentions are stripped
+    there as well as disarmed by allowed_mentions.
+    """
+    commands = canaries = withheld = 0
+    seen: list[str] = []
+    failures: list[str] = []
+    for record in records:
+        if record.get("canary"):
+            canaries += 1
+            continue
+        commands += 1
+        workspace = str(record.get("workspace") or "")
+        label = labels.get(workspace, workspace) or "no workspace"
+        if label not in seen:
+            seen.append(label)
+        safe, reason = sanitize_command(str(record.get("command") or ""))
+        if reason and reason != "empty":
+            withheld += 1
+        if str(record.get("status") or "") == STATUS_FAILED:
+            failures.append(safe)
+    bits = [f"🧾 {commands} command{'' if commands == 1 else 's'}"]
+    if seen:
+        shown = ", ".join(seen[:MAX_LABELS_IN_SUMMARY])
+        if len(seen) > MAX_LABELS_IN_SUMMARY:
+            shown += f" +{len(seen) - MAX_LABELS_IN_SUMMARY}"
+        bits.append(discord_text(shown, TEXT_MAX))
+    if withheld:
+        bits.append(f"{withheld} withheld")
+    if canaries:
+        bits.append("🐤 canary")
+    summary = " · ".join(bits)
+    if failures:
+        count = f"{len(failures)} failed" if len(failures) > 1 else "failed"
+        summary += f"\n❌ {count}: `{code_text(failures[0], FAILED_SNIPPET_CHARS)}`"
+    return summary[:CONTENT_MAX], withheld
+
+
 def build_payload(
     records: list[dict[str, Any]], labels: Mapping[str, str], host: str = ""
-) -> tuple[dict[str, Any], int, bytes | None]:
-    """Shrink the per-entry cap until the batch fits Discord's 6000 total."""
-    cap = COMMAND_MAX_CHARS
-    embeds, withheld = build_embeds(records, labels, cap)
-    while sum(embed_size(e) for e in embeds) > EMBED_TOTAL_MAX and cap > TRIM_FLOOR_CHARS:
-        cap = max(int(cap * 0.8), TRIM_FLOOR_CHARS)
-        embeds, withheld = build_embeds(records, labels, cap)
-    while embeds and sum(embed_size(e) for e in embeds) > EMBED_TOTAL_MAX:
-        embeds.pop()
+) -> tuple[dict[str, Any], int, bytes]:
+    """A one-line message plus the batch as a file.
+
+    The file is the record and the message is the pointer to it, so there is
+    no per-entry cap to shrink and nothing is lost to a 6000-char budget.
+    """
+    summary, withheld = summarize_batch(records, labels)
     return {
         "username": "cmd audit",
-        "embeds": embeds,
+        "content": summary,
         "allowed_mentions": {"parse": []},
-    }, withheld, build_transcript(records, labels, cap, host)
+    }, withheld, build_transcript(records, labels, host)
 
 
 # ---------------------------------------------------------------------------
@@ -1272,14 +1273,10 @@ def flush_once(
             continue
         posted, remainder = records[:MAX_RECORDS_PER_FLUSH], records[MAX_RECORDS_PER_FLUSH:]
         payload, withheld, transcript = build_payload(posted, labels, cfg.host)
-        if not payload["embeds"]:
-            batch.unlink(missing_ok=True)
-            continue
         if dry_run:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
-            if transcript:
-                print(f"--- {TRANSCRIPT_FILENAME} ({len(transcript)} bytes) ---")
-                print(transcript.decode("utf-8", "replace"))
+            print(f"--- {TRANSCRIPT_FILENAME} ({len(transcript)} bytes) ---")
+            print(transcript.decode("utf-8", "replace"))
             messages += 1
             continue
         if messages:
