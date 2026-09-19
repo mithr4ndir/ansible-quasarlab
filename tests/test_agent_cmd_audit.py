@@ -173,6 +173,79 @@ class SanitizeTests(unittest.TestCase):
         self.assertIn(reason, ("heredoc", "private_key"))
         self.assertNotIn("BEGIN PRIVATE KEY", text)
 
+    def test_heredoc_keeps_the_command_around_the_body(self):
+        # The first line is the part worth auditing: the program, its flags and
+        # where the output went. Withholding it too was the original bug.
+        text, reason = aca.sanitize_command(
+            "cat <<'EOF' > /etc/nginx/conf.d/foo.conf\nserver { listen 80; }\nEOF\nnginx -t"
+        )
+        self.assertEqual(reason, "heredoc")
+        self.assertIn("/etc/nginx/conf.d/foo.conf", text)
+        self.assertIn("nginx -t", text)
+        self.assertIn(aca.WITHHELD_HEREDOC, text)
+        self.assertNotIn("listen 80", text)
+
+    def test_heredoc_body_never_survives_any_introducer_form(self):
+        bodies = {
+            "quoted": "cat <<'EOF'\nLEAKED\nEOF",
+            "double quoted": 'cat <<"EOF"\nLEAKED\nEOF',
+            "bare": "cat <<EOF\nLEAKED\nEOF",
+            "escaped": "cat <<\\EOF\nLEAKED\nEOF",
+            "spaced": "cat << EOF\nLEAKED\nEOF",
+            "tab stripped": "cat <<-EOF\n\tLEAKED\n\tEOF",
+            "second heredoc": "join <<A <<B\nfirst\nA\nLEAKED\nB",
+            "later line": "set -e\ncat <<EOF\nLEAKED\nEOF",
+        }
+        for name, command in bodies.items():
+            with self.subTest(form=name):
+                text, reason = aca.sanitize_command(command)
+                self.assertEqual(reason, "heredoc")
+                self.assertNotIn("LEAKED", text)
+
+    def test_unterminated_heredoc_swallows_the_rest(self):
+        # No terminator means we cannot tell body from command, so everything
+        # after the introducer goes rather than being treated as command text.
+        text, reason = aca.sanitize_command("cat <<EOF\nLEAKED\nrm -rf /tmp/x")
+        self.assertEqual(reason, "heredoc")
+        self.assertNotIn("LEAKED", text)
+        self.assertNotIn("rm -rf", text)
+        self.assertIn("cat <<EOF", text)
+
+    def test_herestring_is_not_treated_as_a_heredoc(self):
+        # A herestring is one line, so the ordinary redactions apply to it.
+        command = "grep -c x <<< 'hello'"
+        text, reason = aca.sanitize_command(command)
+        self.assertEqual(reason, "")
+        self.assertEqual(text, command)
+
+    def test_herestring_secrets_still_fail_closed(self):
+        text, reason = aca.sanitize_command("post <<< 'token: abcdefghijklmnop'")
+        self.assertEqual(reason, "fail_closed")
+        self.assertNotIn("abcdefghijklmnop", text)
+
+    def test_big_heredoc_is_kept_once_its_body_is_gone(self):
+        # Size is judged on what would be posted. Before the body was stripped
+        # first, a large heredoc lost its first line to the oversize rule.
+        command = "python3 - <<'PY'\n" + "x" * (aca.HARD_DROP_CHARS + 10) + "\nPY"
+        text, reason = aca.sanitize_command(command)
+        self.assertEqual(reason, "heredoc")
+        self.assertIn("python3", text)
+        self.assertNotIn("xxxx", text)
+
+    def test_program_name_skips_only_real_assignments(self):
+        cases = {
+            # The regression: "=" is not in the last path segment, so the old
+            # rule kept the token and called the program `e2e2;`.
+            "E=/tmp/scratch/e2e2; cd $E; docker ps": "cd",
+            "M=/home/ladino/memory/project.md python3 -": "python3",
+            "TZ=UTC date": "date",
+            "/usr/local/bin/agent-cmd-audit record": "agent-cmd-audit",
+            "sudo -n systemctl restart x": "sudo",
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(aca.program_name(command), expected)
+
     def test_oversize_command_is_withheld(self):
         text, reason = aca.sanitize_command("echo " + "a" * (aca.HARD_DROP_CHARS + 10))
         self.assertEqual(reason, "oversize")

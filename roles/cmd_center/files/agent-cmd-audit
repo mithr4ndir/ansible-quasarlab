@@ -295,7 +295,12 @@ CMD_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 # testing), and the programs that actually take a password that way (mysql,
 # psql) are in SENSITIVE_PROGRAMS, so their arguments are withheld wholesale.
 
-HEREDOC_RE = re.compile(r"<<-?\s*[\"']?\w+")
+# A heredoc introducer, with its delimiter. The lookbehind and lookahead keep
+# `<<<` (a herestring, which is one line and redacts like any other command)
+# from being read as a heredoc whose delimiter happens to start with `<`.
+HEREDOC_INTRO_RE = re.compile(
+    r"(?<!<)<<(?P<dash>-?)\s*(?P<quote>['\"]?)(?P<word>\\?[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+)
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY")
 # Programs whose arguments are not worth the risk. The audit fact that an
 # agent ran `op` is what matters; the arguments are not.
@@ -312,13 +317,63 @@ WITHHELD_OVERSIZE = "«oversize command withheld»"
 WITHHELD_KEY = "«private key material withheld»"
 
 
+# A leading VAR=value assignment, which is not the program. Anchored on the
+# NAME= form: testing for a bare "=" read `E=/tmp/scratch/e2e2;` as the
+# program `e2e2;`, because the "=" is not in the last path segment.
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
 def program_name(command: str) -> str:
     """First bare word of the command, for the withheld forms."""
     for token in command.strip().split():
-        if "=" in token.split("/")[-1] and not token.startswith("-"):
+        if ASSIGNMENT_RE.match(token):
             continue  # leading VAR=value assignments
         return os.path.basename(token)[:40]
     return "?"
+
+
+def strip_heredoc_bodies(command: str) -> tuple[str, bool]:
+    """Replace every heredoc body with a placeholder, keeping the lines around it.
+
+    The introducer line and the terminator survive, so a reader still sees the
+    program, its flags and where the output went; only the free-form body is
+    dropped, because the value-only redactions are shape-based and cannot scan
+    a pasted blob. An unterminated heredoc swallows the rest of the command,
+    so body text can never be mistaken for command text.
+    """
+    lines = command.split("\n")
+    out: list[str] = []
+    index = 0
+    found = False
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        out.append(line)
+        intros = [
+            (bool(match.group("dash")), match.group("word").lstrip("\\"))
+            for match in HEREDOC_INTRO_RE.finditer(line)
+        ]
+        if not intros:
+            continue
+        found = True
+        for dashed, delimiter in intros:
+            body_seen = False
+            terminated = False
+            while index < len(lines):
+                candidate = lines[index]
+                index += 1
+                # <<- strips leading TABS from the terminator, nothing else.
+                probe = candidate.lstrip("\t") if dashed else candidate
+                if probe.rstrip("\r") == delimiter:
+                    terminated = True
+                    break
+                body_seen = True
+            if body_seen or not terminated:
+                out.append(WITHHELD_HEREDOC)
+            if not terminated:
+                break
+            out.append(delimiter)
+    return "\n".join(out), found
 
 
 def sanitize_command(command: str) -> tuple[str, str]:
@@ -330,12 +385,13 @@ def sanitize_command(command: str) -> tuple[str, str]:
     if not command.strip():
         return "", "empty"
     program = program_name(command)
+    # Bodies go first, so the size and secret checks below judge the text that
+    # would actually be posted rather than a blob that is already dropped.
+    command, had_heredoc = strip_heredoc_bodies(command)
     if len(command) > HARD_DROP_CHARS:
         return f"{program} {WITHHELD_OVERSIZE}", "oversize"
     if PRIVATE_KEY_RE.search(command):
         return f"{program} {WITHHELD_KEY}", "private_key"
-    if HEREDOC_RE.search(command):
-        return f"{program} {WITHHELD_HEREDOC}", "heredoc"
     lowered = command.lower()
     if program in SENSITIVE_PROGRAMS or any(p in lowered for p in SENSITIVE_PHRASES):
         return f"{program} {WITHHELD_ARGS}", "sensitive_program"
@@ -345,7 +401,7 @@ def sanitize_command(command: str) -> tuple[str, str]:
         text = pattern.sub(replacement, text)
     if SECRETLIKE_RE.search(text):
         return f"{program} {WITHHELD_SECRET}", "fail_closed"
-    return text, ""
+    return text, "heredoc" if had_heredoc else ""
 
 
 # ---------------------------------------------------------------------------
