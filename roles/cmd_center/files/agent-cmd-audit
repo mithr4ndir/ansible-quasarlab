@@ -940,9 +940,11 @@ def summarize_batch(records: list[dict[str, Any]], labels: Mapping[str, str]) ->
     commands = canaries = withheld = 0
     seen: list[str] = []
     failures: list[str] = []
+    nonces: list[str] = []
     for record in records:
         if record.get("canary"):
             canaries += 1
+            nonces.append(str(record.get("nonce") or ""))
             continue
         commands += 1
         workspace = str(record.get("workspace") or "")
@@ -954,6 +956,11 @@ def summarize_batch(records: list[dict[str, Any]], labels: Mapping[str, str]) ->
             withheld += 1
         if str(record.get("status") or "") == STATUS_FAILED:
             failures.append(safe)
+    # The hourly canary usually flushes on its own. Saying "0 commands" and
+    # attaching a file holding the one line the summary already shows is the
+    # same content twice, which is what the file was meant to stop.
+    if not commands and canaries:
+        return f"🐤 canary {code_text(' '.join(nonces), TEXT_MAX)}".strip(), 0
     bits = [f"🧾 {commands} command{'' if commands == 1 else 's'}"]
     if seen:
         shown = ", ".join(seen[:MAX_LABELS_IN_SUMMARY])
@@ -973,18 +980,20 @@ def summarize_batch(records: list[dict[str, Any]], labels: Mapping[str, str]) ->
 
 def build_payload(
     records: list[dict[str, Any]], labels: Mapping[str, str], host: str = ""
-) -> tuple[dict[str, Any], int, bytes]:
+) -> tuple[dict[str, Any], int, bytes | None]:
     """A one-line message plus the batch as a file.
 
     The file is the record and the message is the pointer to it, so there is
     no per-entry cap to shrink and nothing is lost to a 6000-char budget.
     """
     summary, withheld = summarize_batch(records, labels)
+    has_commands = any(not record.get("canary") for record in records)
+    transcript = build_transcript(records, labels, host) if has_commands else None
     return {
         "username": "cmd audit",
         "content": summary,
         "allowed_mentions": {"parse": []},
-    }, withheld, build_transcript(records, labels, host)
+    }, withheld, transcript
 
 
 # ---------------------------------------------------------------------------
@@ -1275,8 +1284,9 @@ def flush_once(
         payload, withheld, transcript = build_payload(posted, labels, cfg.host)
         if dry_run:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
-            print(f"--- {TRANSCRIPT_FILENAME} ({len(transcript)} bytes) ---")
-            print(transcript.decode("utf-8", "replace"))
+            if transcript:
+                print(f"--- {TRANSCRIPT_FILENAME} ({len(transcript)} bytes) ---")
+                print(transcript.decode("utf-8", "replace"))
             messages += 1
             continue
         if messages:

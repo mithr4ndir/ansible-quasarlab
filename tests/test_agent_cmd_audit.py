@@ -566,6 +566,23 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["content"].count("`"), 2)
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
 
+    def test_canary_only_batch_is_one_line_with_no_file(self):
+        # The hourly canary usually flushes alone. A file holding the single
+        # line the summary already shows is the duplication the file replaced.
+        canary = dict(self.make(1)[0], canary=True, nonce="d5ac6672d73d", command="", session_id="canary")
+        payload, withheld, transcript = aca.build_payload([canary], {})
+        self.assertIsNone(transcript)
+        self.assertEqual(withheld, 0)
+        self.assertNotIn("0 commands", payload["content"])
+        self.assertIn("d5ac6672d73d", payload["content"])
+
+    def test_batch_with_commands_and_a_canary_still_attaches(self):
+        records = self.make(1)
+        records.append(dict(records[0], canary=True, nonce="abc123", command="", session_id="canary"))
+        _, _, transcript = aca.build_payload(records, {})
+        self.assertIsNotNone(transcript)
+        self.assertIn(b"abc123", transcript)
+
     def test_canary_is_summarised_not_counted_as_a_command(self):
         records = self.make(1)
         records.append(dict(records[0], canary=True, nonce="abc123", command=""))
