@@ -167,7 +167,6 @@ def test_compose_renders_hardened_and_pinned(bind: str) -> None:
         assert "no-new-privileges:true" in svc["security_opt"]
         assert svc["restart"] == "unless-stopped"
         assert svc["group_add"] == ["3001"]
-        assert svc["secrets"] == ["kuma_admin_password"]
         assert "mem_limit" in svc and "pids_limit" in svc
         assert svc["logging"]["options"]["max-size"] == "10m"
         for volume in svc.get("volumes", []):
@@ -176,10 +175,16 @@ def test_compose_renders_hardened_and_pinned(bind: str) -> None:
     assert kuma["image"].startswith("louislam/uptime-kuma:2.5.5-slim-rootless@")
     assert kuma["environment"]["UPTIME_KUMA_DB_TYPE"] == "sqlite"
     assert kuma["volumes"] == ["/opt/uptime-kuma/data:/app/data"]
+    assert kuma["secrets"] == ["kuma_admin_password"]
 
     env = autokuma["environment"]
     assert env["AUTOKUMA__KUMA__URL"] == "http://uptime-kuma:3001"
-    assert env["AUTOKUMA__KUMA__PASSWORD"] == "@/run/secrets/kuma_admin_password"
+    # AutoKuma 2.0.0 has no @/file syntax: an env value would be used
+    # literally (seen in the e2e test), so the password comes from a file.
+    assert not any("PASSWORD" in k for k in env)
+    assert env["XDG_CONFIG_HOME"] == "/config"
+    assert "/opt/uptime-kuma/secrets/autokuma.toml:/config/autokuma/config.toml:ro" in autokuma["volumes"]
+    assert "secrets" not in autokuma
     assert env["AUTOKUMA__DOCKER__ENABLED"] == "false"
     assert env["AUTOKUMA__KUBERNETES__ENABLED"] == "false"
     assert env["AUTOKUMA__ON_DELETE"] == "delete"
@@ -210,7 +215,10 @@ def test_bootstrap_never_hands_the_password_to_ansible() -> None:
     assert "environment" not in task
     assert "password" not in task["ansible.builtin.shell"]["cmd"].lower()
     rendered = render_text(task["ansible.builtin.shell"]["cmd"], host_vars())
-    assert rendered.startswith("docker exec -i -e KUMA_ADMIN_USERNAME=admin uptime-kuma node - < ")
+    assert rendered == ("docker exec -i -e KUMA_ACTION=bootstrap -e KUMA_ADMIN_USERNAME=admin "
+                        "uptime-kuma node - < /opt/uptime-kuma/kuma-admin.js")
+    # Only "no answer yet" is retried; a refused setup or login fails at once.
+    assert task["until"] == "uptime_kuma_bootstrap.rc != 3"
 
 
 # ---------------------------------------------------------------------------
@@ -362,13 +370,14 @@ def test_verifier_task_arguments_are_accepted_by_the_verifier() -> None:
     task = find_task(tasks("verify.yml"), "Wait until Kuma holds every managed monitor, wired to Discord")
     argv = render_text(task["ansible.builtin.command"]["argv"], host_vars())
     assert argv[0] == "/usr/local/bin/kuma-verify-entities"
-    captured: list[list[str]] = []
+    captured: list[tuple] = []
 
-    def fake_cli(args: list[str]) -> Any:
-        captured.append(list(args))
-        return {} if args[0] == "monitor" else []
+    def fake_lister(script: str, username: str, container: str = "") -> dict:
+        captured.append((script, username, container))
+        return {"ok": True, "monitors": [], "notifications": []}
 
-    assert verifier.main(argv[1:], cli=fake_cli) == 1  # nothing exists yet
+    assert verifier.main(argv[1:], lister=fake_lister) == 1  # nothing exists yet
+    assert captured == [("/opt/uptime-kuma/kuma-admin.js", "admin", "uptime-kuma")]
     monitors = [a.split("=", 1)[1] for a in argv[1:] if a.startswith("--monitor=")]
     assert sorted(monitors) == sorted(e["name"] for e in entities().values()
                                       if e["type"] != "notification")
@@ -405,10 +414,11 @@ def monitor(name: str, active: bool = True, wired: dict | None = None) -> dict:
 ])
 def test_verifier_findings(monitors: dict, notifications: list, expect: dict,
                            capsys: pytest.CaptureFixture[str]) -> None:
-    def fake_cli(args: list[str]) -> Any:
-        return monitors if args[0] == "monitor" else notifications
+    def fake_lister(script: str, username: str, container: str = "") -> dict:
+        return {"ok": True, "monitors": monitors, "notifications": notifications}
 
-    rc = verifier.main(["--notification", NOTIF, "--monitor", "A", "--monitor", "B"], cli=fake_cli)
+    rc = verifier.main(["--script", "x.js", "--notification", NOTIF, "--monitor", "A",
+                        "--monitor", "B"], lister=fake_lister)
     out = json.loads(capsys.readouterr().out)
     for key, value in expect.items():
         assert out[key] == value, out
@@ -416,11 +426,12 @@ def test_verifier_findings(monitors: dict, notifications: list, expect: dict,
 
 
 def test_verifier_reports_when_kuma_cannot_be_asked(capsys: pytest.CaptureFixture[str]) -> None:
-    def failing_cli(args: list[str]) -> Any:
-        raise RuntimeError("kuma monitor list exited 1: LoginError")
+    def failing_lister(script: str, username: str, container: str = "") -> dict:
+        raise RuntimeError("kuma-admin.js exited 5: login refused: authIncorrectCreds")
 
-    assert verifier.main(["--notification", NOTIF, "--monitor", "A"], cli=failing_cli) == 2
-    assert "LoginError" in json.loads(capsys.readouterr().out)["error"]
+    assert verifier.main(["--script", "x.js", "--notification", NOTIF, "--monitor", "A"],
+                         lister=failing_lister) == 2
+    assert "authIncorrectCreds" in json.loads(capsys.readouterr().out)["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +466,22 @@ def test_compose_version_gate(stdout: str, rc: int, failed: bool) -> None:
     expr = "{{ " + task["failed_when"].strip() + " }}"
     result = render_text(expr, host_vars(uptime_kuma_compose_version={"rc": rc, "stdout": stdout}))
     assert result is failed
+
+
+@pytest.mark.parametrize("url, ok", [
+    (FAKE_WEBHOOK, True),
+    ("https://discordapp.com/api/webhooks/100000000000000001/abcdefghijklmnopqrstuvwxyz", True),
+    ("", False),
+    ("http://discord.com/api/webhooks/100000000000000001/abcdefghijklmnopqrstuvwxyz", False),
+    ("https://discordXcom/api/webhooks/100000000000000001/abcdefghijklmnopqrstuvwxyz", False),
+    ("https://discord.com.evil.example/api/webhooks/100000000000000001/abcdefghijklmnopqrst", False),
+    ("https://discord.com/api/webhooks/100000000000000001/abcdefghijklmnopqrstuvwxyz?wait=1", False),
+])
+def test_webhook_shape_check(url: str, ok: bool) -> None:
+    task = find_task(tasks("discord.yml"), "Check the Discord webhook URL is a Discord webhook")
+    [cond] = task["ansible.builtin.assert"]["that"]
+    assert render_text("{{ " + cond + " }}", host_vars(uptime_kuma_discord_webhook_url=url)) is ok
+    assert task["no_log"] is True
 
 
 def test_docker_key_pin_is_a_full_fingerprint() -> None:

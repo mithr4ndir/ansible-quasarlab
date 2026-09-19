@@ -15,7 +15,7 @@ disk is not on NFS, and alerts straight to Discord.
 |---|---|
 | Docker CE + compose plugin | From Docker's apt repo, signing key pinned by fingerprint. Replaces Debian's `docker.io`, which has no `docker compose` and is why the original labctl deploy never started Kuma. |
 | `uptime-kuma` container | `louislam/uptime-kuma:2.5.5-slim-rootless`, digest-pinned, uid 1000, all capabilities dropped, SQLite in `/opt/uptime-kuma/data`. |
-| `autokuma` container | `ghcr.io/bigboot/autokuma:2.1.0-rc.2`, digest-pinned, uid 65532. Reconciles the files in `/opt/uptime-kuma/monitors` into Kuma every 60s. No Docker socket. |
+| `autokuma` container | `ghcr.io/bigboot/autokuma:2.0.0` (latest stable), digest-pinned, uid 65532. Reconciles the files in `/opt/uptime-kuma/monitors` into Kuma every 60s. No Docker socket. |
 | `kuma-nfs-probe.timer` | Every 60s, a real NFS read of a sentinel file on `192.168.1.15:/mnt/tank/k8s`, pushed to a Kuma push monitor. |
 
 ## Monitors (defined in `defaults/main.yml`)
@@ -46,11 +46,40 @@ Why AutoKuma and not `lucasheld.uptime_kuma`: the collection's last release
 was 2023-08 and its client library's last release 2023-09, with an open
 "This project seems to be abandoned" issue; it supports only Kuma 1.x, whose
 last release (1.23.17) still carries GHSA-v832-4r73-wx5j, fixed only in 2.2.1.
-AutoKuma is maintained (2.1.0-rc.2, 2026-06) and targets Kuma 2. The
-release-candidate pin is deliberate; `defaults/main.yml` lists the three
-2.0.0 bugs it avoids. AutoKuma speaks Kuma's unofficial socket.io API, so a
-Kuma upgrade can break it. That only stops drift correction, never
-monitoring, and the deploy's verify step fails loudly if it happens.
+AutoKuma is maintained and targets Kuma 2. The role pins its latest stable
+release, 2.0.0; 2.1.x is still a release candidate. AutoKuma speaks Kuma's
+unofficial socket.io API, so a Kuma upgrade can break it. That only stops
+drift correction, never monitoring, and the deploy's verify step fails
+loudly if it happens.
+
+Known 2.0.0 limits, seen in the end-to-end test: a newly created monitor can
+send its first DOWN notification twice (AutoKuma#166), the push monitor's
+resend interval is not applied (#152, so the NFS monitor alerts once per
+outage rather than hourly), and 2.0.0 cannot read a password from a file
+reference in the environment, so it gets a mounted config file.
+
+### Tested end to end (2026-09-19)
+
+On cmd-center1, in throwaway containers from the pinned images, bound to
+127.0.0.1, with Discord and the monitored endpoints replaced by a local
+capture listener. The compose file, ownership and modes came from this
+role's templates and tasks. Everything was removed afterwards.
+
+- Kuma started on SQLite with no setup page; `kuma-admin.js` created the
+  admin, a rerun changed nothing, and a wrong password was refused.
+- AutoKuma 2.0.0 logged in from the config file (no password in
+  `docker inspect`), created the notification and all monitors once each,
+  every one wired to the notification.
+- An HTTP monitor on an endpoint answering 500 with an apiserver-style
+  `[-]etcd failed` body went DOWN and produced a Discord embed with
+  "Request failed with status code 500".
+- The real probe and real `nfs-cat` against a stalled fake NFS server pushed
+  DOWN after its deadline, and the Discord embed carried the probe's reason.
+  With pushes stopped, the push monitor went DOWN with "No heartbeat in the
+  time window".
+- After Kuma's data directory was wiped, bootstrap recreated the admin on
+  the first connection and AutoKuma recreated every monitor and the
+  notification; the verifier passed.
 
 ## The NFS probe
 
@@ -96,11 +125,12 @@ overwrite. The timer only reads.
 | Secret | Where it comes from | Where it lives |
 |---|---|---|
 | Discord #alerts webhook | 1Password item `vausmfy2q2m57r6scvziyrc7lq`, field `credential`, via the wrapper's `cached_op_read discord_alerts_webhook_url` | `/opt/uptime-kuma/monitors/discord-alerts.json` (0400, AutoKuma uid) and Kuma's database |
-| Kuma admin password | Generated on the host at first deploy | `/opt/uptime-kuma/secrets/admin_password` (root:3001 0440), mounted into both containers as a file secret |
+| Kuma admin password | Generated on the host at first deploy | `/opt/uptime-kuma/secrets/admin_password` (root:3001 0440, file secret in the Kuma container) and `autokuma.toml` (root:3001 0440, mounted into AutoKuma) |
 | NFS push token | Generated on the host at first deploy | `/opt/uptime-kuma/secrets/nfs_push_token` (root 0400), given to the probe with `LoadCredential` |
 
-The admin password never passes through Ansible: the bootstrap script reads
-the file secret inside the Kuma container. Log in as `admin` with
+The admin password never passes through Ansible: `kuma-admin.js` reads the
+file secret inside the Kuma container, and AutoKuma's config file is built
+from it on the host by a shell task. Log in as `admin` with
 `sudo cat /opt/uptime-kuma/secrets/admin_password` on vm117.
 
 A fresh Kuma makes the first visitor to `/setup` its admin. The role keeps

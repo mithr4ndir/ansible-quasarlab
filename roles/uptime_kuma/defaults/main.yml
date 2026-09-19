@@ -21,16 +21,18 @@ uptime_kuma_image: "louislam/uptime-kuma:2.5.5-slim-rootless@sha256:a292237a108f
 uptime_kuma_uid: 1000
 
 # AutoKuma reconciles the monitors in uptime_kuma_monitors_dir into Kuma, so
-# they live in this repo instead of only in Kuma's SQLite database. 2.1.0-rc.2
-# rather than 2.0.0 on purpose: 2.0.0 has two bugs that hit exactly this
-# role's first sync (duplicate monitors when many are created in one batch,
-# AutoKuma#177; a stat_hourly UNIQUE violation when monitors are created with
-# notifications, AutoKuma#166) and no reconnect after a Kuma restart (#157).
-# All three are fixed in 2.1.0-rc.1/rc.2. If AutoKuma misbehaves, Kuma keeps
-# monitoring with whatever monitors it already has; only drift correction
-# stops. The distroless image runs as root by default, so the compose file
-# drops it to uptime_kuma_autokuma_uid.
-uptime_kuma_autokuma_image: "ghcr.io/bigboot/autokuma:2.1.0-rc.2@sha256:12ed0e5085feeac65db760c1a3e3d4fa3acea0e7dc4c0e601e2ea64d82485a45"
+# they live in this repo instead of only in Kuma's SQLite database. 2.0.0 is
+# its latest stable release; 2.1.x is still a release candidate and is not
+# used. Tested end to end against Kuma 2.5.5 on 2026-09-19: login, entity
+# creation, notification wiring, no duplicates, re-creation after the Kuma
+# database was wiped. Known 2.0.0 behaviour: a newly created monitor can send
+# its first DOWN notification twice (it is restarted when its notifications
+# are attached, AutoKuma#166), and 2.0.0 cannot read its password from a
+# file reference in the environment, so it gets a config file instead (see
+# compose.yaml.j2). If AutoKuma stops working, Kuma keeps monitoring with the
+# monitors it has; only drift correction stops. The image runs as root by
+# default, so the compose file drops it to uptime_kuma_autokuma_uid.
+uptime_kuma_autokuma_image: "ghcr.io/bigboot/autokuma:2.0.0@sha256:8acbd3ad3ec8cb6c066aa0ee541154921283ec78159015937128541921c47974"
 uptime_kuma_autokuma_uid: 65532
 # Supplementary gid given to both containers so they can read the admin
 # password file secret (root:<gid> 0440). Numeric only; no host group needed.

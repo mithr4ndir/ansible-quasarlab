@@ -4,21 +4,22 @@
 Managed by Ansible (roles/uptime_kuma). Local edits are overwritten.
 
 Usage:
-    kuma-verify-entities --notification NAME --monitor NAME [--monitor NAME ...]
+    kuma-verify-entities --script /opt/uptime-kuma/kuma-admin.js
+        --notification NAME --monitor NAME [--monitor NAME ...]
 
 Writing monitor files is not the same as having monitors: AutoKuma could fail
 to log in, reject a file, or create duplicates (AutoKuma#177). So after a
-deploy the role asks Kuma itself, through the kuma CLI inside the autokuma
-container (which already has the credentials as a file secret), and fails
-unless every expected monitor:
+deploy the role asks Kuma itself. kuma-admin.js runs inside the uptime-kuma
+container (KUMA_ACTION=list), logs in with the file secret, and prints only
+names, ids, active flags and notification wiring. The check fails unless
+every expected monitor:
 
   - exists exactly once,
   - is active,
   - has the expected notification enabled.
 
 Prints one JSON line with the findings; exit 0 when all hold, 1 when not,
-2 when Kuma could not be asked. Holds and prints no secret: the CLI output is
-parsed here and only names and counts are reported.
+2 when Kuma could not be asked. Handles no secret.
 """
 
 from __future__ import annotations
@@ -33,19 +34,24 @@ from typing import Any, Callable, Sequence
 CLI_TIMEOUT_SECS = 60
 
 
-def kuma_cli(args: Sequence[str], docker: str = "docker") -> Any:
-    proc = subprocess.run(
-        [docker, "exec", "autokuma", "kuma", "--format", "json", *args],
-        capture_output=True, text=True, timeout=CLI_TIMEOUT_SECS, check=False,
-    )
-    if proc.returncode != 0:
-        reason = (proc.stderr.strip().splitlines() or [""])[-1][:200]
-        raise RuntimeError(f"kuma {' '.join(args)} exited {proc.returncode}: {reason}")
-    return json.loads(proc.stdout)
+def kuma_list(script: str, username: str, container: str = "uptime-kuma") -> dict:
+    with open(script, "rb") as stdin:
+        proc = subprocess.run(
+            ["docker", "exec", "-i", "-e", "KUMA_ACTION=list",
+             "-e", f"KUMA_ADMIN_USERNAME={username}", container, "node", "-"],
+            stdin=stdin, capture_output=True, timeout=CLI_TIMEOUT_SECS, check=False,
+        )
+    try:
+        result = json.loads(proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        raise RuntimeError(f"kuma-admin.js exited {proc.returncode} without a result") from None
+    if proc.returncode != 0 or not result.get("ok"):
+        raise RuntimeError(f"kuma-admin.js exited {proc.returncode}: {result.get('error', '')}"[:300])
+    return result
 
 
 def as_list(value: Any) -> list[dict]:
-    """`monitor list` is a map of id to monitor; `notification list` a list."""
+    """Kuma sends monitors as a map of id to monitor; accept a list too."""
     items = value.values() if isinstance(value, dict) else value
     return [item for item in items if isinstance(item, dict)]
 
@@ -75,14 +81,18 @@ def check(monitors: list[dict], notifications: list[dict], expected: Sequence[st
 
 
 def main(argv: Sequence[str] | None = None,
-         cli: Callable[[Sequence[str]], Any] = kuma_cli) -> int:
+         lister: Callable[..., dict] = kuma_list) -> int:
     parser = argparse.ArgumentParser(prog="kuma-verify-entities")
+    parser.add_argument("--script", required=True, help="path to kuma-admin.js on the host")
+    parser.add_argument("--username", default="admin")
+    parser.add_argument("--container", default="uptime-kuma")
     parser.add_argument("--notification", required=True)
     parser.add_argument("--monitor", action="append", required=True)
     args = parser.parse_args(argv)
     try:
-        monitors = as_list(cli(["monitor", "list"]))
-        notifications = as_list(cli(["notification", "list"]))
+        listed = lister(args.script, args.username, container=args.container)
+        monitors = as_list(listed.get("monitors", []))
+        notifications = as_list(listed.get("notifications", []))
     except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": f"could not ask Kuma: {type(exc).__name__}: {exc}"}))
         return 2

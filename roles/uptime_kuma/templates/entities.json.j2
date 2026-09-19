@@ -1,6 +1,7 @@
 {#- Every Kuma entity this role manages, keyed by AutoKuma id. Rendered to one
     JSON file per entity by tasks/monitors.yml. Field names follow AutoKuma's
-    entity types (docs/entity-types in BigBoot/AutoKuma at v2.1.0-rc.2). -#}
+    entity types; accepted by AutoKuma 2.0.0 against Kuma 2.5.5 in an end-to-end
+    test on 2026-09-19. -#}
 {%- set notification_id = 'discord-alerts' -%}
 {%- set description = 'Managed by Ansible (ansible-quasarlab roles/uptime_kuma). UI edits are reverted on the next AutoKuma sync.' -%}
 {%- set entities = {} -%}

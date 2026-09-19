@@ -126,6 +126,6 @@
   # docker_compose_v2 needs at least 2.18.
   failed_when: >-
     uptime_kuma_compose_version.rc != 0
-    or not (uptime_kuma_compose_version.stdout | trim is match('^v?([2-9]|[1-9][0-9]+)\.'))
+    or not (uptime_kuma_compose_version.stdout | trim is match('^v?([2-9]|[1-9][0-9]+)[.]'))
   # Under --check the plugin is only simulated as installed.
   ignore_errors: "{{ ansible_check_mode }}"

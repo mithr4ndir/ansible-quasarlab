@@ -1,4 +1,4 @@
-"""Tests for files/kuma-bootstrap-admin.js against fixtures/fake-kuma.js.
+"""Tests for files/kuma-admin.js against fixtures/fake-kuma.js.
 
 Run from the repo root, with socket.io and socket.io-client 4.8 installed in
 some node_modules directory (Kuma 2.5.5 ships socket.io-client ~4.8.3):
@@ -11,8 +11,11 @@ Without node or those modules the tests skip, and -rs says so. The fake
 implements the three socket.io events the script uses with the contracts of
 Kuma's server/server.js; it is not Kuma. What is pinned here is the script's
 own behaviour: create the admin only when none exists, always prove the login,
-refuse a Kuma someone else set up, give up at the deadline, and never print
-the password.
+refuse a Kuma someone else set up, give up at the deadline, never print the
+password, and list entities without their URLs, tokens or configs. The fake
+registers its handlers only after a delay and an "info" event, the way Kuma's
+connection handler does; a script that asks before "info" loses its first
+event. That race was hit for real against a fresh Kuma 2.5.5 on 2026-09-19.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from pathlib import Path
 import pytest
 
 ROLE = Path(__file__).resolve().parents[1]
-SCRIPT = ROLE / "files" / "kuma-bootstrap-admin.js"
+SCRIPT = ROLE / "files" / "kuma-admin.js"
 FAKE = Path(__file__).resolve().parent / "fixtures" / "fake-kuma.js"
 MODULES = os.environ.get("KUMA_BOOTSTRAP_NODE_MODULES", "")
 PASSWORD = "correct-horse-battery-staple-0123456789"
@@ -57,13 +60,14 @@ def kuma(request: pytest.FixtureRequest) -> int:
 
 
 def bootstrap(port: int, tmp_path: Path, password: str | None = PASSWORD,
-              username: str = "admin", timeout_ms: int = 30000) -> tuple[int, dict, str, float]:
+              username: str = "admin", timeout_ms: int = 30000,
+              action: str = "bootstrap") -> tuple[int, dict, str, float]:
     pw_file = tmp_path / "admin_password"
     if password is not None:
         pw_file.write_text(password + "\n")
     env = {**os.environ, "NODE_PATH": MODULES, "KUMA_URL": f"http://127.0.0.1:{port}",
            "KUMA_ADMIN_USERNAME": username, "KUMA_ADMIN_PASSWORD_FILE": str(pw_file),
-           "KUMA_BOOTSTRAP_TIMEOUT_MS": str(timeout_ms)}
+           "KUMA_ADMIN_TIMEOUT_MS": str(timeout_ms), "KUMA_ACTION": action}
     start = time.monotonic()
     with SCRIPT.open("rb") as stdin:
         proc = subprocess.run(["node", "-"], stdin=stdin, env=env, capture_output=True,
@@ -117,3 +121,28 @@ def test_bad_input_is_refused_before_connecting(password: str | None, username: 
     assert rc == 2 and out["ok"] is False
     if password:
         assert password not in text
+
+
+@pytest.mark.parametrize("kuma", ["fresh"], indirect=True)
+def test_list_reports_names_and_wiring_but_no_secrets(kuma: int, tmp_path: Path) -> None:
+    assert bootstrap(kuma, tmp_path)[0] == 0
+    rc, out, text, _ = bootstrap(kuma, tmp_path, action="list")
+    assert rc == 0 and out["ok"] is True
+    assert out["monitors"] == [
+        {"name": "Prometheus", "active": True, "notificationIDList": {"1": True}},
+        {"name": "NFS", "active": True, "notificationIDList": {"1": True}},
+    ]
+    assert out["notifications"] == [{"id": 1, "name": "Discord", "active": True}]
+    for secret in ("SECRET", "http://192.0.2.1", PASSWORD):
+        assert secret not in text
+
+
+@pytest.mark.parametrize("kuma", ["owned"], indirect=True)
+def test_list_with_the_wrong_password_is_refused(kuma: int, tmp_path: Path) -> None:
+    rc, out, _, _ = bootstrap(kuma, tmp_path, action="list")
+    assert rc == 5 and out["ok"] is False
+
+
+def test_unknown_action_is_refused(tmp_path: Path) -> None:
+    rc, out, _, _ = bootstrap(free_port(), tmp_path, action="rm-rf")
+    assert rc == 2 and "KUMA_ACTION" in out["error"]

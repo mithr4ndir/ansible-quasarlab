@@ -19,6 +19,8 @@
   ansible.builtin.command:
     argv: >-
       {{ ['/usr/local/bin/kuma-verify-entities',
+          '--script=' ~ uptime_kuma_dir ~ '/kuma-admin.js',
+          '--username=' ~ uptime_kuma_admin_username,
           '--notification=' ~ uptime_kuma_discord_notification_name]
          + (uptime_kuma_expected_monitor_names | map('regex_replace', '^', '--monitor=') | list) }}
   register: uptime_kuma_verify
