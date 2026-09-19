@@ -21,24 +21,28 @@ uptime_kuma_image: "louislam/uptime-kuma:2.5.5-slim-rootless@sha256:a292237a108f
 uptime_kuma_uid: 1000
 
 # AutoKuma reconciles the monitors in uptime_kuma_monitors_dir into Kuma, so
-# they live in this repo instead of only in Kuma's SQLite database. 2.0.0 is
-# its latest stable release. 2.1.0-rc.2 is a release candidate and is NOT
-# pinned here; whether to use it is an owner decision (see the PR for #178).
-# Both were run end to end against Kuma 2.5.5 on 2026-09-19 with this role's
-# compose file and all eight monitors. Both created every monitor once, wired
-# to Discord, and delivered alerts. What 2.0.0 got wrong and rc.2 did not:
-#   - after a Kuma-only restart (crash, OOM, docker restart) 2.0.0 never
-#     synced again: "You are not logged in" on every sync (AutoKuma#157).
-#     Monitoring continues; drift correction stops until AutoKuma restarts.
-#     This role restarts it on every deploy that touches Kuma.
-#   - each new monitor's first DOWN alert was sent twice, and Kuma logged
-#     SQLITE_CONSTRAINT UNIQUE failures on stat_daily (AutoKuma#166).
-# Not seen with either: duplicate monitors (AutoKuma#177). Also in 2.0.0: no
-# @/file syntax for env values (so the password comes from a config file, see
-# compose.yaml.j2) and push monitors ignore resend_interval (#152). The image
-# runs as root by default, so the compose file drops it to
-# uptime_kuma_autokuma_uid.
-uptime_kuma_autokuma_image: "ghcr.io/bigboot/autokuma:2.0.0@sha256:8acbd3ad3ec8cb6c066aa0ee541154921283ec78159015937128541921c47974"
+# they live in this repo instead of only in Kuma's SQLite database.
+#
+# Pinned to the release candidate 2.1.0-rc.2 ON PURPOSE (owner decision,
+# 2026-09-19, #178), by tag and digest. Do not "tidy" this back to the stable
+# 2.0.0 without re-running the comparison. Both were run end to end against
+# Kuma 2.5.5 with this role's compose file and all eight monitors; both
+# created every monitor once and delivered alerts, but 2.0.0:
+#   - never synced again after a Kuma-only restart (crash, OOM, docker
+#     restart): "You are not logged in" on every sync, 10 times in 90s
+#     (AutoKuma#157). Monitors-as-code would silently stop after any Kuma
+#     crash. rc.2 picked up a new monitor file 10s after the same restart.
+#   - sent each new monitor's first DOWN alert twice and made Kuma log
+#     SQLITE_CONSTRAINT UNIQUE failures on stat_daily (AutoKuma#166). rc.2:
+#     one alert, clean log.
+# AutoKuma is outside the alerting path (Kuma does the checks and sends the
+# alerts), and Kuma itself stays on a stable release.
+# Revisit when AutoKuma ships a stable release containing the #157 fix: move
+# to it, re-run the end-to-end comparison, update this comment.
+# The image runs as root by default, so the compose file drops it to
+# uptime_kuma_autokuma_uid. The password reaches it through a config file
+# (see compose.yaml.j2), which works on both 2.0.0 and rc.2.
+uptime_kuma_autokuma_image: "ghcr.io/bigboot/autokuma:2.1.0-rc.2@sha256:12ed0e5085feeac65db760c1a3e3d4fa3acea0e7dc4c0e601e2ea64d82485a45"
 uptime_kuma_autokuma_uid: 65532
 # Supplementary gid given to both containers so they can read the admin
 # password file secret (root:<gid> 0440). Numeric only; no host group needed.

@@ -438,6 +438,19 @@ def test_verifier_reports_when_kuma_cannot_be_asked(capsys: pytest.CaptureFixtur
 # Defaults that encode decisions
 # ---------------------------------------------------------------------------
 
+def test_autokuma_rc_pin_keeps_its_reason() -> None:
+    # The release-candidate pin is deliberate; without the reason next to it
+    # the next tidy-up reverts it to 2.0.0, which stops syncing after any
+    # Kuma restart (AutoKuma#157).
+    text = (ROLE / "defaults" / "main.yml").read_text()
+    assert defaults()["uptime_kuma_autokuma_image"] == (
+        "ghcr.io/bigboot/autokuma:2.1.0-rc.2"
+        "@sha256:12ed0e5085feeac65db760c1a3e3d4fa3acea0e7dc4c0e601e2ea64d82485a45")
+    for needle in ("AutoKuma#157", "AutoKuma#166",
+                   "Revisit when AutoKuma ships a stable release containing the #157 fix"):
+        assert needle in text
+
+
 def test_images_are_digest_pinned_and_not_kuma_1() -> None:
     d = defaults()
     for key in ("uptime_kuma_image", "uptime_kuma_autokuma_image"):

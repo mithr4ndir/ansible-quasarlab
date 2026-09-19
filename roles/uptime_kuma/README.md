@@ -15,7 +15,7 @@ disk is not on NFS, and alerts straight to Discord.
 |---|---|
 | Docker CE + compose plugin | From Docker's apt repo, signing key pinned by fingerprint. Replaces Debian's `docker.io`, which has no `docker compose` and is why the original labctl deploy never started Kuma. |
 | `uptime-kuma` container | `louislam/uptime-kuma:2.5.5-slim-rootless`, digest-pinned, uid 1000, all capabilities dropped, SQLite in `/opt/uptime-kuma/data`. |
-| `autokuma` container | `ghcr.io/bigboot/autokuma:2.0.0` (latest stable), digest-pinned, uid 65532. Reconciles the files in `/opt/uptime-kuma/monitors` into Kuma every 60s. No Docker socket. |
+| `autokuma` container | `ghcr.io/bigboot/autokuma:2.1.0-rc.2`, digest-pinned (a deliberate release-candidate pin, see below), uid 65532. Reconciles the files in `/opt/uptime-kuma/monitors` into Kuma every 60s. No Docker socket. |
 | `kuma-nfs-probe.timer` | Every 60s, a real NFS read of a sentinel file on `192.168.1.15:/mnt/tank/k8s`, pushed to a Kuma push monitor. |
 
 ## Monitors (defined in `defaults/main.yml`)
@@ -46,8 +46,12 @@ Why AutoKuma and not `lucasheld.uptime_kuma`: the collection's last release
 was 2023-08 and its client library's last release 2023-09, with an open
 "This project seems to be abandoned" issue; it supports only Kuma 1.x, whose
 last release (1.23.17) still carries GHSA-v832-4r73-wx5j, fixed only in 2.2.1.
-AutoKuma is maintained and targets Kuma 2. The role pins its latest stable
-release, 2.0.0; 2.1.x is still a release candidate. AutoKuma speaks Kuma's
+AutoKuma is maintained and targets Kuma 2. The role pins the release
+candidate 2.1.0-rc.2 by digest, by owner decision (2026-09-19, #178), on the
+evidence below: stable 2.0.0 silently stops syncing after any Kuma restart.
+AutoKuma is outside the alerting path, and Kuma itself stays on a stable
+release. Revisit when AutoKuma ships a stable release containing the #157
+fix. AutoKuma speaks Kuma's
 unofficial socket.io API, so a Kuma upgrade can break it. That only stops
 drift correction, never monitoring, and the deploy's verify step fails
 loudly if it happens.
@@ -55,7 +59,7 @@ loudly if it happens.
 Stable 2.0.0 against release candidate 2.1.0-rc.2, same role, same eight
 monitors, same Kuma 2.5.5 (2026-09-19):
 
-| | 2.0.0 (pinned) | 2.1.0-rc.2 |
+| | 2.0.0 (stable) | 2.1.0-rc.2 (pinned) |
 |---|---|---|
 | Monitors created once each, wired to Discord | yes | yes |
 | Duplicate monitors (AutoKuma#177) | not seen | not seen |
@@ -64,10 +68,9 @@ monitors, same Kuma 2.5.5 (2026-09-19):
 | After a Kuma-only restart | never syncs again, "You are not logged in" x10 in 90s (#157) | new monitor file picked up in 10s |
 | Push monitor resend interval | 0 in Kuma's log, i.e. ignored (#152) | not observed (fixed per its changelog) |
 
-The 2.0.0 restart failure does not stop monitoring, only drift correction,
-and the role restarts AutoKuma whenever a deploy recreates Kuma. An
-unplanned Kuma restart (crash, OOM) leaves AutoKuma stale until the next
-deploy. Moving to rc.2 is a one-line change of `uptime_kuma_autokuma_image`.
+With 2.0.0, any unplanned Kuma restart (crash, OOM) would leave
+monitors-as-code silently stale until the next deploy. That is why rc.2 is
+pinned. The role still restarts AutoKuma whenever a deploy recreates Kuma.
 
 ### Tested end to end (2026-09-19)
 
@@ -79,7 +82,7 @@ afterwards.
 
 - Kuma started on SQLite with no setup page; `kuma-admin.js` created the
   admin, a rerun changed nothing, and a wrong password was refused.
-- AutoKuma 2.0.0 logged in from the config file (no password in
+- AutoKuma (rc.2 and 2.0.0) logged in from the config file (no password in
   `docker inspect`), created the notification and all monitors once each,
   every one wired to the notification.
 - An HTTP monitor on an endpoint answering 500 with an apiserver-style

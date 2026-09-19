@@ -51,8 +51,8 @@ services:
       AUTOKUMA__KUMA__URL: http://uptime-kuma:3001
       AUTOKUMA__KUMA__USERNAME: "{{ uptime_kuma_admin_username }}"
       # The password comes from $XDG_CONFIG_HOME/autokuma/config.toml, mounted
-      # below. AutoKuma 2.0.0 has no file-reference syntax for env values, and
-      # a plain env value would show in `docker inspect`.
+      # below: a plain env value would show in `docker inspect`, and the stable
+      # 2.0.0 has no file-reference syntax for env values. Works on both.
       XDG_CONFIG_HOME: /config
       AUTOKUMA__STATIC_MONITORS: /monitors
       AUTOKUMA__DATA_PATH: /data
