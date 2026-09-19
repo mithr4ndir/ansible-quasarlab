@@ -42,8 +42,23 @@ sudo apt install -y 1password-cli
 cd /home/ladino
 python3 -m venv .venv
 source .venv/bin/activate
-pip install ansible-core==2.18 community.proxmox PyYAML
+pip install ansible-core==2.16.3 community.proxmox PyYAML
 ```
+
+**Keep this pin aligned with the test suite.** It reads `2.16.3` because that is
+what command-center1 actually runs (`ansible [core 2.16.3]`, verified
+2026-09-19) and what every test invocation in the repo pins. This line
+previously said `2.18`, which matched neither, and would have rebuilt the
+controller onto a version nothing is tested against.
+
+That is not a tidiness point. Several tests drive Ansible's own templating and
+conditional internals, to evaluate `when:` and render values exactly as
+production does, and those internals change between releases: an unpinned
+install once picked up 2.21.4, which had removed
+`Conditional.evaluate_conditional` outright.
+
+If you deliberately move the controller to a new version, change it here **and**
+at the test call sites in the same commit, and run the suite before trusting it.
 
 ## Step 3: clone the repo
 

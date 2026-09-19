@@ -168,6 +168,83 @@ ansible-playbook playbooks/monitoring.yml --diff --limit k8cluster2
 ansible-playbook playbooks/monitoring.yml --diff --tags node_exporter
 ```
 
+### Onboarding a new VM
+
+**Tag the VM first. Nothing else here works until you do.** Group membership is
+derived from Proxmox VM tags, so an untagged VM is in no managed group, no
+playbook targets it, and no run reports a problem. That is not a hypothetical:
+musicbot (vm107) was built, ran in production, and was never once touched by
+Ansible, because it carried no tags. No baseline, no node_exporter, no Wazuh
+agent, and nothing anywhere said so (issue #190). See "How groups are formed" in
+the repo README for the mechanism.
+
+!!! danger "A missing tag is silent, not loud"
+    Ansible reports on the hosts it reached. It cannot report on a host it was
+    never told about. Treat "the run was green" as evidence about the hosts in
+    the recap and about nothing else.
+
+1. **Tag it in Proxmox.** Every managed VM needs `linux`. Add a role tag
+   alongside it so group_vars apply: `linux;k8s`, `linux;media`, `linux;services`.
+
+   ```bash
+   qm set <vmid> --tags 'linux;services'
+   qm config <vmid> | grep tags
+   ```
+
+2. **Codify the tag in Terraform.** The tag is infrastructure, not a one-off. A
+   tag set only by hand is lost the next time the VM is rebuilt from
+   `terraform-quasarlab`, which puts the host straight back into the
+   unmanaged state above.
+
+3. **Confirm it actually landed in the group.** Do not skip this; it is the
+   check that would have caught #190.
+
+   ```bash
+   ansible-inventory --graph linux | grep <hostname>
+   ```
+
+   If the hostname is absent, stop and fix the tag. Nothing downstream will
+   tell you.
+
+4. **Add `host_vars/<hostname>/vars.yml` if the host needs overrides**, such as
+   `unattended_upgrades_blacklist` for a managed service, or
+   `node_exporter_systemd_units`. The directory name must match the inventory
+   hostname **exactly, including case**; a mismatch is silently inert.
+
+5. **Dry run, then apply.**
+
+   ```bash
+   ansible-playbook playbooks/vm_baseline.yml --check --diff --limit <hostname>
+   ansible-playbook playbooks/vm_baseline.yml --diff --limit <hostname>
+   ```
+
+6. **Verify the host is genuinely managed**, not merely reachable:
+
+   - the play recap shows the host with `failed=0` and `unreachable=0`
+   - `ssh <hostname> 'systemctl is-active node_exporter chrony'` returns active
+   - the Wazuh manager lists the agent as active, in the expected group
+   - Prometheus has a target for the host and it is `up`
+   - the operator SSH keys are present: see "Verifying a host actually got the
+     key" in `roles/common/README.md`
+
+7. **Audit the fleet for others like it.** Onboarding one host is a good moment
+   to check that no other VM is hiding:
+
+   ```bash
+   # Every VM Proxmox knows about, on both nodes
+   ssh root@192.168.1.10 qm list; ssh root@192.168.1.11 qm list
+   # Every host Ansible knows about
+   ansible-inventory --graph linux
+   ```
+
+   Anything in the first list and not the second is unmanaged. Stopped
+   templates are expected; running VMs are not.
+
+Removing a VM is the mirror image of this, and has its own rules about
+Prometheus targets, inventory entries and alert routes. Follow the
+decommissioning checklist in the repo `CLAUDE.md` rather than just deleting the
+VM.
+
 ---
 
 ## TrueNAS SCALE
@@ -197,14 +274,19 @@ Only do this after the underlying issue is resolved (e.g., drive reseated, cable
 ssh truenas_admin@192.168.1.15 'sudo zpool clear tank'
 ```
 
-### Drive Layout (tank pool — 4 mirrors)
+### Drive Layout (tank pool, 4 mirrors)
+
+`sd` letters are discovery order and can move across reboots. Treat this table
+as the pool's shape, and resolve any individual drive by serial before acting
+on it.
+
 | Drive | Model | Mirror | Notes |
 |-------|-------|--------|-------|
-| sda | Inland SATA SSD 4TB | mirror-2 | SMART monitoring disabled |
-| sdb | Inland SATA SSD 4TB | mirror-1 | SMART monitoring disabled |
-| sdc | Inland SATA SSD 4TB | mirror-2 | SMART monitoring disabled |
-| sdd | Inland SATA SSD 4TB | mirror-3 | SMART monitoring disabled |
-| sde | Inland SATA SSD 4TB | mirror-3 | SMART monitoring disabled |
+| sda | Inland SATA SSD 4TB | mirror-2 | SMART polling disabled, see below |
+| sdb | Inland SATA SSD 4TB | mirror-1 | SMART polling disabled, see below |
+| sdc | Inland SATA SSD 4TB | mirror-2 | SMART polling disabled, see below |
+| sdd | Inland SATA SSD 4TB | mirror-3 | SMART polling disabled, see below |
+| sde | Inland SATA SSD 4TB | mirror-3 | SMART polling disabled, see below |
 | sdf | WD Blue SA510 4TB | mirror-0 | SMART monitoring enabled |
 | sdg | WD Blue SA510 4TB | mirror-0 | SMART monitoring enabled |
 | sdh | WD Blue SA510 4TB | mirror-1 | SMART monitoring enabled |
@@ -212,9 +294,102 @@ ssh truenas_admin@192.168.1.15 'sudo zpool clear tank'
 | nvme1n1 | WD BLACK SN850X 4TB | L2ARC | |
 | nvme2n1 | YSR 128GB | boot-pool | |
 
-**Why SMART is disabled on Inland SSDs:** These budget drives don't fully implement SMART log commands, causing TrueNAS to fire false-positive critical alerts. The drives are healthy — ZFS scrubs catch actual data errors regardless of SMART status.
+!!! warning "SMART is off on the Inland drives, and that is not a statement about their health"
+    SMART polling is disabled on the five Inland SSDs because these budget
+    drives do not fully implement the SMART log commands, so TrueNAS fires
+    false-positive critical alerts when it polls them. **Disabling it was a
+    workaround for a broken SMART implementation, not a finding that the drives
+    are fine.** An earlier version of this page said "the drives are healthy".
+    That was wrong, and it was wrong in the most expensive direction: it read
+    as evidence when it was only an absence of evidence.
 
-**Why mirrors (RAID10) over RAIDZ:** Mixed workload — iSCSI block storage for K8s PVs and databases (TimescaleDB, Elastic) needs random I/O performance. Mirrors also resilver faster and allow expansion by adding pairs.
+    Three of these drives are open RMA candidates for repeated bus dropouts,
+    and two of them share a vdev. See below.
+
+**The real failure mode is not in SMART.** These drives fail by dropping off the
+SATA bus under sustained writes, which SMART would not report even if it worked
+here: the drive stops answering, the link resets, and ZFS sees I/O errors. That
+shows up in the kernel log, so that is where you look:
+
+```bash
+# On the NAS. Bus dropouts and link resets, which SMART will never show you.
+dmesg | grep -ciE 'COMRESET|hard resetting|failed command'    # count
+dmesg | grep -iE 'COMRESET|hard resetting|failed command|ata[0-9]+: ' | tail -40
+zpool status tank -L
+```
+
+**Known bad batch (2026-09-16).** Three Inland IB24AK units, firmware/model
+revision **VE1R9204**, in bays 2, 3 and 5, repeatedly drop off the bus under
+sustained writes. Their **VE1R9004** siblings are clean, so this is a batch
+problem, not a model problem. An RMA pack is prepared at
+`~/rma-inland-ssd-2026-09-16.md`.
+
+**mirror-3 pairs two of the bad-batch drives**, which is the worst available
+placement: a single vdev whose both halves come from the same failing batch has
+no healthy member to resilver from if the second one goes while the first is
+being replaced. Rebalancing so each bad-batch drive is mirrored against a
+known-good one is worth doing before any replacement, not after.
+
+Both mirror-3 members, mapped by PARTUUID on 2026-09-19. PARTUUID and serial are
+stable across reboots; `sd` letters are not, so identify these two by the
+columns below and never by a letter:
+
+| vdev member (PARTUUID) | Serial | Firmware |
+|---|---|---|
+| `701d7b32-63bb-4ae2-8501-73261bcff843` | IB24AK0004S00064 | VE1R9204 |
+| `339fd304-fce6-45e9-8e63-bb0c164d8bfd` | IB24AK0004S00004 | VE1R9204 |
+
+!!! note "Current state: quiet since 2026-09-19"
+    Since the NAS reboot on 2026-09-19 the error count is **zero**
+    (`dmesg | grep -ciE 'COMRESET|hard resetting|failed command'`). The drives
+    are not throwing errors today. That is worth knowing so this page is not
+    read as an active incident, and it is **not** a reason to close the RMA:
+    the failures are load-dependent and the batch evidence has not changed.
+    Re-run the count after any heavy write period, such as a large restore or a
+    scrub.
+
+**Why mirrors (RAID10) over RAIDZ:** mixed workload. iSCSI block storage for K8s
+PVs and databases (TimescaleDB) needs random I/O performance. Mirrors also
+resilver faster and allow expansion by adding pairs, which matters more than
+usual while a bad batch is still in the pool.
+
+### Identifying a physical drive before you pull it
+
+**Do not identify a drive by its `sd` letter.** Linux assigns them in discovery
+order, so they move across reboots, and this pool has been rebooted since the
+drive layout table was written. Alphabetical order is not merely unstable here, it is
+actively misleading: on this machine **`sdb` sits on `ata1` and `sda` on
+`ata2`**.
+
+On the DXP8800 chassis the bay LEDs map as `diskN` = kernel `ataN` = the **Nth
+tray counting from the left** (confirmed visually 2026-09-16). That is the
+mapping to trust, and it is not the `sd` ordering.
+
+The authoritative chain, from a ZFS vdev member to a physical tray:
+
+```bash
+zpool status tank -L                          # PARTUUID per vdev member
+readlink -f /dev/disk/by-partuuid/<uuid>      # -> /dev/sdX
+readlink -f /sys/block/sdX                    # -> .../ataN/...   N is the tray, from the left
+ls -l /dev/disk/by-id/ | grep -i inland       # serials, to cross-check against the RMA pack
+```
+
+!!! danger "On 2026-09-16 the wrong tray was pulled twice, and mirror-3 briefly had zero working disks"
+    Bay 5 was lit. A helper pulled **bay 3** instead, twice. Bay 3 held the
+    only live drive in mirror-3, whose other member was already down, so that
+    vdev went to **zero working disks**. One more mistake there would have been
+    data loss, not an inconvenience.
+
+    It was caught only by reading `ata3: SATA link down` in the kernel log. The
+    person's own account of which tray they had pulled was wrong **both times**,
+    so do not accept a verbal report as evidence, including your own.
+
+    After any reseat or pull, confirm which port actually changed before
+    concluding anything:
+
+    ```bash
+    journalctl -k | grep -E 'ata[0-9]+: SATA link (up|down)|detaching|Attached SCSI disk'
+    ```
 
 ### TrueNAS Alerts via API
 ```bash
@@ -266,6 +441,30 @@ The role skips download/extract/install if the binary already exists at the conf
 ## Proxmox Hosts
 
 ### GPU Passthrough (pve2)
+
+!!! warning "Historical as of 2026-05-31. Nothing below is live configuration."
+    No VM on either node has held a GPU since 2026-05-31. The RTX 2080 Ti was
+    removed after it repeatedly fell off the bus under VFIO, Jellyfin moved to
+    CPU transcoding, and the card was repurposed. `pve_gpu_vms` is empty, so the
+    `pve/hookscripts` role now tears this machinery down rather than deploying
+    it, and `a3abfe7` purged the NVIDIA stack from the k8s nodes and the PVE
+    hosts.
+
+    Confirm before assuming either way:
+
+    ```bash
+    grep -l hostpci /etc/pve/qemu-server/*.conf    # expect: no matches
+    ```
+
+    See `docs/decisions/2026-05-31-jellyfin-cpu-transcoding.md` and
+    `roles/pve/hookscripts/README.md`. Kept here because it is the record of
+    what the configuration was, and what to restore if passthrough is ever
+    reinstated. Note the two recovery layers had latent bugs that made them
+    ineffective; the hookscripts README lists them, and they must be fixed
+    before anyone relies on this again.
+
+The configuration as it stood:
+
 - RTX 2080 Ti passed to k8cluster2 (VM 109) via vfio-pci
 - PCI addresses: `0a:00.0` (VGA), `0a:00.1` (Audio), `0a:00.2` (USB), `0a:00.3` (Serial)
 - GRUB: `amd_iommu=on iommu=pt`
@@ -314,11 +513,9 @@ no longer exist as VMs.
 | 119 | postgresql | running | 4G | PostgreSQL |
 | 101, 102, 108, 114, 9000 | templates / stopped | stopped | | Windows, AD, cloud-init templates |
 
-Note: as of 2026-08-24 no VM on pve2 has a `hostpci` entry. The GPU passthrough
-described above is no longer attached to k8cluster2, consistent with the move
-to CPU transcoding (`docs/decisions/2026-05-31-jellyfin-cpu-transcoding.md`).
-Confirm with `grep -l hostpci /etc/pve/qemu-server/*.conf` before assuming
-either way.
+Note: as of 2026-08-24 no VM on pve2 has a `hostpci` entry, consistent with the
+2026-05-31 move to CPU transcoding. See "GPU Passthrough (pve2)" above, which is
+marked historical for that reason.
 
 ### Rebooting a Proxmox node
 

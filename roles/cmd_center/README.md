@@ -33,7 +33,7 @@ which is already listed in `playbooks/cmd_center.yml`.
 2. User `ladino` with passwordless sudo (adjust `ansible_user` in inventory if using a different account)
 3. SSH key on the Ansible runner that can reach the new host
 4. Ansible vault password (see Vault section below)
-5. 1Password service account token for the Infrastructure vault (consumed by the planned `onepassword_token.yml` task)
+5. 1Password service account token for the Infrastructure vault, placed by hand at `~/.config/op/service-account-token` (step 4a of `docs/disaster-recovery.md`). No task in this role installs it, and it is not a vault variable.
 
 ## Running
 
@@ -87,12 +87,21 @@ Every task is designed to be re-runnable without side effects:
 
 ## Vault
 
-Secrets for this role live in `group_vars/cmd_center/vault.yml` (ansible-vault encrypted).
-The vault password file path is set in `ansible.cfg` under `vault_password_file`.
+The vault password comes from `scripts/vault-pass.sh`, wired up in `ansible.cfg`
+under `vault_password_file`. It reads the 1Password cache first and falls back
+to a `.vault_pass` file at the repo root.
 
-Variables currently expected in the vault (once `onepassword_token.yml` lands):
+**This role has no vault file of its own.** There is no `group_vars/cmd_center/`
+directory, and `playbooks/cmd_center.yml` declares no `vars_files`, so the only
+encrypted variables in scope are the ones Ansible auto-loads from
+`group_vars/all/vault.yml`.
 
-- `op_service_account_token` read-only token for the Infrastructure vault
+Earlier versions of this section described a `group_vars/cmd_center/vault.yml`
+holding `op_service_account_token`, "once `onepassword_token.yml` lands". None
+of those three things exist: not the directory, not the variable anywhere in the
+repo, and not the task file. The 1Password service account token is a manual
+prerequisite on disk, as described under "Manual prereqs" above. `onepassword_token.yml`
+remains a planned task file, listed as such at the top of `tasks/main.yml`.
 
 ## Variables (defaults)
 
