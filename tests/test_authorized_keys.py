@@ -47,6 +47,26 @@ class AuthorizedKeyTests(unittest.TestCase):
             self.assertTrue(k.startswith(KEY_TYPES), f"not a public key line: {k[:30]}")
             self.assertNotIn("PRIVATE KEY", k)
 
+    def test_no_key_has_a_mangled_comment(self):
+        """Each entry must be exactly type, blob, comment.
+
+        The ed25519 key was first copied verbatim off k8cluster1, where the
+        line reads `... cwladino@outlook.com1~ssh-ed25519 AAAA... ` three
+        times over: a stripped Home-key escape (ESC[1~) from an old paste.
+        sshd accepts it, because everything past the blob is just the comment,
+        so it authorises the right key and hides in plain sight. Copying host
+        state into the repo copies its scars too.
+        """
+        for k in yaml.safe_load(DEFAULTS.read_text())["vm_baseline_authorized_keys"]:
+            fields = k.split()
+            self.assertEqual(
+                len(fields), 3, f"expected type/blob/comment, got {len(fields)} fields"
+            )
+            self.assertNotIn(
+                "ssh-", fields[2], f"key type embedded in the comment: {fields[2][:40]}"
+            )
+            self.assertNotIn("1~", k, "stripped terminal escape in the key line")
+
     def test_not_exclusive(self):
         """exclusive: true would delete keys added out of band, including
         cloud-init's, and could lock everyone out of a host."""

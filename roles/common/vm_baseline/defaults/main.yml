@@ -38,7 +38,7 @@ vm_baseline_journald_max_file_size: 50M
 # playbooks would have fixed it.
 vm_baseline_authorized_keys:
   - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDLRVFCH1iVC+hd5XFjqKqRMmzWMHzH+/YbbrjNtvNuD6CKj/isLGFUtdFRB7NH2SOlg/ikdlVrZdZv6V6x3/E4ByBkVAggjdAjVEHqj9RjX/HnEZtYlCJTdBY4+E6mRA2wkZrRq2qLJPxo8NAcuZgkG5m05+bbXVyRw/G+v/EKqhOK/QcklaybJRJYP7+1J3h/VQfnGPM9paJiyg9l54ZFRns9OUEoGP8uSUkHl1ykMv/mnSzpwD5mCkOHfcq/Xsm+AlfACQKE37YqLyCfGaUAzPa6uYpG3IhScFUHk7xCbX7cJxn5bzm81kE+cy2eQ5vISTu3y0bXJ4VgzjQ75jgruIfbUSYCyBF7hOa9Dbc/MuEqLmXtRELLL+CylkiX5yMhXAvwHOoDDvxFPb0D1zzokj94b5nwmrxVcliIfVJurx8CsYHPZlC4oS5huhZUsofzvrodSSFcmqWjPAANlrhmE0PKOFOnb82ZmVj+27nrduMjU/FGKT23zRha09a6KxN0due6dSU/qWaaelHvHDwTu2WXyoFO7u2Ukaz0/KjOXSMktzBWTIqrNeYLdl78GWXlUSjhgOe4LJkgOP8obO0TBmmSNzn9qYRmnQgzNyQ4VXhZVQhx/kBr9gcB6BeShGtKh8UO9jNYH2l13bvyP6o0RiMgIlT7+4hGJU2oih+S8Q== cwladino@outlook.com"
-  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcVvSNFs6L9IKRS3pY0Bux+KG5XNKWpMgRvUqeQLeCl cwladino@outlook.com1~ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcVvSNFs6L9IKRS3pY0Bux+KG5XNKWpMgRvUqeQLeCl cwladino@outlook.com1~ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcVvSNFs6L9IKRS3pY0Bux+KG5XNKWpMgRvUqeQLeCl cwladino@outlook.com"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKcVvSNFs6L9IKRS3pY0Bux+KG5XNKWpMgRvUqeQLeCl cwladino@outlook.com"
 # Never true here: exclusive would fight cloud-init and lock out any key added
 # out of band. Keys are added, never removed.
 vm_baseline_authorized_keys_exclusive: false
