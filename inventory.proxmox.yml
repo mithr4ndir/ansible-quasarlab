@@ -14,13 +14,21 @@ compose:
   ansible_host: proxmox_agent_interfaces | selectattr('name', 'ne', 'lo') | map(attribute='ip-addresses') | first | select('match', '^[0-9]') | first | regex_replace('/.*', '')
   ansible_user: "'ladino'"
 
-# Group VMs by their Proxmox tags
+# Group VMs by their Proxmox tags: each tag becomes a group of the same name.
+#
+# `default_value` is meant to collect tagless VMs into an `untagged` group, but
+# it does not appear to work: on 2026-09-19 musicbot (vm107) carried no tags,
+# landed in no group at all, and no run ever mentioned it (issue #190). The
+# plugin most likely yields [''] rather than [] for a tagless VM, producing an
+# empty group name. Do not rely on `untagged` existing until that is confirmed;
+# audit with `ansible-inventory --graph` against `qm list` instead.
 keyed_groups:
   - key: proxmox_tags_parsed
     separator: ""
     prefix: ""
     default_value: "untagged"
 
-# Create the linux parent group from tagged VMs
+# Create the linux parent group from tagged VMs. A VM without the `linux` tag
+# is in no managed group, so no playbook targets it and nothing errors.
 groups:
   linux: "'linux' in (proxmox_tags_parsed | default([]))"
