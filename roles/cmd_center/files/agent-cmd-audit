@@ -111,6 +111,12 @@ EMBEDS_MAX = 10
 CONTENT_MAX = 2000
 
 COMMAND_MAX_CHARS = 300
+# When a batch has a line the embed had to cut, the whole batch is attached as
+# a text file so the full command is one click away. Discord embeds have no
+# collapsible block, and raising the cap just spends the 6000-char budget.
+TRANSCRIPT_FILENAME = "commands.txt"
+TRANSCRIPT_MAX_BYTES = 64 * 1024
+TRANSCRIPT_LINE_MAX = 4000
 # Beyond this a command is withheld outright: redaction over something this
 # long is not a bet worth taking.
 HARD_DROP_CHARS = 4096
@@ -918,7 +924,53 @@ def build_embeds(
     return embeds, withheld
 
 
-def build_payload(records: list[dict[str, Any]], labels: Mapping[str, str]) -> tuple[dict[str, Any], int]:
+def transcript_entry(record: Mapping[str, Any]) -> tuple[str, str]:
+    """One transcript line, plus the full command text it was built from.
+
+    The text is the same sanitized string the embed shows, so a withheld body
+    stays withheld here: the attachment lifts the display cap, never redaction.
+    """
+    stamp = str(record.get("ts") or "")[11:19] or "--:--:--"
+    status = str(record.get("status") or STATUS_OK)
+    if record.get("canary"):
+        return f"{stamp}  {status:<12}  canary {record.get('nonce') or ''}", ""
+    safe, _ = sanitize_command(str(record.get("command") or ""))
+    full = clean_text(safe, TRANSCRIPT_LINE_MAX)
+    return f"{stamp}  {status:<12}  {full}", full
+
+
+def build_transcript(
+    records: list[dict[str, Any]], labels: Mapping[str, str], cap: int, host: str = ""
+) -> bytes | None:
+    """The batch as a text file, or None when nothing was cut.
+
+    Attached only when at least one line lost characters to the embed cap, so
+    an ordinary batch stays a plain message with no file hanging off it.
+    """
+    lines = [f"# agent command audit · {host or '?'} · {iso(dt.datetime.now(dt.timezone.utc))}", ""]
+    trimmed = False
+    for session, group in group_records(records)[:EMBEDS_MAX]:
+        first = group[0]
+        workspace = str(first.get("workspace") or "")
+        label = labels.get(workspace, workspace) or "no workspace"
+        lines.append(f"## {label} · {first.get('agent') or 'agent'} · session {session[:8]}")
+        for record in group:
+            line, full = transcript_entry(record)
+            if full and len(full) > cap:
+                trimmed = True
+            lines.append(line)
+        lines.append("")
+    if not trimmed:
+        return None
+    body = "\n".join(lines).encode("utf-8", "replace")
+    if len(body) > TRANSCRIPT_MAX_BYTES:
+        body = body[:TRANSCRIPT_MAX_BYTES].rsplit(b"\n", 1)[0] + b"\n# truncated at file size limit\n"
+    return body
+
+
+def build_payload(
+    records: list[dict[str, Any]], labels: Mapping[str, str], host: str = ""
+) -> tuple[dict[str, Any], int, bytes | None]:
     """Shrink the per-entry cap until the batch fits Discord's 6000 total."""
     cap = COMMAND_MAX_CHARS
     embeds, withheld = build_embeds(records, labels, cap)
@@ -931,7 +983,7 @@ def build_payload(records: list[dict[str, Any]], labels: Mapping[str, str]) -> t
         "username": "cmd audit",
         "embeds": embeds,
         "allowed_mentions": {"parse": []},
-    }, withheld
+    }, withheld, build_transcript(records, labels, cap, host)
 
 
 # ---------------------------------------------------------------------------
@@ -951,19 +1003,51 @@ def retry_after_secs(error: urllib.error.HTTPError) -> float:
     return min(max(value, 0.0), POST_MAX_SLEEP_SECS)
 
 
+def multipart_body(payload: Mapping[str, Any], attachment: bytes) -> tuple[bytes, str]:
+    """Encode payload_json plus one text file as multipart/form-data.
+
+    The file name is a fixed constant, never anything derived from a command,
+    so nothing audited can shape the request framing.
+    """
+    boundary = "cmdaudit" + os.urandom(16).hex()
+    marker = f"--{boundary}".encode("ascii")
+    body = b"\r\n".join([
+        marker,
+        b'Content-Disposition: form-data; name="payload_json"',
+        b"Content-Type: application/json",
+        b"",
+        json.dumps(payload).encode("utf-8"),
+        marker,
+        f'Content-Disposition: form-data; name="files[0]"; filename="{TRANSCRIPT_FILENAME}"'.encode("ascii"),
+        b"Content-Type: text/plain; charset=utf-8",
+        b"",
+        attachment,
+        marker + b"--",
+        b"",
+    ])
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
 def post_payload(
-    webhook: str, payload: dict[str, Any], opener: Opener | None = None, sleep: Sleeper = time.sleep
+    webhook: str,
+    payload: dict[str, Any],
+    opener: Opener | None = None,
+    sleep: Sleeper = time.sleep,
+    attachment: bytes | None = None,
 ) -> None:
     """POST one message. Raises PostError whose text never holds the URL."""
     opener = opener or urllib.request.urlopen
-    data = json.dumps(payload).encode("utf-8")
+    if attachment:
+        data, content_type = multipart_body(payload, attachment)
+    else:
+        data, content_type = json.dumps(payload).encode("utf-8"), "application/json"
     delay = 1.0
     for attempt in range(1, POST_MAX_ATTEMPTS + 1):
         request = urllib.request.Request(
             webhook + "?wait=true",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+            headers={"Content-Type": content_type, "User-Agent": USER_AGENT},
         )
         try:
             # WEBHOOK_RE already pinned the scheme to https.
@@ -1187,19 +1271,22 @@ def flush_once(
             batch.unlink(missing_ok=True)
             continue
         posted, remainder = records[:MAX_RECORDS_PER_FLUSH], records[MAX_RECORDS_PER_FLUSH:]
-        payload, withheld = build_payload(posted, labels)
+        payload, withheld, transcript = build_payload(posted, labels, cfg.host)
         if not payload["embeds"]:
             batch.unlink(missing_ok=True)
             continue
         if dry_run:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
+            if transcript:
+                print(f"--- {TRANSCRIPT_FILENAME} ({len(transcript)} bytes) ---")
+                print(transcript.decode("utf-8", "replace"))
             messages += 1
             continue
         if messages:
             sleep(INTER_MESSAGE_SLEEP_SECS)
         try:
             assert webhook is not None
-            post_payload(webhook, payload, opener=opener, sleep=sleep)
+            post_payload(webhook, payload, opener=opener, sleep=sleep, attachment=transcript)
         except PostError as exc:
             # Leave the batch for the next tick and exit 0: a Discord outage
             # must not become a unit-failure alert.

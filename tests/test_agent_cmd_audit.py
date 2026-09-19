@@ -517,7 +517,7 @@ class PayloadTests(unittest.TestCase):
         ]
 
     def test_payload_suppresses_mentions(self):
-        payload, _ = aca.build_payload(self.make(1), {})
+        payload, _, _ = aca.build_payload(self.make(1), {})
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
 
     def test_batch_fits_discord_limits(self):
@@ -525,7 +525,7 @@ class PayloadTests(unittest.TestCase):
             dict(r, command="x" * 400, session_id=f"s{i % 12}")
             for i, r in enumerate(self.make(120, "s0"))
         ]
-        payload, _ = aca.build_payload(records, {})
+        payload, _, _ = aca.build_payload(records, {})
         self.assertLessEqual(len(payload["embeds"]), aca.EMBEDS_MAX)
         self.assertLessEqual(sum(aca.embed_size(e) for e in payload["embeds"]), aca.EMBED_TOTAL_MAX)
         for embed in payload["embeds"]:
@@ -533,18 +533,93 @@ class PayloadTests(unittest.TestCase):
 
     def test_one_embed_per_session(self):
         records = self.make(3, "a") + self.make(2, "b")
-        payload, _ = aca.build_payload(records, {})
+        payload, _, _ = aca.build_payload(records, {})
         self.assertEqual(len(payload["embeds"]), 2)
 
     def test_workspace_label_is_used_when_known(self):
-        payload, _ = aca.build_payload(self.make(1), {"w1": "Main Driver"})
+        payload, _, _ = aca.build_payload(self.make(1), {"w1": "Main Driver"})
         self.assertIn("Main Driver", payload["embeds"][0]["title"])
 
     def test_withheld_commands_are_counted(self):
         records = self.make(1)
         records[0]["command"] = "op read op://Infrastructure/x/password"
-        _, withheld = aca.build_payload(records, {})
+        _, withheld, _ = aca.build_payload(records, {})
         self.assertEqual(withheld, 1)
+
+    def test_no_attachment_when_nothing_was_cut(self):
+        _, _, transcript = aca.build_payload(self.make(2), {})
+        self.assertIsNone(transcript)
+
+    def test_attachment_carries_the_full_command_when_cut(self):
+        records = self.make(1)
+        long_command = "deploy " + "abcdefgh " * 60  # past COMMAND_MAX_CHARS
+        records[0]["command"] = long_command
+        payload, _, transcript = aca.build_payload(records, {}, host="test-host")
+        self.assertIsNotNone(transcript)
+        text = transcript.decode("utf-8")
+        # The embed cut it; the file did not.
+        self.assertIn("…", payload["embeds"][0]["description"])
+        self.assertIn(long_command.strip(), text)
+        self.assertIn("test-host", text)
+
+    def test_attachment_does_not_lift_redaction(self):
+        # Trimming is measured AFTER redaction, so the long benign command is
+        # what pulls the file in; the other two ride along still redacted.
+        records = self.make(3)
+        records[0]["command"] = "cat <<'EOF' > /tmp/x\n" + "LEAKED " * 80 + "\nEOF"
+        records[1]["command"] = "deploy --token " + "z" * 400
+        records[2]["command"] = "rsync -av " + "/srv/data/dir " * 40
+        _, _, transcript = aca.build_payload(records, {})
+        self.assertIsNotNone(transcript)
+        text = transcript.decode("utf-8")
+        self.assertNotIn("LEAKED", text)
+        self.assertNotIn("z" * 40, text)
+        self.assertIn("[redacted]", text)
+
+    def test_attachment_is_capped(self):
+        records = [
+            dict(r, command="echo " + "y" * 900, session_id="s0")
+            for r in self.make(400, "s0")
+        ]
+        _, _, transcript = aca.build_payload(records, {})
+        self.assertIsNotNone(transcript)
+        self.assertLessEqual(len(transcript), aca.TRANSCRIPT_MAX_BYTES)
+
+
+class MultipartTests(unittest.TestCase):
+    def post(self, attachment: bytes | None):
+        opener = FakeOpener()
+        aca.post_payload(
+            FAKE_WEBHOOK, {"embeds": []}, opener=opener, sleep=RecordingSleeper(), attachment=attachment
+        )
+        return opener.requests[0]
+
+    def test_plain_batch_still_posts_json(self):
+        request = self.post(None)
+        self.assertEqual(request.headers["Content-type"], "application/json")
+        self.assertEqual(json.loads(request.data.decode("utf-8")), {"embeds": []})
+
+    def test_attachment_is_sent_as_multipart(self):
+        request = self.post(b"21:39:02  ok  echo hello\n")
+        content_type = request.headers["Content-type"]
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        boundary = content_type.split("boundary=", 1)[1]
+        body = request.data
+        self.assertIn(b'name="payload_json"', body)
+        self.assertIn(b'name="files[0]"; filename="commands.txt"', body)
+        self.assertIn(b"echo hello", body)
+        # Framing: opens with the boundary and closes with the terminator.
+        self.assertTrue(body.startswith(f"--{boundary}\r\n".encode()))
+        self.assertTrue(body.endswith(f"--{boundary}--\r\n".encode()))
+
+    def test_each_post_gets_a_fresh_boundary(self):
+        first = self.post(b"a")
+        second = self.post(b"b")
+        self.assertNotEqual(first.headers["Content-type"], second.headers["Content-type"])
+
+    def test_multipart_body_never_holds_the_webhook(self):
+        request = self.post(b"echo hello\n")
+        self.assertNotIn(FAKE_WEBHOOK.encode(), request.data)
 
 
 class FlushTests(unittest.TestCase):
