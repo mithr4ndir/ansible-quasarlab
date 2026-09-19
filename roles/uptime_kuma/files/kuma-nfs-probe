@@ -1,0 +1,369 @@
+#!/usr/bin/python3
+"""Read a sentinel file over NFS, with a hard time bound, and report the result
+to an Uptime Kuma push monitor.
+
+Managed by Ansible (roles/uptime_kuma). Local edits are overwritten.
+
+Usage:
+    kuma-nfs-probe probe            [options]   read, compare, push (the timer)
+    kuma-nfs-probe ensure-sentinel  [options]   create the sentinel if missing
+
+Why a push monitor and a userspace client
+-----------------------------------------
+On 2026-09-19 the NAS kept answering on 2049, rpcinfo said "ready and waiting"
+and showmount listed every export, while every file operation from the k8s
+nodes hung for about 11 hours. A TCP or RPC check stays green through that. So
+this probe does a real MOUNT, LOOKUP, GETATTR and READ of a known file and
+compares the bytes.
+
+It must also never hang the host it runs on. A kernel NFS mount cannot give
+that guarantee: a stalled hard mount leaves processes in uninterruptible sleep
+(D state) that no signal can kill, and a soft mount still goes through the
+kernel client and its mount table. So there is no mount at all. nfs-cat and
+nfs-cp (libnfs-utils) speak NFS from userspace over an ordinary TCP socket, so
+a stalled server leaves them in interruptible sleep, and SIGKILL always works.
+Each child runs in its own session and the whole process group is killed at
+the deadline. A probe that has not finished by then is reported DOWN.
+
+Kuma learns the result two ways. On every run the probe pushes UP or DOWN
+with a reason, which gives a fast, specific alert. And the push monitor itself
+is a dead man's switch: if the timer, this script or the whole VM stops,
+pushes stop and Kuma raises DOWN when the heartbeat window passes.
+
+The timer never writes to the NAS. ensure-sentinel is run by Ansible at
+deploy time, creates the sentinel only when the server says it does not exist
+(nfs-cp refuses to overwrite), and then reads it back.
+
+SECURITY: the push token authorizes marking the NFS monitor UP, so it is read
+from a file (systemd LoadCredential), never taken on the command line, and
+never logged. All inputs that end up in the NFS URL are allowlisted.
+
+Exit status: 0 NFS read ok and push accepted; 1 NFS check failed; 2 NFS ok but
+the push failed; 64 bad configuration.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import signal
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from typing import Callable, Sequence
+
+EXIT_OK = 0
+EXIT_NFS_FAILED = 1
+EXIT_PUSH_FAILED = 2
+EXIT_CONFIG = 64
+
+DEFAULT_TIMEOUT_SECS = 20.0
+# After SIGKILL, how long to wait for the killed group to release its pipes.
+KILL_GRACE_SECS = 5.0
+PUSH_TIMEOUT_SECS = 10.0
+# The sentinel is a few dozen bytes; anything bigger is not our file.
+MAX_SENTINEL_BYTES = 4096
+MAX_MSG_CHARS = 200
+
+HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+EXPORT_RE = re.compile(r"^/[A-Za-z0-9._/-]{0,255}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+TOKEN_RE = re.compile(r"^[A-Za-z0-9]{32}$")
+PUSH_BASE_RE = re.compile(r"^https?://[A-Za-z0-9.:\[\]-]+(?::[0-9]{1,5})?/api/push$")
+NOENT_RE = re.compile(r"NOENT|No such file", re.IGNORECASE)
+
+
+class ConfigError(ValueError):
+    """Bad configuration. Never carries the push token."""
+
+
+@dataclass(frozen=True)
+class Bounded:
+    """Result of a child run under a deadline."""
+
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+    elapsed: float
+
+
+@dataclass(frozen=True)
+class Outcome:
+    ok: bool
+    msg: str
+    elapsed: float
+
+
+def run_bounded(argv: Sequence[str], timeout: float,
+                kill_grace: float = KILL_GRACE_SECS) -> Bounded:
+    """Run argv, and SIGKILL its whole process group at the deadline.
+
+    Never waits longer than timeout + 2 * kill_grace, even if something in the
+    group survives the kill and keeps the pipes open.
+    """
+    start = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True, close_fds=True,
+        )
+    except OSError as exc:
+        reason = f"cannot execute {os.path.basename(argv[0])}: {type(exc).__name__}"
+        return Bounded(127, b"", reason.encode(), False, time.monotonic() - start)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return Bounded(proc.returncode, out, err, False, time.monotonic() - start)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    out = err = b""
+    try:
+        out, err = proc.communicate(timeout=kill_grace)
+    except subprocess.TimeoutExpired:
+        # A descendant outlived the kill and still holds the pipes. Stop
+        # reading; the deadline matters more than the output.
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+        try:
+            proc.wait(timeout=kill_grace)
+        except subprocess.TimeoutExpired:
+            pass
+    return Bounded(None, out or b"", err or b"", True, time.monotonic() - start)
+
+
+def first_line(data: bytes) -> str:
+    text = data.decode("utf-8", "replace").strip()
+    line = text.splitlines()[0] if text else ""
+    return line[:MAX_MSG_CHARS]
+
+
+@dataclass(frozen=True)
+class Target:
+    server: str
+    export: str
+    sentinel: str
+    version: int
+    uid: int
+    gid: int
+    nfs_port: int | None
+    mount_port: int | None
+
+    def url(self) -> str:
+        params: list[tuple[str, str]] = [
+            ("version", str(self.version)), ("uid", str(self.uid)), ("gid", str(self.gid)),
+        ]
+        if self.nfs_port is not None:
+            params.append(("nfsport", str(self.nfs_port)))
+        if self.mount_port is not None:
+            params.append(("mountport", str(self.mount_port)))
+        path = self.export.rstrip("/") + "/" + self.sentinel
+        return f"nfs://{self.server}{path}?" + "&".join(f"{k}={v}" for k, v in params)
+
+    def describe(self) -> str:
+        return f"{self.server}:{self.export.rstrip('/')}/{self.sentinel}"
+
+
+def build_target(args: argparse.Namespace) -> Target:
+    if not HOST_RE.match(args.server or ""):
+        raise ConfigError("invalid --server")
+    export = args.export or ""
+    if not EXPORT_RE.match(export) or ".." in export.split("/"):
+        raise ConfigError("invalid --export")
+    if not NAME_RE.match(args.sentinel or "") or args.sentinel in (".", ".."):
+        raise ConfigError("invalid --sentinel")
+    if args.nfs_version not in (3, 4):
+        raise ConfigError("invalid --nfs-version")
+    for name in ("uid", "gid"):
+        if not 0 <= getattr(args, name) <= 0xFFFFFFFF:
+            raise ConfigError(f"invalid --{name}")
+    for name in ("nfs_port", "mount_port"):
+        value = getattr(args, name)
+        if value is not None and not 1 <= value <= 65535:
+            raise ConfigError(f"invalid --{name.replace('_', '-')}")
+    return Target(args.server, export, args.sentinel, args.nfs_version, args.uid, args.gid,
+                  args.nfs_port, args.mount_port)
+
+
+def judge_read(target: Target, expected: bytes, result: Bounded, timeout: float) -> Outcome:
+    if result.timed_out:
+        return Outcome(False, f"NFS read of {target.describe()} did not finish within "
+                              f"{timeout:g}s (server accepting connections but not "
+                              f"completing I/O?)", result.elapsed)
+    if result.returncode != 0:
+        reason = first_line(result.stderr) or f"nfs-cat exited {result.returncode}"
+        return Outcome(False, f"NFS read of {target.describe()} failed: {reason}", result.elapsed)
+    if len(result.stdout) > MAX_SENTINEL_BYTES or result.stdout.strip() != expected.strip():
+        return Outcome(False, f"NFS read of {target.describe()} returned unexpected content "
+                              f"({len(result.stdout)} bytes)", result.elapsed)
+    return Outcome(True, f"read {target.describe()} in {result.elapsed * 1000:.0f} ms",
+                   result.elapsed)
+
+
+def read_sentinel(target: Target, expected: bytes, nfs_cat: str, timeout: float,
+                  runner: Callable[..., Bounded] = run_bounded) -> Outcome:
+    return judge_read(target, expected, runner([nfs_cat, target.url()], timeout), timeout)
+
+
+def ensure_sentinel(target: Target, expected: bytes, nfs_cat: str, nfs_cp: str,
+                    timeout: float,
+                    runner: Callable[..., Bounded] = run_bounded) -> tuple[Outcome, bool]:
+    """Create the sentinel only if the server says it does not exist.
+
+    Returns the outcome of the final read and whether a file was created.
+    Anything else (a hang, a permission error, the wrong content) is reported
+    as is and nothing is written.
+    """
+    first = runner([nfs_cat, target.url()], timeout)
+    missing = (not first.timed_out and first.returncode != 0
+               and NOENT_RE.search(first.stderr.decode("utf-8", "replace")) is not None)
+    if not missing:
+        return judge_read(target, expected, first, timeout), False
+
+    with tempfile.NamedTemporaryFile(prefix="kuma-nfs-sentinel-") as tmp:
+        tmp.write(expected)
+        tmp.flush()
+        copied = runner([nfs_cp, tmp.name, target.url()], timeout)
+    if copied.timed_out:
+        return Outcome(False, f"creating {target.describe()} did not finish within "
+                              f"{timeout:g}s", copied.elapsed), False
+    if copied.returncode != 0:
+        reason = first_line(copied.stderr) or f"nfs-cp exited {copied.returncode}"
+        return Outcome(False, f"creating {target.describe()} failed: {reason}",
+                       copied.elapsed), False
+    return read_sentinel(target, expected, nfs_cat, timeout, runner=runner), True
+
+
+def read_token(path: str) -> str:
+    try:
+        with open(path, encoding="ascii") as fh:
+            token = fh.read(256).strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"cannot read push token file: {type(exc).__name__}") from None
+    if not TOKEN_RE.match(token):
+        raise ConfigError("push token file does not hold a 32 character alphanumeric token")
+    return token
+
+
+def push(base: str, token: str, outcome: Outcome, cafile: str | None = None,
+         opener: Callable[..., object] = urllib.request.urlopen) -> tuple[bool, str]:
+    """Report to Kuma. Returns (accepted, reason); reason never has the token.
+
+    Kuma is behind TLS, so with --push-cafile the certificate is verified
+    against that file and nothing else; an unverifiable certificate is a
+    failed push, never a silent plain-text fallback.
+    """
+    context = None
+    if base.startswith("https://"):
+        try:
+            context = ssl.create_default_context(cafile=cafile) if cafile \
+                else ssl.create_default_context()
+        except OSError as exc:
+            return False, f"cannot read the push CA file ({type(exc).__name__})"
+    query = {"status": "up" if outcome.ok else "down", "msg": outcome.msg[:MAX_MSG_CHARS]}
+    if outcome.ok:
+        query["ping"] = f"{outcome.elapsed * 1000:.1f}"
+    url = f"{base}/{token}?{urllib.parse.urlencode(query)}"
+    try:
+        with opener(url, timeout=PUSH_TIMEOUT_SECS, context=context) as resp:  # type: ignore[attr-defined]
+            body = resp.read(4096)
+    except urllib.error.HTTPError as exc:
+        return False, f"push endpoint answered HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        if isinstance(getattr(exc, "reason", None), ssl.SSLError):
+            return False, "push endpoint TLS certificate was not accepted"
+        return False, f"push endpoint unreachable ({type(exc).__name__})"
+    except (ssl.SSLError, OSError, ValueError) as exc:
+        return False, f"push endpoint unreachable ({type(exc).__name__})"
+    try:
+        accepted = json.loads(body).get("ok") is True
+    except (ValueError, AttributeError):
+        return False, "push endpoint returned a non-JSON answer"
+    return (True, "accepted") if accepted else (False, "push endpoint rejected the heartbeat")
+
+
+def log(event: dict) -> None:
+    print(json.dumps(event, sort_keys=True), flush=True)
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="kuma-nfs-probe", description=__doc__.splitlines()[0])
+    parser.add_argument("mode", choices=("probe", "ensure-sentinel"))
+    parser.add_argument("--server", required=True)
+    parser.add_argument("--export", required=True)
+    parser.add_argument("--sentinel", required=True)
+    parser.add_argument("--expected-file", required=True,
+                        help="local file holding the exact sentinel content")
+    parser.add_argument("--nfs-version", type=int, default=3)
+    parser.add_argument("--uid", type=int, default=0,
+                        help="AUTH_SYS uid presented to the server")
+    parser.add_argument("--gid", type=int, default=0)
+    parser.add_argument("--nfs-port", type=int, default=None,
+                        help="skip the portmapper and use this NFS port")
+    parser.add_argument("--mount-port", type=int, default=None,
+                        help="skip the portmapper and use this MOUNT port")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECS)
+    parser.add_argument("--nfs-cat", default="/usr/bin/nfs-cat")
+    parser.add_argument("--nfs-cp", default="/usr/bin/nfs-cp")
+    parser.add_argument("--push-base", default="http://127.0.0.1:3001/api/push")
+    parser.add_argument("--push-token-file", default=None,
+                        help="defaults to $CREDENTIALS_DIRECTORY/push_token")
+    parser.add_argument("--push-cafile", default=None,
+                        help="verify the push endpoint's certificate against this file only")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        target = build_target(args)
+        if not 0 < args.timeout <= 300:
+            raise ConfigError("invalid --timeout")
+        try:
+            with open(args.expected_file, "rb") as fh:
+                expected = fh.read(MAX_SENTINEL_BYTES + 1)
+        except OSError as exc:
+            raise ConfigError(f"cannot read --expected-file: {type(exc).__name__}") from None
+        if not expected.strip() or len(expected) > MAX_SENTINEL_BYTES:
+            raise ConfigError("--expected-file must hold 1 to 4096 bytes")
+        token = ""
+        if args.mode == "probe":
+            if not PUSH_BASE_RE.match(args.push_base):
+                raise ConfigError("invalid --push-base")
+            token_file = args.push_token_file or os.path.join(
+                os.environ.get("CREDENTIALS_DIRECTORY", ""), "push_token")
+            token = read_token(token_file)
+    except ConfigError as exc:
+        log({"event": "config_error", "error": str(exc)})
+        return EXIT_CONFIG
+
+    if args.mode == "ensure-sentinel":
+        outcome, created = ensure_sentinel(target, expected, args.nfs_cat, args.nfs_cp,
+                                           args.timeout)
+        log({"event": "ensure_sentinel", "ok": outcome.ok, "created": created,
+             "msg": outcome.msg})
+        return EXIT_OK if outcome.ok else EXIT_NFS_FAILED
+
+    outcome = read_sentinel(target, expected, args.nfs_cat, args.timeout)
+    accepted, push_reason = push(args.push_base, token, outcome, cafile=args.push_cafile)
+    log({"event": "probe", "ok": outcome.ok, "msg": outcome.msg,
+         "elapsed_ms": round(outcome.elapsed * 1000, 1), "push": push_reason})
+    if not outcome.ok:
+        return EXIT_NFS_FAILED
+    return EXIT_OK if accepted else EXIT_PUSH_FAILED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

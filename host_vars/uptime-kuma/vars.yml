@@ -1,0 +1,18 @@
+---
+# vm117, Uptime Kuma (roles/uptime_kuma). Name must match the inventory
+# hostname exactly, or these are silently ignored.
+
+# Systemd service monitoring via node_exporter
+node_exporter_systemd_enabled: true
+node_exporter_systemd_units:
+  - docker.service
+  - kuma-nfs-probe.service
+  - kuma-nfs-probe.timer
+
+# Unattended upgrades: Docker CE comes from Docker's repo and is upgraded
+# deliberately, not under the running monitor.
+unattended_upgrades_blacklist:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin

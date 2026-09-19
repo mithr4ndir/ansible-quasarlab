@@ -1,0 +1,85 @@
+---
+# NFS read probe: files/kuma-nfs-probe on a systemd timer, pushing to the
+# Kuma push monitor defined in tasks/monitors.yml. The design (userspace
+# client, no mount, hard deadline, dead man's switch) is in the script header.
+
+- name: Install the userspace NFS client (nfs-cat, nfs-cp)
+  ansible.builtin.apt:
+    name: libnfs-utils
+    state: present
+
+- name: Install the NFS probe
+  ansible.builtin.copy:
+    src: kuma-nfs-probe
+    dest: /usr/local/bin/kuma-nfs-probe
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create the NFS probe config directory
+  ansible.builtin.file:
+    path: /etc/kuma-nfs-probe
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# Not a secret: the exact bytes the sentinel on the NAS must hold.
+- name: Write the expected sentinel content
+  ansible.builtin.copy:
+    dest: /etc/kuma-nfs-probe/sentinel
+    content: "{{ uptime_kuma_nfs_probe_content }}"
+    owner: root
+    group: root
+    mode: '0644'
+
+# The only write this role ever makes to the NAS, and only when the server
+# says the sentinel does not exist. A hang, a permission error or foreign
+# content fails the play without writing anything.
+- name: Create the NFS sentinel on the export if it is missing
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kuma-nfs-probe
+      - ensure-sentinel
+      - --server
+      - "{{ uptime_kuma_nfs_probe_server }}"
+      - --export
+      - "{{ uptime_kuma_nfs_probe_export }}"
+      - --sentinel
+      - "{{ uptime_kuma_nfs_probe_sentinel }}"
+      - --expected-file
+      - /etc/kuma-nfs-probe/sentinel
+      - --nfs-version
+      - "{{ uptime_kuma_nfs_probe_version }}"
+      - --uid
+      - "{{ uptime_kuma_nfs_probe_uid }}"
+      - --gid
+      - "{{ uptime_kuma_nfs_probe_gid }}"
+      - --timeout
+      - "{{ uptime_kuma_nfs_probe_timeout }}"
+  register: uptime_kuma_sentinel
+  changed_when: (uptime_kuma_sentinel.stdout | from_json).created
+  when: not ansible_check_mode
+
+- name: Install the NFS probe units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - kuma-nfs-probe.service
+    - kuma-nfs-probe.timer
+  register: uptime_kuma_probe_units
+
+- name: Reload systemd after unit changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: uptime_kuma_probe_units.changed
+
+- name: Enable and start the NFS probe timer
+  ansible.builtin.systemd:
+    name: kuma-nfs-probe.timer
+    enabled: true
+    state: started

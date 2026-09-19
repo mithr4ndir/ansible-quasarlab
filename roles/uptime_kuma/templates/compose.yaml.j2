@@ -1,0 +1,134 @@
+# Managed by Ansible (roles/uptime_kuma). Local edits are overwritten.
+# Holds no secrets. The admin password reaches Kuma and the gate as a file
+# secret and AutoKuma as a mounted config file; those and the TLS key are
+# readable through the supplementary group {{ uptime_kuma_secrets_gid }}.
+#
+# Only kuma-proxy publishes a port, and only TLS. Kuma itself speaks plain
+# HTTP on the compose network alone, to the proxy, the gate and AutoKuma.
+name: uptime-kuma
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  uptime-kuma:
+    image: "{{ uptime_kuma_image }}"
+    container_name: uptime-kuma
+    restart: unless-stopped
+    user: "{{ uptime_kuma_uid }}:{{ uptime_kuma_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    environment:
+      # Skip Kuma 2's database-choice page; SQLite in /app/data.
+      UPTIME_KUMA_DB_TYPE: sqlite
+    # Kuma never reads this itself; roles/uptime_kuma's kuma-admin.js does,
+    # inside this container, to create and verify the admin account.
+    secrets:
+      - kuma_admin_password
+    # No ports: reachable from outside only through kuma-proxy.
+    volumes:
+      - "{{ uptime_kuma_data_dir }}:/app/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 512
+    logging: *logging
+
+  autokuma:
+    image: "{{ uptime_kuma_autokuma_image }}"
+    container_name: autokuma
+    restart: unless-stopped
+    user: "{{ uptime_kuma_autokuma_uid }}:{{ uptime_kuma_autokuma_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    depends_on:
+      - uptime-kuma
+    environment:
+      AUTOKUMA__KUMA__URL: http://uptime-kuma:3001
+      AUTOKUMA__KUMA__USERNAME: "{{ uptime_kuma_admin_username }}"
+      # The password comes from $XDG_CONFIG_HOME/autokuma/config.toml, mounted
+      # below: a plain env value would show in `docker inspect`, and the stable
+      # 2.0.0 has no file-reference syntax for env values. Works on both.
+      XDG_CONFIG_HOME: /config
+      AUTOKUMA__STATIC_MONITORS: /monitors
+      AUTOKUMA__DATA_PATH: /data
+      AUTOKUMA__SYNC_INTERVAL: "{{ uptime_kuma_autokuma_sync_interval }}"
+      AUTOKUMA__ON_DELETE: delete
+      AUTOKUMA__FILES__ENABLED: "true"
+      # No Docker socket and no Kubernetes: monitors come from files only.
+      AUTOKUMA__DOCKER__ENABLED: "false"
+      AUTOKUMA__KUBERNETES__ENABLED: "false"
+    volumes:
+      - "{{ uptime_kuma_monitors_dir }}:/monitors:ro"
+      - "{{ uptime_kuma_autokuma_data_dir }}:/data"
+      - "{{ uptime_kuma_secrets_dir }}/autokuma.toml:/config/autokuma/config.toml:ro"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 128
+    logging: *logging
+
+  # Answers kuma-proxy's auth_request: open only while Kuma holds our admin
+  # account and does not need setup. See files/kuma-gate.js.
+  kuma-gate:
+    image: "{{ uptime_kuma_image }}"
+    container_name: kuma-gate
+    restart: unless-stopped
+    user: "{{ uptime_kuma_uid }}:{{ uptime_kuma_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    depends_on:
+      - uptime-kuma
+    entrypoint: ["node", "/gate/kuma-gate.js"]
+    environment:
+      NODE_PATH: /app/node_modules
+      KUMA_URL: http://uptime-kuma:3001
+      KUMA_ADMIN_USERNAME: "{{ uptime_kuma_admin_username }}"
+    secrets:
+      - kuma_admin_password
+    volumes:
+      - "{{ uptime_kuma_dir }}/kuma-gate.js:/gate/kuma-gate.js:ro"
+    healthcheck:
+      disable: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 96m
+    pids_limit: 64
+    logging: *logging
+
+  # TLS termination; the only published port.
+  kuma-proxy:
+    image: "{{ uptime_kuma_proxy_image }}"
+    container_name: kuma-proxy
+    restart: unless-stopped
+    user: "{{ uptime_kuma_proxy_uid }}:{{ uptime_kuma_proxy_uid }}"
+    group_add:
+      - "{{ uptime_kuma_secrets_gid }}"
+    depends_on:
+      - uptime-kuma
+      - kuma-gate
+    ports:
+      - "{{ uptime_kuma_listen_address }}:{{ uptime_kuma_port }}:{{ uptime_kuma_port }}"
+    volumes:
+      - "{{ uptime_kuma_dir }}/kuma-proxy.conf:/etc/nginx/conf.d/default.conf:ro"
+      - "{{ uptime_kuma_tls_dir }}:/etc/uptime-kuma-tls:ro"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 64
+    logging: *logging
+
+secrets:
+  kuma_admin_password:
+    file: "{{ uptime_kuma_secrets_dir }}/admin_password"
