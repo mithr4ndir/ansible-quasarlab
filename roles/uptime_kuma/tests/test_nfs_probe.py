@@ -630,3 +630,70 @@ def test_probe_runs_as_a_script(files: dict[str, Path], kuma: Any) -> None:
                           capture_output=True, text=True, timeout=30, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads(proc.stdout)["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# The push goes to Kuma over TLS (the UI is TLS only), verified against one
+# certificate file.
+# ---------------------------------------------------------------------------
+
+def self_signed(tmp_path: Path) -> tuple[Path, Path]:
+    key, cert = tmp_path / "key.pem", tmp_path / "cert.pem"
+    proc = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+         "-nodes", "-days", "1", "-subj", "/CN=kuma-test",
+         "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", str(key), "-out", str(cert)],
+        capture_output=True, text=True, timeout=60, check=False)
+    if proc.returncode != 0:
+        pytest.skip(f"openssl could not make a test certificate: {proc.stderr[-200:]}")
+    return key, cert
+
+
+@pytest.fixture
+def tls_kuma(tmp_path: Path) -> Any:
+    import ssl as ssl_mod
+    key, cert = self_signed(tmp_path)
+    server: Any = http.server.ThreadingHTTPServer(("127.0.0.1", 0), PushRecorder)
+    server.requests, server.mode, server.release = [], "ok", threading.Event()
+    context = ssl_mod.SSLContext(ssl_mod.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(cert), keyfile=str(key))
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server.base = f"https://127.0.0.1:{server.server_address[1]}/api/push"
+    server.cert = cert
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def test_push_over_tls_with_the_pinned_certificate(files: dict[str, Path], tls_kuma: Any,
+                                                   capsys: pytest.CaptureFixture[str]) -> None:
+    fake_exe(files, "nfs-cat", f"printf '%s' '{EXPECTED.decode()}'\n")
+    argv = args_for(files, tls_kuma) + ["--push-cafile", str(tls_kuma.cert)]
+    rc, event, _ = run_main(argv, capsys)
+    assert rc == probe.EXIT_OK, event
+    assert tls_kuma.requests[0]["status"] == "up"
+
+
+def test_push_over_tls_refuses_an_unverifiable_certificate(files: dict[str, Path], tls_kuma: Any,
+                                                           capsys: pytest.CaptureFixture[str]) -> None:
+    # No --push-cafile: the self-signed certificate is not in the system
+    # store, so the push must fail rather than fall back to sending anyway.
+    fake_exe(files, "nfs-cat", f"printf '%s' '{EXPECTED.decode()}'\n")
+    rc, event, _ = run_main(args_for(files, tls_kuma), capsys)
+    assert rc == probe.EXIT_PUSH_FAILED
+    assert event["push"] == "push endpoint TLS certificate was not accepted"
+    assert tls_kuma.requests == []
+
+
+def test_push_over_tls_refuses_the_wrong_certificate(files: dict[str, Path], tls_kuma: Any,
+                                                     tmp_path: Path,
+                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    _, wrong_cert = self_signed(other)
+    fake_exe(files, "nfs-cat", f"printf '%s' '{EXPECTED.decode()}'\n")
+    argv = args_for(files, tls_kuma) + ["--push-cafile", str(wrong_cert)]
+    rc, event, _ = run_main(argv, capsys)
+    assert rc == probe.EXIT_PUSH_FAILED
+    assert event["push"] == "push endpoint TLS certificate was not accepted"

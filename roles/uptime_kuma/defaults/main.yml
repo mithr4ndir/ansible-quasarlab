@@ -8,6 +8,8 @@ uptime_kuma_data_dir: "{{ uptime_kuma_dir }}/data"
 uptime_kuma_autokuma_data_dir: "{{ uptime_kuma_dir }}/autokuma-data"
 uptime_kuma_monitors_dir: "{{ uptime_kuma_dir }}/monitors"
 uptime_kuma_secrets_dir: "{{ uptime_kuma_dir }}/secrets"
+uptime_kuma_tls_dir: "{{ uptime_kuma_dir }}/tls"
+uptime_kuma_tls_days: 825
 
 # Images are pinned by digest; the tag is there for humans. Both digests are
 # the multi-arch index digests, read from the registries on 2026-09-19.
@@ -44,6 +46,12 @@ uptime_kuma_uid: 1000
 # (see compose.yaml.j2), which works on both 2.0.0 and rc.2.
 uptime_kuma_autokuma_image: "ghcr.io/bigboot/autokuma:2.1.0-rc.2@sha256:12ed0e5085feeac65db760c1a3e3d4fa3acea0e7dc4c0e601e2ea64d82485a45"
 uptime_kuma_autokuma_uid: 65532
+
+# TLS-terminating proxy in front of Kuma: nginx stable 1.30.5, the
+# unprivileged image (runs as uid 101, listens above 1024, no capabilities).
+# Index digest read from Docker Hub on 2026-09-19.
+uptime_kuma_proxy_image: "nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:daa17b944bac2b578e962da4c61ad72a59233b3c63abea17113acaf4e6b9aea4"
+uptime_kuma_proxy_uid: 101
 # Supplementary gid given to both containers so they can read the admin
 # password file secret (root:<gid> 0440). Numeric only; no host group needed.
 uptime_kuma_secrets_gid: 3001
@@ -52,8 +60,7 @@ uptime_kuma_secrets_gid: 3001
 uptime_kuma_autokuma_sync_interval: 60
 
 uptime_kuma_port: 3001
-# Where the UI listens once the admin account exists. Until then the port is
-# published on 127.0.0.1 only, so no one on the LAN can claim /setup first.
+# kuma-proxy publishes the UI here, TLS only. Kuma itself publishes nothing.
 uptime_kuma_listen_address: "0.0.0.0"
 uptime_kuma_admin_username: admin
 

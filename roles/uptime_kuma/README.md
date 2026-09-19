@@ -16,7 +16,9 @@ disk is not on NFS, and alerts straight to Discord.
 | Docker CE + compose plugin | From Docker's apt repo, signing key pinned by fingerprint. Replaces Debian's `docker.io`, which has no `docker compose` and is why the original labctl deploy never started Kuma. |
 | `uptime-kuma` container | `louislam/uptime-kuma:2.5.5-slim-rootless`, digest-pinned, uid 1000, all capabilities dropped, SQLite in `/opt/uptime-kuma/data`. |
 | `autokuma` container | `ghcr.io/bigboot/autokuma:2.1.0-rc.2`, digest-pinned (a deliberate release-candidate pin, see below), uid 65532. Reconciles the files in `/opt/uptime-kuma/monitors` into Kuma every 60s. No Docker socket. |
-| `kuma-nfs-probe.timer` | Every 60s, a real NFS read of a sentinel file on `192.168.1.15:/mnt/tank/k8s`, pushed to a Kuma push monitor. |
+| `kuma-proxy` container | `nginxinc/nginx-unprivileged:1.30.5-alpine`, digest-pinned, uid 101. The only published port: TLS on 3001. Kuma itself publishes nothing. |
+| `kuma-gate` container | Same image as Kuma, uid 1000. Answers the proxy's `auth_request`: open only while Kuma holds our admin account. |
+| `kuma-nfs-probe.timer` | Every 60s, a real NFS read of a sentinel file on `192.168.1.15:/mnt/tank/k8s`, pushed to a Kuma push monitor over TLS. |
 
 ## Monitors (defined in `defaults/main.yml`)
 
@@ -32,6 +34,34 @@ disk is not on NFS, and alerts straight to Discord.
 Every monitor notifies **Discord #alerts directly**, not through
 `discord-alert-proxy`, which runs in the cluster being watched. HTTP monitors
 alert after three failed checks (about 3 minutes) and repeat hourly while down.
+
+## Reaching the UI: TLS only, and gated
+
+The UI is served over TLS by `kuma-proxy`, from a self-signed certificate
+generated on vm117 (`/opt/uptime-kuma/tls`, EC P-256, 825 days, renewed
+automatically within 30 days of expiry and whenever the host's address
+changes). The key never leaves the host. Kuma itself listens on plain HTTP
+on the compose network only, where the proxy, the gate and AutoKuma reach
+it; nothing publishes it. A plain-HTTP request to the LAN port gets nginx's
+"400 The plain HTTP request was sent to HTTPS port" and never reaches Kuma.
+
+The certificate is self-signed, so a browser warns on first use. The deploy
+prints its SHA-256 fingerprint; compare it, or import
+`/opt/uptime-kuma/tls/cert.pem` as trusted.
+
+**The gate.** A fresh Kuma serves a setup flow in which the first visitor
+becomes admin, and Kuma decides that at startup. So a Kuma restarted on a
+lost or wiped database would hand the admin account to whoever reaches it
+first. `files/kuma-gate.js` holds a websocket to Kuma and answers the
+proxy's `auth_request`. It allows traffic only while, on the current
+connection, Kuma reports `needSetup` false and our own admin login succeeds.
+Everything else (starting up, Kuma down, Kuma restarting, Kuma needing
+setup, Kuma owned by an account whose password we do not have, a check that
+gets no answer) is refused, so the failure direction is always "closed". The
+proxy also refuses `/setup` and `/setup-database` outright.
+
+That makes the exposure decision continuous. An earlier version of this role
+made it once, at deploy time, from a marker file.
 
 ## Monitors as code
 
@@ -75,26 +105,31 @@ pinned. The role still restarts AutoKuma whenever a deploy recreates Kuma.
 ### Tested end to end (2026-09-19)
 
 On cmd-center1, in throwaway containers from the pinned images, with this
-role's compose file (bridge network, Kuma published on 127.0.0.1 only) and
-its ownership and modes. Discord and the monitored endpoints were replaced by
-a capture service on the compose network. Everything was removed
-afterwards.
+role's compose file, TLS certificate script, ownership and modes. The proxy
+was published on 127.0.0.1 only. Discord and the monitored endpoints were a
+capture service on the compose network. Everything was removed afterwards.
 
-- Kuma started on SQLite with no setup page; `kuma-admin.js` created the
-  admin, a rerun changed nothing, and a wrong password was refused.
+- `kuma-admin.js` created the admin on a fresh Kuma, changed nothing on a
+  rerun, and refused a wrong password.
 - AutoKuma (rc.2 and 2.0.0) logged in from the config file (no password in
-  `docker inspect`), created the notification and all monitors once each,
-  every one wired to the notification.
+  `docker inspect`), and created every monitor once, wired to the
+  notification.
 - An HTTP monitor on an endpoint answering 500 with an apiserver-style
-  `[-]etcd failed` body went DOWN and produced a Discord embed with
-  "Request failed with status code 500".
+  `[-]etcd failed` body went DOWN with a Discord embed carrying the reason.
 - The real probe and real `nfs-cat` against a stalled fake NFS server pushed
-  DOWN after its deadline, and the Discord embed carried the probe's reason.
-  With pushes stopped, the push monitor went DOWN with "No heartbeat in the
+  DOWN over TLS after its deadline. Without the CA file the push was refused
+  rather than sent.
+- With pushes stopped, the push monitor went DOWN with "No heartbeat in the
   time window".
-- After Kuma's data directory was wiped, bootstrap recreated the admin on
-  the first connection and AutoKuma recreated every monitor and the
-  notification; the verifier passed.
+- The published port served TLS only: `/` 302 to `/dashboard` with the
+  certificate verified, `/setup` and `/setup-database` 403, plain HTTP 400
+  with no UI in the body, and HTTPS without the CA refused.
+- **Lost database while running on the LAN:** Kuma stopped, its data wiped,
+  Kuma started again. The gate closed within a second of the disconnect and
+  stayed closed ("Kuma needs setup"), so `/`, `/setup` and even the
+  socket.io handshake returned 403 while Kuma sat there needing setup. After
+  `kuma-admin.js` recreated the admin, the gate reopened and AutoKuma
+  restored every monitor.
 
 ## The NFS probe
 
@@ -142,15 +177,17 @@ overwrite. The timer only reads.
 | Discord #alerts webhook | 1Password item `vausmfy2q2m57r6scvziyrc7lq`, field `credential`, via the wrapper's `cached_op_read discord_alerts_webhook_url` | `/opt/uptime-kuma/monitors/discord-alerts.json` (0400, AutoKuma uid) and Kuma's database |
 | Kuma admin password | Generated on the host at first deploy | `/opt/uptime-kuma/secrets/admin_password` (root:3001 0440, file secret in the Kuma container) and `autokuma.toml` (root:3001 0440, mounted into AutoKuma) |
 | NFS push token | Generated on the host at first deploy | `/opt/uptime-kuma/secrets/nfs_push_token` (root 0400), given to the probe with `LoadCredential` |
+| TLS key | Generated on the host | `/opt/uptime-kuma/tls/key.pem` (root:3001 0440), read by the proxy only |
 
 The admin password never passes through Ansible: `kuma-admin.js` reads the
 file secret inside the Kuma container, and AutoKuma's config file is built
 from it on the host by a shell task. Log in as `admin` with
-`sudo cat /opt/uptime-kuma/secrets/admin_password` on vm117.
+`sudo cat /opt/uptime-kuma/secrets/admin_password` on vm117, at
+https://192.168.1.129:3001 .
 
-A fresh Kuma makes the first visitor to `/setup` its admin. The role keeps
-the port on 127.0.0.1 until the admin account exists and its login is
-verified, then republishes it on the LAN.
+A fresh Kuma makes the first visitor to `/setup` its admin. The gate above
+is what keeps that unreachable, continuously rather than only at deploy
+time.
 
 ## Running
 
@@ -159,14 +196,19 @@ scripts/run-uptime-kuma.sh --check
 scripts/run-uptime-kuma.sh
 ```
 
-The wrapper runs merged code only and uses `inventory.static.ini` alone, so it
-works with the Proxmox API down. The play fails unless Kuma answers from the
-host and from the controller, every monitor exists once and is wired to
+The wrapper passes only an allowlist of ansible-playbook options and uses
+`inventory.static.ini` alone, so it works with the Proxmox API down, and
+abbreviations such as `--lim` or clustered flags such as `-vi x.yml` cannot
+smuggle in another inventory. It runs merged code only.
+
+The play fails unless the UI answers over TLS (certificate verified) from
+the host and from the controller, the setup routes return 403, plain HTTP on
+the LAN port serves no UI, every monitor exists once and is wired to
 Discord, and one NFS probe run reports UP.
 
 ## Verifying an alert end to end
 
-In the Kuma UI, Settings, Notifications, **Test** on the Discord notification
-sends one message. For a real alert, `sudo systemctl stop kuma-nfs-probe.timer`
+In the Kuma UI (https://192.168.1.129:3001), Settings, Notifications,
+**Test** on the Discord notification sends one message. For a real alert, `sudo systemctl stop kuma-nfs-probe.timer`
 on vm117: about five minutes later the NFS monitor alerts through the dead
 man's switch. Start the timer again to clear it.

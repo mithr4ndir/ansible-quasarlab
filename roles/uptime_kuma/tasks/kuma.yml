@@ -1,14 +1,16 @@
 ---
-# Start Kuma and AutoKuma, create the admin account, then open the UI to the
-# LAN.
+# Start Kuma, the gate, the TLS proxy and AutoKuma; create the admin account;
+# then prove the UI is reachable over TLS only.
 #
-# Kuma's first-run /setup page makes the FIRST visitor admin. So until the
-# admin exists (marker file in Kuma's own data dir) the port is published on
-# 127.0.0.1 only. The marker lives in the data dir so that wiping the data
-# also puts Kuma back behind loopback until the next bootstrap.
+# Exposure is decided at run time, not here: only kuma-proxy publishes a
+# port, TLS only, and it forwards nothing unless kuma-gate says Kuma holds our
+# admin account and does not need setup (files/kuma-gate.js). That also
+# covers a database lost while the stack runs, which a deploy-time check
+# cannot see.
 #
-# Nothing here trusts `docker compose up`: the play fails unless Kuma answers
-# on the port, first from the host and then from the controller over the LAN.
+# Nothing here trusts `docker compose up`: the play fails unless the UI
+# answers over TLS from the host and from the controller, refuses the setup
+# routes, and refuses plain HTTP.
 
 - name: Create the Kuma directories
   ansible.builtin.file:
@@ -24,31 +26,70 @@
   loop_control:
     label: "{{ item.path }}"
 
-# The labctl run wrote this; it is replaced by compose.yaml below.
-- name: Remove the old labctl compose file
+# Leftovers: the labctl compose file, and the loopback-first marker of an
+# earlier version of this role.
+- name: Remove files this role no longer uses
   ansible.builtin.file:
-    path: "{{ uptime_kuma_dir }}/docker-compose.yml"
+    path: "{{ item }}"
     state: absent
+  loop:
+    - "{{ uptime_kuma_dir }}/docker-compose.yml"
+    - "{{ uptime_kuma_data_dir }}/.ansible-admin-bootstrapped"
 
-- name: Check whether the Kuma admin account was already bootstrapped
-  ansible.builtin.stat:
-    path: "{{ uptime_kuma_data_dir }}/.ansible-admin-bootstrapped"
-  register: uptime_kuma_bootstrap_marker
-
-- name: Keep Kuma on loopback until the admin account exists
-  ansible.builtin.set_fact:
-    uptime_kuma_bind_address: "{{ uptime_kuma_listen_address if uptime_kuma_bootstrap_marker.stat.exists else '127.0.0.1' }}"
-
-- name: Start Kuma and AutoKuma
-  ansible.builtin.include_tasks: compose_up.yml
-
-- name: Copy the Kuma admin helper
+- name: Install the Kuma admin helper and the gate
   ansible.builtin.copy:
-    src: kuma-admin.js
-    dest: "{{ uptime_kuma_dir }}/kuma-admin.js"
+    src: "{{ item }}"
+    dest: "{{ uptime_kuma_dir }}/{{ item }}"
     owner: root
     group: root
     mode: '0644'
+  loop:
+    - kuma-admin.js
+    - kuma-gate.js
+  register: uptime_kuma_scripts
+
+- name: Write the TLS proxy configuration
+  ansible.builtin.template:
+    src: kuma-proxy.conf.j2
+    dest: "{{ uptime_kuma_dir }}/kuma-proxy.conf"
+    owner: root
+    group: root
+    mode: '0644'
+  register: uptime_kuma_proxy_conf
+
+- name: Write compose.yaml
+  ansible.builtin.template:
+    src: compose.yaml.j2
+    dest: "{{ uptime_kuma_dir }}/compose.yaml"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Bring up Kuma, the gate, the proxy and AutoKuma
+  community.docker.docker_compose_v2:
+    project_src: "{{ uptime_kuma_dir }}"
+    files:
+      - compose.yaml
+    state: present
+    pull: missing
+    remove_orphans: true
+  register: uptime_kuma_compose
+
+# Bind-mounted files changed in place: the containers must pick them up.
+- name: Restart the gate and the proxy after their files changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ uptime_kuma_dir }}"
+    files:
+      - compose.yaml
+    services:
+      - kuma-gate
+      - kuma-proxy
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - >-
+      uptime_kuma_scripts is changed or uptime_kuma_proxy_conf is changed
+      or (uptime_kuma_tls_cert is defined and uptime_kuma_tls_cert is changed)
 
 # Runs every time: it creates the admin only when Kuma has none, and then
 # always proves our password logs in. A login failure means someone else
@@ -56,6 +97,8 @@
 # SECURITY: the password never passes through Ansible here. The script reads
 # the file secret inside the container; see its header. Its one JSON output
 # line holds no secret, so this task is not no_log and a failure shows why.
+# Exit 3 is "no answer yet" (Kuma still starting or migrating its database):
+# retry. 4 and 5 mean setup or login was refused: fail at once.
 - name: Create the Kuma admin account if missing and prove the login works
   ansible.builtin.shell:
     cmd: >-
@@ -63,9 +106,7 @@
       -e KUMA_ADMIN_USERNAME={{ uptime_kuma_admin_username | quote }}
       uptime-kuma node - < {{ (uptime_kuma_dir ~ '/kuma-admin.js') | quote }}
   register: uptime_kuma_bootstrap
-  # Exit 3 is "no answer yet" (Kuma still starting): retry. 4 and 5 mean
-  # setup or login was refused: fail at once.
-  retries: 6
+  retries: 18
   delay: 10
   until: uptime_kuma_bootstrap.rc != 3
   changed_when: "'\"created\":true' in uptime_kuma_bootstrap.stdout"
@@ -73,33 +114,6 @@
     uptime_kuma_bootstrap.rc != 0
     or '"ok":true' not in uptime_kuma_bootstrap.stdout
   when: not ansible_check_mode
-
-- name: Record that the admin account exists
-  ansible.builtin.copy:
-    dest: "{{ uptime_kuma_data_dir }}/.ansible-admin-bootstrapped"
-    content: "Admin account created and login verified by roles/uptime_kuma.\n"
-    owner: "{{ uptime_kuma_uid }}"
-    group: "{{ uptime_kuma_uid }}"
-    mode: '0600'
-  when: not ansible_check_mode
-
-# A block's `when` is re-evaluated for every task inside it, so it must not
-# test uptime_kuma_bind_address, which the first task changes.
-- name: Decide whether Kuma still has to move from loopback to the LAN
-  ansible.builtin.set_fact:
-    uptime_kuma_needs_lan_rebind: "{{ uptime_kuma_bind_address != uptime_kuma_listen_address }}"
-
-- name: Open the Kuma UI to the LAN now that the admin account exists
-  when:
-    - uptime_kuma_needs_lan_rebind | bool
-    - not ansible_check_mode
-  block:
-    - name: Publish Kuma on the LAN address
-      ansible.builtin.set_fact:
-        uptime_kuma_bind_address: "{{ uptime_kuma_listen_address }}"
-
-    - name: Recreate Kuma with the LAN binding
-      ansible.builtin.include_tasks: compose_up.yml
 
 # AutoKuma can keep a dead session after Kuma restarts (AutoKuma#191), and on
 # a first deploy it started before the admin account existed. A restart after
@@ -116,18 +130,76 @@
   when:
     - not ansible_check_mode
     - >-
-      (uptime_kuma_stack_changed | default(false) | bool)
+      uptime_kuma_compose is changed
       or uptime_kuma_bootstrap is changed
       or uptime_kuma_autokuma_config is changed
 
-- name: Prove Kuma answers from the controller over the LAN
+# The gate re-checks every 15s, so allow a few rounds after the bootstrap.
+- name: Prove the UI answers over TLS on the host, certificate verified
   ansible.builtin.uri:
-    url: "http://{{ ansible_host }}:{{ uptime_kuma_port }}/"
+    url: "https://127.0.0.1:{{ uptime_kuma_port }}/"
+    ca_path: "{{ uptime_kuma_tls_dir }}/cert.pem"
     status_code: 200
-  delegate_to: localhost
-  become: false
-  register: uptime_kuma_lan_check
+  register: uptime_kuma_tls_local
   retries: 12
   delay: 5
-  until: uptime_kuma_lan_check.status == 200
+  until: uptime_kuma_tls_local.status == 200
   when: not ansible_check_mode
+
+- name: Prove the setup routes are refused
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ uptime_kuma_port }}/setup"
+    ca_path: "{{ uptime_kuma_tls_dir }}/cert.pem"
+    status_code: 403
+  when: not ansible_check_mode
+
+- name: Read the certificate for the controller-side check
+  ansible.builtin.slurp:
+    src: "{{ uptime_kuma_tls_dir }}/cert.pem"
+  register: uptime_kuma_tls_cert_pem
+  when: not ansible_check_mode
+
+- name: Check the UI from the controller over the LAN
+  delegate_to: localhost
+  become: false
+  when: not ansible_check_mode
+  block:
+    - name: Create a scratch file for the Kuma certificate on the controller
+      ansible.builtin.tempfile:
+        suffix: -kuma-cert.pem
+      register: uptime_kuma_ctl_cert
+
+    - name: Write the Kuma certificate on the controller
+      ansible.builtin.copy:
+        dest: "{{ uptime_kuma_ctl_cert.path }}"
+        content: "{{ uptime_kuma_tls_cert_pem.content | b64decode }}"
+        mode: '0600'
+
+    - name: Prove the UI answers over TLS from the controller, certificate verified
+      ansible.builtin.uri:
+        url: "https://{{ ansible_host }}:{{ uptime_kuma_port }}/"
+        ca_path: "{{ uptime_kuma_ctl_cert.path }}"
+        status_code: 200
+      register: uptime_kuma_lan_check
+      retries: 12
+      delay: 5
+      until: uptime_kuma_lan_check.status == 200
+
+    # SECURITY: the port must never serve the UI over plain HTTP.
+    - name: Prove plain HTTP on the LAN port gets no UI
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ uptime_kuma_port }}/"
+        status_code: [-1, 400]
+        return_content: true
+      register: uptime_kuma_plain_http
+      failed_when: >-
+        uptime_kuma_plain_http.status not in [-1, 400]
+        or 'Uptime Kuma' in (uptime_kuma_plain_http.content | default(''))
+        or '<div id="app"' in (uptime_kuma_plain_http.content | default(''))
+
+  always:
+    - name: Remove the scratch certificate from the controller
+      ansible.builtin.file:
+        path: "{{ uptime_kuma_ctl_cert.path }}"
+        state: absent
+      when: uptime_kuma_ctl_cert.path is defined

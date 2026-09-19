@@ -49,6 +49,7 @@ import json
 import os
 import re
 import signal
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -256,19 +257,35 @@ def read_token(path: str) -> str:
     return token
 
 
-def push(base: str, token: str, outcome: Outcome,
+def push(base: str, token: str, outcome: Outcome, cafile: str | None = None,
          opener: Callable[..., object] = urllib.request.urlopen) -> tuple[bool, str]:
-    """Report to Kuma. Returns (accepted, reason); reason never has the token."""
+    """Report to Kuma. Returns (accepted, reason); reason never has the token.
+
+    Kuma is behind TLS, so with --push-cafile the certificate is verified
+    against that file and nothing else; an unverifiable certificate is a
+    failed push, never a silent plain-text fallback.
+    """
+    context = None
+    if base.startswith("https://"):
+        try:
+            context = ssl.create_default_context(cafile=cafile) if cafile \
+                else ssl.create_default_context()
+        except OSError as exc:
+            return False, f"cannot read the push CA file ({type(exc).__name__})"
     query = {"status": "up" if outcome.ok else "down", "msg": outcome.msg[:MAX_MSG_CHARS]}
     if outcome.ok:
         query["ping"] = f"{outcome.elapsed * 1000:.1f}"
     url = f"{base}/{token}?{urllib.parse.urlencode(query)}"
     try:
-        with opener(url, timeout=PUSH_TIMEOUT_SECS) as resp:  # type: ignore[attr-defined]
+        with opener(url, timeout=PUSH_TIMEOUT_SECS, context=context) as resp:  # type: ignore[attr-defined]
             body = resp.read(4096)
     except urllib.error.HTTPError as exc:
         return False, f"push endpoint answered HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except urllib.error.URLError as exc:
+        if isinstance(getattr(exc, "reason", None), ssl.SSLError):
+            return False, "push endpoint TLS certificate was not accepted"
+        return False, f"push endpoint unreachable ({type(exc).__name__})"
+    except (ssl.SSLError, OSError, ValueError) as exc:
         return False, f"push endpoint unreachable ({type(exc).__name__})"
     try:
         accepted = json.loads(body).get("ok") is True
@@ -303,6 +320,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--push-base", default="http://127.0.0.1:3001/api/push")
     parser.add_argument("--push-token-file", default=None,
                         help="defaults to $CREDENTIALS_DIRECTORY/push_token")
+    parser.add_argument("--push-cafile", default=None,
+                        help="verify the push endpoint's certificate against this file only")
     return parser.parse_args(argv)
 
 
@@ -338,7 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK if outcome.ok else EXIT_NFS_FAILED
 
     outcome = read_sentinel(target, expected, args.nfs_cat, args.timeout)
-    accepted, push_reason = push(args.push_base, token, outcome)
+    accepted, push_reason = push(args.push_base, token, outcome, cafile=args.push_cafile)
     log({"event": "probe", "ok": outcome.ok, "msg": outcome.msg,
          "elapsed_ms": round(outcome.elapsed * 1000, 1), "push": push_reason})
     if not outcome.ok:

@@ -1,0 +1,73 @@
+---
+# Self-signed TLS certificate for the Kuma UI, generated on vm117. The key
+# never leaves the host. It is regenerated when missing, when it expires
+# within 30 days, or when it does not name the host's current address.
+#
+# The certificate is self-signed, so a browser warns until it is trusted.
+# The deploy prints its SHA-256 fingerprint; compare it before accepting, or
+# import /opt/uptime-kuma/tls/cert.pem as a trusted certificate.
+
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ uptime_kuma_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Generate or renew the Kuma TLS certificate
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      cd "$DIR"
+      if [[ -s cert.pem && -s key.pem ]] \
+         && openssl x509 -in cert.pem -noout -checkend 2592000 >/dev/null \
+         && openssl x509 -in cert.pem -noout -ext subjectAltName | grep -qF "IP Address:${LAN_IP}"; then
+        echo unchanged
+        exit 0
+      fi
+      umask 077
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+        -days "$DAYS" -subj "/CN=uptime-kuma" \
+        -addext "subjectAltName=IP:${LAN_IP},IP:127.0.0.1,DNS:uptime-kuma,DNS:localhost" \
+        -addext "basicConstraints=critical,CA:FALSE" \
+        -addext "keyUsage=critical,digitalSignature" \
+        -addext "extendedKeyUsage=serverAuth" \
+        -keyout key.pem.tmp -out cert.pem.tmp 2>/dev/null
+      mv key.pem.tmp key.pem
+      mv cert.pem.tmp cert.pem
+      echo changed
+    executable: /bin/bash
+  environment:
+    DIR: "{{ uptime_kuma_tls_dir }}"
+    LAN_IP: "{{ ansible_host }}"
+    DAYS: "{{ uptime_kuma_tls_days }}"
+  register: uptime_kuma_tls_cert
+  changed_when: uptime_kuma_tls_cert.stdout == 'changed'
+  when: not ansible_check_mode
+
+# The proxy runs as nginx-unprivileged's uid 101 and reads the key through
+# the supplementary group it shares with the other containers.
+- name: Set ownership of the TLS key and certificate
+  ansible.builtin.file:
+    path: "{{ uptime_kuma_tls_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { name: key.pem, group: "{{ uptime_kuma_secrets_gid }}", mode: '0440' }
+    - { name: cert.pem, group: 0, mode: '0644' }
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ansible_check_mode
+
+- name: Read the certificate fingerprint
+  ansible.builtin.command: openssl x509 -in {{ (uptime_kuma_tls_dir ~ '/cert.pem') | quote }} -noout -fingerprint -sha256
+  register: uptime_kuma_tls_fingerprint
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Show the certificate fingerprint to compare in the browser
+  ansible.builtin.debug:
+    msg: "Kuma UI: https://{{ ansible_host }}:{{ uptime_kuma_port }}/ ({{ uptime_kuma_tls_fingerprint.stdout | default('') }})"
+  when: not ansible_check_mode

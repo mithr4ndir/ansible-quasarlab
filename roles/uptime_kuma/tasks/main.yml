@@ -10,11 +10,14 @@
 - name: Generate the host-local secrets
   ansible.builtin.import_tasks: secrets.yml
 
+- name: Generate the TLS certificate for the UI
+  ansible.builtin.import_tasks: tls.yml
+
 - name: Write the monitor and notification definitions
   ansible.builtin.import_tasks: monitors.yml
   when: not ansible_check_mode
 
-- name: Start Kuma and AutoKuma and bootstrap the admin account
+- name: Start Kuma, the gate, the TLS proxy and AutoKuma, and bootstrap the admin
   ansible.builtin.import_tasks: kuma.yml
 
 - name: Install the NFS read probe

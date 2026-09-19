@@ -17,7 +17,8 @@ ExecStart=/usr/local/bin/kuma-nfs-probe probe \
     --uid {{ uptime_kuma_nfs_probe_uid }} \
     --gid {{ uptime_kuma_nfs_probe_gid }} \
     --timeout {{ uptime_kuma_nfs_probe_timeout }} \
-    --push-base http://127.0.0.1:{{ uptime_kuma_port }}/api/push
+    --push-base https://127.0.0.1:{{ uptime_kuma_port }}/api/push \
+    --push-cafile {{ uptime_kuma_tls_dir }}/cert.pem
 # Exit 1 (NFS failed) and 2 (push failed) are results, not unit failures to
 # retry; they still show as failed in `systemctl status`.
 LoadCredential=push_token:{{ uptime_kuma_secrets_dir }}/nfs_push_token

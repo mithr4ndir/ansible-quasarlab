@@ -19,6 +19,7 @@ import importlib.machinery
 import importlib.util
 import json
 import re
+import os
 import shlex
 import shutil
 import subprocess
@@ -71,7 +72,6 @@ def host_vars(**extra: Any) -> dict[str, Any]:
         "ansible_facts": {"architecture": "x86_64", "distribution_release": "bookworm"},
         "uptime_kuma_discord_webhook_url": FAKE_WEBHOOK,
         "uptime_kuma_nfs_push_token": FAKE_TOKEN,
-        "uptime_kuma_bind_address": "127.0.0.1",
         "role_path": str(ROLE),
     })
     variables.update(extra)
@@ -151,63 +151,99 @@ def test_playbook_uses_the_role_on_the_static_group() -> None:
 # compose.yaml
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0"])
-def test_compose_renders_hardened_and_pinned(bind: str) -> None:
-    text = render_file("compose.yaml.j2", uptime_kuma_bind_address=bind)
+
+def test_compose_publishes_only_the_tls_proxy() -> None:
+    text = render_file("compose.yaml.j2")
     compose = yaml.safe_load(text)
-    kuma, autokuma = compose["services"]["uptime-kuma"], compose["services"]["autokuma"]
+    services = compose["services"]
+    assert set(services) == {"uptime-kuma", "autokuma", "kuma-gate", "kuma-proxy"}
 
-    assert kuma["ports"] == [f"{bind}:3001:3001"]
-    assert "ports" not in autokuma
-    for svc in (kuma, autokuma):
-        assert DIGEST_RE.match(svc["image"]), svc["image"]
-        uid = int(str(svc["user"]).split(":")[0])
-        assert uid != 0
-        assert svc["cap_drop"] == ["ALL"]
-        assert "no-new-privileges:true" in svc["security_opt"]
-        assert svc["restart"] == "unless-stopped"
-        assert svc["group_add"] == ["3001"]
-        assert "mem_limit" in svc and "pids_limit" in svc
-        assert svc["logging"]["options"]["max-size"] == "10m"
+    # SECURITY: Kuma speaks plain HTTP, so it must not be published at all.
+    published = {name: svc.get("ports") for name, svc in services.items() if svc.get("ports")}
+    assert published == {"kuma-proxy": ["0.0.0.0:3001:3001"]}
+
+    for name, svc in services.items():
+        assert DIGEST_RE.match(svc["image"]), (name, svc["image"])
+        assert int(str(svc["user"]).split(":")[0]) != 0, name
+        assert svc["cap_drop"] == ["ALL"], name
+        assert "no-new-privileges:true" in svc["security_opt"], name
+        assert svc["restart"] == "unless-stopped", name
+        assert svc["group_add"] == ["3001"], name
+        assert "mem_limit" in svc and "pids_limit" in svc, name
         for volume in svc.get("volumes", []):
-            assert "docker.sock" not in volume
+            assert "docker.sock" not in volume, name
 
+    proxy = services["kuma-proxy"]
+    assert proxy["image"].startswith("nginxinc/nginx-unprivileged:1.30.5-alpine@")
+    assert proxy["user"] == "101:101"
+    assert "/opt/uptime-kuma/tls:/etc/uptime-kuma-tls:ro" in proxy["volumes"]
+    assert "/opt/uptime-kuma/kuma-proxy.conf:/etc/nginx/conf.d/default.conf:ro" in proxy["volumes"]
+    assert set(proxy["depends_on"]) == {"uptime-kuma", "kuma-gate"}
+
+    gate = services["kuma-gate"]
+    assert gate["image"] == services["uptime-kuma"]["image"]
+    assert gate["secrets"] == ["kuma_admin_password"]
+    assert gate["entrypoint"] == ["node", "/gate/kuma-gate.js"]
+    assert "/opt/uptime-kuma/kuma-gate.js:/gate/kuma-gate.js:ro" in gate["volumes"]
+
+    kuma = services["uptime-kuma"]
+    assert "ports" not in kuma
     assert kuma["image"].startswith("louislam/uptime-kuma:2.5.5-slim-rootless@")
     assert kuma["environment"]["UPTIME_KUMA_DB_TYPE"] == "sqlite"
     assert kuma["volumes"] == ["/opt/uptime-kuma/data:/app/data"]
     assert kuma["secrets"] == ["kuma_admin_password"]
 
+    autokuma = services["autokuma"]
     env = autokuma["environment"]
     assert env["AUTOKUMA__KUMA__URL"] == "http://uptime-kuma:3001"
-    # AutoKuma 2.0.0 has no @/file syntax: an env value would be used
-    # literally (seen in the e2e test), so the password comes from a file.
     assert not any("PASSWORD" in k for k in env)
     assert env["XDG_CONFIG_HOME"] == "/config"
-    assert "/opt/uptime-kuma/secrets/autokuma.toml:/config/autokuma/config.toml:ro" in autokuma["volumes"]
-    assert "secrets" not in autokuma
     assert env["AUTOKUMA__DOCKER__ENABLED"] == "false"
     assert env["AUTOKUMA__KUBERNETES__ENABLED"] == "false"
     assert env["AUTOKUMA__ON_DELETE"] == "delete"
-    assert "/opt/uptime-kuma/monitors:/monitors:ro" in autokuma["volumes"]
+    assert "/opt/uptime-kuma/secrets/autokuma.toml:/config/autokuma/config.toml:ro" in autokuma["volumes"]
+    assert "secrets" not in autokuma
 
     assert compose["secrets"]["kuma_admin_password"]["file"] == "/opt/uptime-kuma/secrets/admin_password"
     assert FAKE_WEBHOOK not in text and FAKE_TOKEN not in text
 
 
-def test_bootstrap_marker_lives_in_kuma_data_dir() -> None:
-    # Wiping Kuma's data must also put it back behind loopback.
-    marker = find_task(tasks("kuma.yml"), "Check whether the Kuma admin account was already bootstrapped")
-    path = render_text(marker["ansible.builtin.stat"]["path"], host_vars())
-    assert path.startswith("/opt/uptime-kuma/data/")
+def test_proxy_serves_tls_only_and_asks_the_gate() -> None:
+    conf = render_file("kuma-proxy.conf.j2")
+    assert re.findall(r"^\s*listen\s+(.*);", conf, re.M) == ["3001 ssl"]   # no plain listener
+    assert "ssl_protocols       TLSv1.2 TLSv1.3;" in conf
+    assert "ssl_certificate_key /etc/uptime-kuma-tls/key.pem;" in conf
+    body = conf[conf.index("location / {"):]
+    assert "auth_request /__kuma_gate;" in body            # websockets included
+    assert "proxy_pass $kuma_upstream;" in body
+    assert "proxy_set_header Upgrade $http_upgrade;" in body
+    assert re.search(r"location ~ \^/setup.*\n\s*return 403;", conf)
+    assert "add_header Strict-Transport-Security" in conf
 
 
-def test_lan_rebind_block_does_not_test_the_variable_it_changes() -> None:
-    # A block's `when` is re-evaluated per task; if it tested
-    # uptime_kuma_bind_address, the include after the set_fact would be skipped.
-    block = find_task(tasks("kuma.yml"), "Open the Kuma UI to the LAN now that the admin account exists")
-    assert not any("uptime_kuma_bind_address" in cond for cond in block["when"])
-    assert [t["name"] for t in block["block"]] == [
-        "Publish Kuma on the LAN address", "Recreate Kuma with the LAN binding"]
+def test_the_deploy_checks_tls_and_refuses_plain_http() -> None:
+    items = tasks("kuma.yml")
+    tls_local = find_task(items, "Prove the UI answers over TLS on the host, certificate verified")
+    ca = render_text(tls_local["ansible.builtin.uri"]["ca_path"], host_vars())
+    assert ca == "/opt/uptime-kuma/tls/cert.pem"
+    assert tls_local["ansible.builtin.uri"]["url"].startswith("https://127.0.0.1")
+    setup = find_task(items, "Prove the setup routes are refused")
+    assert setup["ansible.builtin.uri"]["status_code"] == 403
+    plain = find_task(items, "Prove plain HTTP on the LAN port gets no UI")
+    assert plain["ansible.builtin.uri"]["url"].startswith("http://")
+    assert "Uptime Kuma' in" in plain["failed_when"]
+
+
+def test_exposure_is_gated_at_runtime_not_by_a_deploy_marker() -> None:
+    # The old design published the LAN port once a marker file existed, so a
+    # database lost while running came back exposed. Nothing may decide
+    # exposure from a marker or a bind address any more.
+    text = "\n".join(f.read_text() for f in sorted((ROLE / "tasks").glob("*.yml")))
+    text += (ROLE / "templates" / "compose.yaml.j2").read_text()
+    for gone in ("uptime_kuma_bind_address", "needs_lan_rebind"):
+        assert gone not in text, gone
+    gate = (ROLE / "files" / "kuma-gate.js").read_text()
+    assert 'ask(socket, "needSetup"' in gate and 'ask(socket, "login"' in gate
 
 
 def test_bootstrap_never_hands_the_password_to_ansible() -> None:
@@ -437,6 +473,41 @@ def test_verifier_reports_when_kuma_cannot_be_asked(capsys: pytest.CaptureFixtur
 # ---------------------------------------------------------------------------
 # Defaults that encode decisions
 # ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl not installed")
+def test_tls_certificate_is_generated_renewed_and_follows_the_host_address(tmp_path: Path) -> None:
+    task = find_task(tasks("tls.yml"), "Generate or renew the Kuma TLS certificate")
+    script = task["ansible.builtin.shell"]["cmd"]
+    assert task["changed_when"] == "uptime_kuma_tls_cert.stdout == 'changed'"
+
+    def run(lan_ip: str = "192.168.1.129", days: str = "825") -> str:
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=120,
+                              env={**os.environ, "DIR": str(tmp_path), "LAN_IP": lan_ip,
+                                   "DAYS": days}, check=False)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return proc.stdout.strip()
+
+    def san() -> str:
+        return subprocess.run(["openssl", "x509", "-in", str(tmp_path / "cert.pem"), "-noout",
+                               "-ext", "subjectAltName"], capture_output=True, text=True,
+                              check=True).stdout
+
+    assert run() == "changed"
+    assert (tmp_path / "key.pem").stat().st_mode & 0o777 == 0o600
+    assert "IP Address:192.168.1.129" in san() and "IP Address:127.0.0.1" in san()
+    first = (tmp_path / "cert.pem").read_bytes()
+
+    assert run() == "unchanged"                       # idempotent
+    assert (tmp_path / "cert.pem").read_bytes() == first
+
+    assert run(lan_ip="192.168.1.200") == "changed"   # the host moved
+    assert "IP Address:192.168.1.200" in san()
+
+    # A certificate expiring within 30 days is renewed on the next run.
+    (tmp_path / "cert.pem").unlink()
+    assert run(lan_ip="192.168.1.200", days="10") == "changed"
+    assert run(lan_ip="192.168.1.200") == "changed"
+
 
 def test_autokuma_rc_pin_keeps_its_reason() -> None:
     # The release-candidate pin is deliberate; without the reason next to it
