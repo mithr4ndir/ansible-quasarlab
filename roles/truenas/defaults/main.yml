@@ -1,0 +1,24 @@
+---
+# Where node_exporter reads textfile metrics. Must match the
+# --collector.textfile.directory it was started with; host_vars/truenas
+# already overrides node_exporter_install_dir for the read-only /usr.
+truenas_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}"
+truenas_exporter_dir: "{{ node_exporter_install_dir | default('/var/lib/node_exporter') }}"
+
+# How often pool/SMART metrics are refreshed.
+truenas_metrics_interval: 60s
+
+# Remote syslog. The vector-aggregator syslog listener is a MetalLB
+# LoadBalancer, tcp/5514.
+truenas_syslog_server: "192.168.1.232:5514"
+truenas_syslog_transport: "TCP"
+# F_INFO floods: zettarepl retention chatter alone produced ~3,700 lines a
+# minute, two orders of magnitude above any other host. F_NOTICE keeps
+# kernel, ZFS and middleware errors and drops the noise. Verified by
+# sending one line at each severity and querying Loki for each.
+truenas_syslog_level: "F_NOTICE"
+
+# Enable SMART on every attached SATA disk. Five of the eight tank drives
+# shipped with it OFF, which made smartd and the TrueNAS alert page
+# truthful and meaningless at the same time.
+truenas_enable_smart: true
