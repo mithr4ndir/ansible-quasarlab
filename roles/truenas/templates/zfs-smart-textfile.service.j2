@@ -1,0 +1,11 @@
+[Unit]
+Description=Write ZFS pool and SMART metrics for node_exporter textfile collector
+After=zfs.target
+
+[Service]
+Type=oneshot
+ExecStart={{ truenas_exporter_dir }}/zfs-smart-textfile.sh
+# A timer-driven oneshot that hangs stays in `activating` forever, and systemd
+# will not fire the timer again while it does. That silently ends all future
+# runs, with NEXT shown as `-`.
+TimeoutStartSec=120
