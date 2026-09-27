@@ -28,14 +28,22 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Four separate pytest surfaces exist. Running one proves nothing about the others:
+Seven separate pytest surfaces exist. Running one proves nothing about the others:
 
 ```
-pytest tests/                                # 1Password quota gate, cache, killswitch, wrappers
-pytest roles/cmd_center/tests                # 7 modules: apt, helm, herdr, changelog, systemd scope
+pytest tests/                                # 1P quota gate, cache, killswitch, wrappers,
+                                             # requirements drift, playbook syntax
+pytest roles/cmd_center/tests                # apt, helm, herdr, changelog, systemd scope, task limits
+pytest roles/common/vm_baseline/tests
 pytest roles/op_ratelimit_collector/tests
 pytest roles/unattended_upgrades/tests
+pytest roles/k8s/common/tests
+pytest roles/pve/gpu_passthrough/tests
+pytest roles/uptime_kuma/tests
 ```
+
+Adding a `tests/` directory to a role adds a surface nobody runs by habit. Either add it
+to this list in the same commit, or put the test in `tests/` at the repo root.
 
 Use the pinned runner, documented at `roles/cmd_center/README.md:151`:
 
@@ -55,7 +63,69 @@ case inside, so the run still looks mostly green.
 
 For shell changes run `bash -n`. For role and template changes, review defaults and
 templates and syntax-check against a static fixture inventory with fixture variables. A
-syntax check is not deployment validation.
+syntax check is not deployment validation, but it is the only thing that resolves every
+module name against the collections that actually exist, and
+`tests/test_playbook_syntax.py` now runs it over all 21 playbooks. It pins the ini
+inventory plugin and an empty callback directory, so it can never resolve the Proxmox
+dynamic inventory or fire the 1Password quota gate. Never hand-run a syntax check with
+the default inventory for the same reason.
+
+## Community collections first
+
+Do not reinvent what a collection already does. Before writing a `command`, `shell`, or
+`script` task, check for a module. The control node has 103 collections and 8401 modules
+installed already.
+
+```
+ansible-doc -l | grep -i <thing>     # modules available right now
+ansible-galaxy collection list       # what is installed, and its version
+ansible-doc <fqcn>                   # does this exact name exist
+```
+
+For something not installed yet, search Galaxy without a browser:
+
+```
+curl -s 'https://galaxy.ansible.com/api/v3/plugin/ansible/search/collection-versions/?keywords=proxmox&limit=10' \
+  | jq -r '.data[].collection_version | .namespace + "." + .name + " " + .version'
+```
+
+Docs in an LLM-friendly form. `docs.ansible.com` answers 429 to this host, browser user
+agent included, so use these `llms.txt` files or the `context7` MCP server. All verified
+fetchable on 2026-09-27:
+
+| what | llms.txt |
+|---|---|
+| Ansible docs (36k snippets) | https://context7.com/websites/ansible_projects_ansible/llms.txt |
+| ansible-core docs source | https://context7.com/ansible/ansible-documentation/llms.txt |
+| ansible.posix | https://context7.com/ansible-collections/ansible.posix/llms.txt |
+| community.general | https://context7.com/ansible-collections/community.general/llms.txt |
+| kubernetes.core | https://context7.com/ansible-collections/kubernetes.core/llms.txt |
+| community.postgresql | https://context7.com/ansible-collections/community.postgresql/llms.txt |
+| community.docker | https://context7.com/ansible-collections/community.docker/llms.txt |
+
+Rules, each one earned:
+
+- **A module over `command`/`shell`.** 69 `command`/`shell` tasks exist here. When you add
+  another, the comment says why no module fits. What you give up is idempotence and check
+  mode, so `changed_when` and `check_mode` are not optional on a raw task.
+- **Declare what you use.** `requirements.yml` had three collections and needed five:
+  `kubernetes.core` (16 tasks), `community.general` and `community.postgresql` were used
+  and undeclared, and `community.grafana` was declared with nothing using it. Those runs
+  worked only because the control node happened to have the collections from the
+  `ansible` package, so a control node bootstrapped from `requirements.yml` alone, which
+  is the documented DR path, would have failed. `tests/test_requirements.py` enforces both
+  directions now.
+- **Name the collection, not the core redirect.** `ansible.builtin.sysctl` works, because
+  ansible-core keeps a redirect to `ansible.posix.sysctl`, and that is exactly how
+  `ansible.posix` stayed an undeclared dependency. Write the real FQCN.
+- **A well-formed FQCN is not a real module.** `community.general.dpkg_selections` does
+  not exist. It passed lint, looked idiomatic, and made `playbooks/k8s_init.yml`
+  unrunnable: `couldn't resolve module/action`. Check with `ansible-doc <fqcn>` before
+  committing, and let the playbook syntax test catch the rest.
+- **A third-party Galaxy role is a supply-chain dependency**, not a shortcut. Collections
+  from the `ansible`, `ansible-collections`, `community` and `kubernetes` namespaces are
+  the default; anything else gets the same scrutiny as any other pinned dependency, and
+  a version floor that is proven on the control node rather than copied from a README.
 
 ## Landmines
 
