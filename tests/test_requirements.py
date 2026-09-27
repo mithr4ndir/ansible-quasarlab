@@ -20,7 +20,11 @@ Why this exists. Three kinds of drift had all already happened here:
    ansible.posix.sysctl. It reads like a core module and is really a dependency
    on a collection, so the scan resolves redirects rather than trusting the
    namespace it is written with.
-4. Not a task at all. inventory.proxmox.yml names the
+4. Written as a value rather than a key. `action: ns.coll.module` and
+   `local_action:` are valid module invocations where the FQCN is the value, so a
+   key-shaped scan sees only the word `action`. None exist here today, which is
+   exactly when to close the hole.
+5. Not a task at all. inventory.proxmox.yml names the
    community.proxmox.proxmox inventory plugin, and ansible.cfg lists that file
    first, so without the collection a control node has no dynamically
    discovered groups: no k8s, no cmd_center, no security. A scan that only
@@ -63,6 +67,15 @@ SCANNED_GLOBS = tuple(
 # and `ansible.builtin.shell: |` are both common here, and a collection module
 # written that way was invisible to an earlier version of this pattern.
 MODULE_KEY = re.compile(r"^\s*(?:-\s+)?([a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+):(?:\s|$)")
+# `action: community.general.timezone name=UTC` and `local_action:` are valid
+# module invocations where the FQCN is a VALUE, not a key, so the pattern above
+# sees only the word `action`. Also the `module:` sub-key form of the same thing.
+ACTION_VALUE = re.compile(
+    r"^\s*(?:-\s+)?(?:local_)?action:\s*['\"]?([a-z0-9_]+\.[a-z0-9_]+)\.[a-z0-9_]+"
+)
+ACTION_MODULE_KEY = re.compile(
+    r"^\s*module:\s*['\"]?([a-z0-9_]+\.[a-z0-9_]+)\.[a-z0-9_]+"
+)
 CORE_NAMESPACES = {"ansible.builtin", "ansible.legacy"}
 
 # Inventory sources name their plugin by FQCN, and ansible.cfg's `inventory`
@@ -105,12 +118,28 @@ def _used(redirects: dict) -> dict:
     for glob in SCANNED_GLOBS:
         for path in sorted(REPO.glob(glob)):
             for line in path.read_text().splitlines():
-                match = MODULE_KEY.match(line)
-                if not match:
+                namespace = module = None
+                key_match = MODULE_KEY.match(line)
+                if key_match:
+                    namespace, _, module = key_match.group(1).rpartition(".")
+                    fqcn = key_match.group(1)
+                    shape = ""
+                else:
+                    for pattern, label in (
+                        (ACTION_VALUE, " (action form)"),
+                        (ACTION_MODULE_KEY, " (action module key)"),
+                    ):
+                        action_match = pattern.match(line)
+                        if action_match:
+                            namespace = action_match.group(1)
+                            module = line.split(namespace + ".", 1)[1].split()[0]
+                            module = module.split(":")[0].strip("'\"")
+                            fqcn = f"{namespace}.{module}"
+                            shape = label
+                            break
+                if namespace is None:
                     continue
-                fqcn = match.group(1)
-                namespace, _, module = fqcn.rpartition(".")
-                where = f"{path.relative_to(REPO)}: {fqcn}"
+                where = f"{path.relative_to(REPO)}: {fqcn}{shape}"
                 if namespace in CORE_NAMESPACES:
                     owner = redirects.get(module)
                     if owner and owner not in CORE_NAMESPACES:
