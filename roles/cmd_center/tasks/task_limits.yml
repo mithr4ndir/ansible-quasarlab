@@ -88,6 +88,24 @@
   tags:
     - task_limits
 
+# And the value already written down. ansible.posix.sysctl manages
+# /etc/sysctl.conf, and a value there that is higher than the running one means
+# somebody wrote it without applying it. Lowering that would be a regression at
+# the next boot, which is precisely what this role exists to prevent, so the
+# persisted number joins the comparison below.
+#
+# Single backslashes in the regexes and .splitlines() rather than split('\n'):
+# this is a folded YAML scalar, so it hands Jinja the characters as written. `\\s`
+# would reach the regex as a literal backslash, and '\n' as backslash-n rather
+# than a newline, both of which fail silently by matching nothing.
+- name: Read the kernel thread ceiling already persisted
+  ansible.builtin.slurp:
+    src: /etc/sysctl.conf
+  register: cmd_center_sysctl_conf
+  failed_when: false
+  tags:
+    - task_limits
+
 # Two things this deliberately does NOT do, both raised in review of #210.
 #
 # It does not skip when the live value is already high enough. A ceiling raised
@@ -100,11 +118,16 @@
 # a host whose reported memory shrank, writing it would LOWER a working ceiling
 # before the assert below had a chance to reject the configuration. Taking the
 # higher of the two makes "only ever raises" true rather than merely intended.
-- name: Choose the ceiling to persist, never lower than what is in force
+- name: Choose the ceiling to persist, never lower than computed, live or persisted
   ansible.builtin.set_fact:
     cmd_center_threads_max_target: >-
       {{ [cmd_center_kernel_threads_max | int,
-          cmd_center_threads_max_before.content | b64decode | trim | int] | max }}
+          cmd_center_threads_max_before.content | b64decode | trim | int,
+          (((cmd_center_sysctl_conf.content | default('') | b64decode).splitlines()
+            | select('match', '^\s*kernel\.threads-max\s*=')
+            | map('regex_replace', '^[^=]*=\s*', '')
+            | map('trim') | select('match', '^[0-9]+$') | map('int')
+            | list) + [0]) | max] | max }}
   tags:
     - task_limits
 

@@ -21,6 +21,7 @@ so raising one ceiling without the ones outside it fails here.
 
 from __future__ import annotations
 
+import base64
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,9 @@ MEMTOTAL_MB = 16254
 CRASH_TASKS_MAX = 1027
 ASSERT_TASK = "Assert the task ceilings are ordered lowest to highest"
 LIVE_ASSERT_TASK = "Assert the kernel ceiling in force can deliver those limits"
+TARGET_TASK = (
+    "Choose the ceiling to persist, never lower than computed, live or persisted"
+)
 SET_FACT_TASK = "Resolve the kernel thread ceiling the other limits have to fit under"
 
 
@@ -200,13 +204,16 @@ class LiveCeilingTest(unittest.TestCase):
     def _named(self, needle: str) -> list:
         return [t for t in self.tasks if needle in t.get("name", "")]
 
-    def test_reads_the_enforced_value_from_proc(self) -> None:
-        slurps = [t for t in self.tasks if "ansible.builtin.slurp" in t]
-        self.assertGreaterEqual(len(slurps), 1, "nothing reads the live ceiling")
-        for task in slurps:
-            self.assertEqual(
-                task["ansible.builtin.slurp"]["src"], "/proc/sys/kernel/threads-max"
-            )
+    def test_reads_both_the_enforced_and_the_persisted_value(self) -> None:
+        sources = {
+            t["ansible.builtin.slurp"]["src"]
+            for t in self.tasks
+            if "ansible.builtin.slurp" in t
+        }
+        # /proc is what the kernel is running; /etc/sysctl.conf is what the next
+        # boot will use, and lowering that is the silent regression.
+        self.assertIn("/proc/sys/kernel/threads-max", sources)
+        self.assertIn("/etc/sysctl.conf", sources)
 
     def test_persists_the_ceiling_on_every_run(self) -> None:
         repair = [t for t in self.tasks if "ansible.posix.sysctl" in t]
@@ -219,42 +226,6 @@ class LiveCeilingTest(unittest.TestCase):
         # a file passes a live check and regresses at the next boot, so the
         # idempotent write runs every time.
         self.assertNotIn("when", repair[0])
-
-    def test_the_persisted_value_never_lowers_the_live_ceiling(self) -> None:
-        expression = self._named("Choose the ceiling to persist")[0][
-            "ansible.builtin.set_fact"
-        ]["cmd_center_threads_max_target"]
-        computed = int(self.variables["cmd_center_kernel_threads_max"])
-        for live, expected in (
-            (6847, computed),          # hotplug-booted host, raise it
-            (computed, computed),      # already correct, no change
-            (computed * 2, computed * 2),  # someone raised it further, keep that
-        ):
-            with self.subTest(live=live):
-                rendered = _render(
-                    expression.replace(
-                        "cmd_center_threads_max_before.content | b64decode | trim | int",
-                        str(live),
-                    ),
-                    self.variables,
-                )
-                self.assertEqual(int(rendered), expected)
-
-    def test_a_low_override_cannot_lower_a_working_ceiling(self) -> None:
-        # The review case: target 8000, live 10000, so the write must be 10000
-        # and the ordering assert is what rejects the 8000 configuration.
-        expression = self._named("Choose the ceiling to persist")[0][
-            "ansible.builtin.set_fact"
-        ]["cmd_center_threads_max_target"]
-        variables = dict(self.variables, cmd_center_kernel_threads_max=8000)
-        rendered = _render(
-            expression.replace(
-                "cmd_center_threads_max_before.content | b64decode | trim | int",
-                "10000",
-            ),
-            variables,
-        )
-        self.assertEqual(int(rendered), 10000)
 
     def test_live_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
         conditions = _task(TASKS, LIVE_ASSERT_TASK)["ansible.builtin.assert"]["that"]
@@ -293,6 +264,65 @@ class LiveCeilingTest(unittest.TestCase):
             min(writes),
             "the configuration assert must run before anything touches the host",
         )
+
+
+class PersistedCeilingTest(unittest.TestCase):
+    """The chosen ceiling, evaluated through Ansible's own templating.
+
+    Three sources have to be compared, and the review of #210 found each one in
+    turn: the value the RAM warrants, the value in force, and the value already
+    written to /etc/sysctl.conf. Lowering any of them is a regression, the last
+    one silently, at the next boot.
+
+    Rendered with Templar rather than bare Jinja2 on purpose. Two bugs in this
+    expression only showed up that way: an unbalanced parenthesis, and `\\s` in a
+    folded YAML scalar reaching the regex as a literal backslash so the persisted
+    value never matched. Both produced a plausible-looking number.
+    """
+
+    def setUp(self) -> None:
+        try:
+            from ansible.parsing.dataloader import DataLoader  # noqa: F401
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("ansible-core is not importable")
+        self.expression = _task(TASKS, TARGET_TASK)["ansible.builtin.set_fact"][
+            "cmd_center_threads_max_target"
+        ]
+
+    def _render(self, computed: int, live: int, sysctl_conf: str) -> int:
+        from ansible.parsing.dataloader import DataLoader
+        from ansible.template import Templar
+
+        variables = {
+            "cmd_center_kernel_threads_max": computed,
+            "cmd_center_threads_max_before": {
+                "content": base64.b64encode(f"{live}\n".encode()).decode()
+            },
+            "cmd_center_sysctl_conf": {
+                "content": base64.b64encode(sysctl_conf.encode()).decode()
+            },
+        }
+        return int(Templar(loader=DataLoader(), variables=variables).template(self.expression))
+
+    def test_cases(self) -> None:
+        none = "net.ipv4.ip_forward=1\n"
+        low = "kernel.threads-max=6847\n"
+        high = "net.core.somaxconn=1024\nkernel.threads-max = 200000\n"
+        commented = "# kernel.threads-max=999999\nkernel.threads-max=130032\n"
+        cases = [
+            ("hotplug host, nothing persisted", 130032, 6847, none, 130032),
+            ("steady state", 130032, 130032, low, 130032),
+            # The review case: the file is ahead of the running kernel.
+            ("persisted above computed and live", 130032, 130000, high, 200000),
+            ("live raised by hand, file stale", 130032, 500000, low, 500000),
+            # A low override must not win; the ordering assert rejects it instead.
+            ("low override cannot lower", 8000, 10000, none, 10000),
+            ("a commented line is not a value", 130032, 6847, commented, 130032),
+            ("no sysctl.conf content", 130032, 6847, "", 130032),
+        ]
+        for name, computed, live, conf, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(self._render(computed, live, conf), expected)
 
 
 if __name__ == "__main__":
