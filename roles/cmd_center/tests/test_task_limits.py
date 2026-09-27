@@ -39,6 +39,7 @@ MEMTOTAL_MB = 16254
 # The ceiling herdr.service actually had when it crashed.
 CRASH_TASKS_MAX = 1027
 ASSERT_TASK = "Assert the task ceilings are ordered lowest to highest"
+LIVE_ASSERT_TASK = "Assert the kernel ceiling in force can deliver those limits"
 SET_FACT_TASK = "Resolve the kernel thread ceiling the other limits have to fit under"
 
 
@@ -68,7 +69,6 @@ def _resolved_defaults() -> dict:
     variables["cmd_center_kernel_threads_max_live"] = variables[
         "cmd_center_kernel_threads_max"
     ]
-    variables["ansible_check_mode"] = False
     return variables
 
 
@@ -256,27 +256,42 @@ class LiveCeilingTest(unittest.TestCase):
         )
         self.assertEqual(int(rendered), 10000)
 
-    def test_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
-        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
-        broken = dict(self.variables)
-        broken["cmd_center_kernel_threads_max_live"] = 6847
-        results = [
-            _render("{{ " + c + " }}", broken) for c in conditions
-        ]
+    def test_live_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
+        conditions = _task(TASKS, LIVE_ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        broken = dict(self.variables, cmd_center_kernel_threads_max_live=6847)
+        results = [_render("{{ " + c + " }}", broken) for c in conditions]
         self.assertIn(
             "False",
             results,
             "a kernel ceiling of 6847 under DefaultTasksMax=8192 must fail the assert",
         )
 
-    def test_check_mode_skips_only_the_live_condition(self) -> None:
-        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
-        checking = dict(self.variables)
-        checking["ansible_check_mode"] = True
-        checking["cmd_center_kernel_threads_max_live"] = 6847
-        results = [_render("{{ " + c + " }}", checking) for c in conditions]
-        self.assertNotIn(
-            "False", results, "check mode must not fail on an unapplied sysctl"
+    def test_live_assert_is_skipped_under_check_mode(self) -> None:
+        # The sysctl is not applied under --check, so asserting the live value
+        # there would fail for the wrong reason.
+        self.assertEqual(
+            _task(TASKS, LIVE_ASSERT_TASK)["when"], "not ansible_check_mode"
+        )
+
+    def test_nothing_is_written_before_the_configuration_is_checked(self) -> None:
+        """The review case: a bad target must be rejected before it is persisted.
+
+        With an override of 8000 and a live ceiling of 10000, writing first put
+        10000 into /etc/sysctl.conf, overwriting whatever higher value was there,
+        and failed the play afterwards.
+        """
+        names = [t.get("name", "") for t in self.tasks]
+        writes = [
+            i
+            for i, t in enumerate(self.tasks)
+            if "ansible.posix.sysctl" in t or "ansible.builtin.template" in t
+        ]
+        config_assert = names.index(ASSERT_TASK)
+        self.assertTrue(writes, "no write tasks found, test would be vacuous")
+        self.assertLess(
+            config_assert,
+            min(writes),
+            "the configuration assert must run before anything touches the host",
         )
 
 

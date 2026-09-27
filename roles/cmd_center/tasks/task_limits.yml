@@ -42,6 +42,35 @@
   tags:
     - task_limits
 
+- name: Assert the task ceilings are ordered lowest to highest
+  ansible.builtin.assert:
+    that:
+      - cmd_center_herdr_tasks_max | int <= cmd_center_user_slice_tasks_max | int
+      - cmd_center_herdr_limit_nproc | int <= cmd_center_default_limit_nproc | int
+      - cmd_center_user_slice_tasks_max | int <= cmd_center_default_limit_nproc | int
+      - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max | int
+    fail_msg: >-
+      Task ceilings are out of order: herdr TasksMax
+      {{ cmd_center_herdr_tasks_max }}, herdr LimitNPROC
+      {{ cmd_center_herdr_limit_nproc }}, user slice TasksMax
+      {{ cmd_center_user_slice_tasks_max }}, DefaultLimitNPROC
+      {{ cmd_center_default_limit_nproc }}, kernel.threads-max
+      {{ cmd_center_kernel_threads_max }} computed. A unit cannot exceed its slice, a slice
+      cannot exceed RLIMIT_NPROC for the uid, and nothing exceeds
+      kernel.threads-max. A user unit's LimitNPROC above DefaultLimitNPROC is
+      worse than wrong, it is invisible: the user manager clamps it to its own
+      hard limit and systemctl show still reports the configured value.
+    quiet: true
+  tags:
+    - task_limits
+
+# Ordered after the configuration assert on purpose. Writing first meant a bad
+# configuration could be persisted and only then rejected: with a
+# vm_baseline_threads_max override of 8000 and a live ceiling of 10000, the old
+# order wrote 10000 to /etc/sysctl.conf, overwriting whatever higher value was
+# there, and failed the play afterwards. Nothing touches the host until the
+# numbers in the repo have been checked against each other.
+#
 # The ceiling above is what the RAM warrants, not necessarily what the kernel
 # is running. vm_baseline owns it fleet-wide, but this role can run on its own
 # (the disaster-recovery path in the README does exactly that), and then the
@@ -106,30 +135,17 @@
   tags:
     - task_limits
 
-- name: Assert the task ceilings are ordered lowest to highest
+- name: Assert the kernel ceiling in force can deliver those limits
   ansible.builtin.assert:
     that:
-      - cmd_center_herdr_tasks_max | int <= cmd_center_user_slice_tasks_max | int
-      - cmd_center_herdr_limit_nproc | int <= cmd_center_default_limit_nproc | int
-      - cmd_center_user_slice_tasks_max | int <= cmd_center_default_limit_nproc | int
-      - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max | int
-      - >-
-        ansible_check_mode
-        or (cmd_center_default_limit_nproc | int
-            <= cmd_center_kernel_threads_max_live | int)
+      - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max_live | int
     fail_msg: >-
-      Task ceilings are out of order: herdr TasksMax
-      {{ cmd_center_herdr_tasks_max }}, herdr LimitNPROC
-      {{ cmd_center_herdr_limit_nproc }}, user slice TasksMax
-      {{ cmd_center_user_slice_tasks_max }}, DefaultLimitNPROC
-      {{ cmd_center_default_limit_nproc }}, kernel.threads-max
-      {{ cmd_center_kernel_threads_max }} computed and
-      {{ cmd_center_kernel_threads_max_live | default('unread') }} enforced. A unit cannot exceed its slice, a slice
-      cannot exceed RLIMIT_NPROC for the uid, and nothing exceeds
-      kernel.threads-max. A user unit's LimitNPROC above DefaultLimitNPROC is
-      worse than wrong, it is invisible: the user manager clamps it to its own
-      hard limit and systemctl show still reports the configured value.
+      kernel.threads-max is {{ cmd_center_kernel_threads_max_live }} in force, below
+      the DefaultLimitNPROC of {{ cmd_center_default_limit_nproc }} this role hands
+      out. A cgroup or rlimit ceiling above what the kernel can deliver puts the
+      clone() failures back: the limit is reported, the thread still fails.
     quiet: true
+  when: not ansible_check_mode
   tags:
     - task_limits
 
