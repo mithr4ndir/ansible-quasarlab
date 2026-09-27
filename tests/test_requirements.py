@@ -47,6 +47,10 @@ SCANNED_GLOBS = (
     "roles/**/tasks/**/*.yml",
     "roles/**/handlers/**/*.yml",
     "playbooks/*.yml",
+    # site.yml is a playbook too, and a collection-backed task added there would
+    # otherwise be invisible to this scan while the syntax check passed, because
+    # the collection happens to be installed on whatever machine ran it.
+    "site.yml",
 )
 # The colon does not have to end the line: `ansible.builtin.command: /bin/true`
 # and `ansible.builtin.shell: |` are both common here, and a collection module
