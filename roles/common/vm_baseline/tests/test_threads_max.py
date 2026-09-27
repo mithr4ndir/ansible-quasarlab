@@ -17,6 +17,7 @@ looks like. The task must reach those values and must never lower one.
 
 from __future__ import annotations
 
+import base64
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,7 @@ import yaml
 
 
 ROLE = Path(__file__).resolve().parent.parent
+REPO = ROLE.parent.parent.parent
 DEFAULTS = ROLE / "defaults" / "main.yml"
 TASKS = ROLE / "tasks" / "main.yml"
 TASK_NAME = "Restore kernel.threads-max to what the running RAM warrants"
@@ -107,45 +109,88 @@ class ThreadsMaxTaskTest(unittest.TestCase):
 
 
 class NeverLowersTest(unittest.TestCase):
-    """"Only ever raises" is enforced, not just intended.
+    """"Only ever raises" covers all three sources, not just two.
 
-    A vm_baseline_threads_max override, or a host whose reported memory shrank,
-    would otherwise write a value below the ceiling already in force.
+    Rendered through Ansible's own Templar: a folded YAML scalar hands Jinja the
+    characters as written, so a doubled backslash in the regex silently matches
+    nothing and the persisted term contributes 0 while still returning a
+    plausible number. Bare Jinja2 cannot show that, and neither can reading it.
     """
 
-    def _value_expression(self) -> str:
-        return _task()["ansible.posix.sysctl"]["value"]
+    def setUp(self) -> None:
+        try:
+            from ansible.parsing.dataloader import DataLoader  # noqa: F401
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("ansible-core is not importable")
+        self.expression = _task()["ansible.posix.sysctl"]["value"]
 
-    def _render_with(self, computed: int, live: int) -> int:
-        expression = self._value_expression().replace(
-            "vm_baseline_threads_max_live.content | b64decode | trim | int", str(live)
+    def _render(self, computed: int, live: int, sysctl_conf: str) -> int:
+        from ansible.parsing.dataloader import DataLoader
+        from ansible.template import Templar
+
+        variables = {
+            "vm_baseline_threads_max": computed,
+            "vm_baseline_threads_max_live": {
+                "content": base64.b64encode(f"{live}\n".encode()).decode()
+            },
+            "vm_baseline_sysctl_conf": {
+                "content": base64.b64encode(sysctl_conf.encode()).decode()
+            },
+        }
+        return int(
+            Templar(loader=DataLoader(), variables=variables).template(self.expression)
         )
-        rendered = (
-            jinja2.Environment(undefined=jinja2.StrictUndefined)
-            .from_string(expression)
-            .render(vm_baseline_threads_max=computed)
-        )
-        return int(rendered)
 
-    def test_raises_a_hotplug_booted_ceiling(self) -> None:
-        self.assertEqual(self._render_with(130032, 6847), 130032)
+    def test_cases(self) -> None:
+        none = "net.ipv4.ip_forward=1\n"
+        low = "kernel.threads-max=6847\n"
+        high = "kernel.threads-max = 200000\n"
+        for name, computed, live, conf, expected in (
+            ("hotplug-booted host", 130032, 6847, none, 130032),
+            ("steady state", 130032, 130032, low, 130032),
+            ("persisted above computed and live", 130032, 130000, high, 200000),
+            ("live above computed", 130032, 500000, low, 500000),
+            ("a low override cannot lower", 8000, 10000, none, 10000),
+            ("no sysctl.conf content", 130032, 6847, "", 130032),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self._render(computed, live, conf), expected)
 
-    def test_keeps_a_higher_live_ceiling(self) -> None:
-        self.assertEqual(self._render_with(130032, 200000), 200000)
-
-    def test_reads_the_live_value_from_proc(self) -> None:
-        slurps = [
-            t
+    def test_reads_both_sources(self) -> None:
+        sources = {
+            t["ansible.builtin.slurp"]["src"]
             for t in yaml.safe_load(TASKS.read_text())
             if "ansible.builtin.slurp" in t
-        ]
-        self.assertTrue(
-            any(
-                t["ansible.builtin.slurp"]["src"] == "/proc/sys/kernel/threads-max"
-                for t in slurps
-            ),
-            "nothing reads the ceiling in force, so the max() cannot be honest",
+        }
+        self.assertIn("/proc/sys/kernel/threads-max", sources)
+        self.assertIn("/etc/sysctl.conf", sources)
+
+    def test_matches_the_copy_in_cmd_center(self) -> None:
+        """The same expression lives in two roles; it must not drift.
+
+        cmd_center needs its own copy because playbooks/cmd_center.yml can run
+        without vm_baseline, which the disaster-recovery path does deliberately.
+        """
+        cmd_center = (
+            REPO / "roles/cmd_center/tasks/task_limits.yml"
         )
+        other = [
+            t
+            for t in yaml.safe_load(cmd_center.read_text())
+            if t.get("name", "").startswith("Choose the ceiling")
+        ][0]["ansible.builtin.set_fact"]["cmd_center_threads_max_target"]
+
+        def normalise(expression: str) -> str:
+            expression = " ".join(expression.split())
+            for ours, theirs in (
+                ("vm_baseline_threads_max_live", "cmd_center_threads_max_before"),
+                ("vm_baseline_sysctl_conf", "cmd_center_sysctl_conf"),
+                ("vm_baseline_threads_max", "cmd_center_kernel_threads_max"),
+            ):
+                expression = expression.replace(ours, "X").replace(theirs, "X")
+            return expression
+
+        self.assertEqual(normalise(self.expression), normalise(other))
 
 
 if __name__ == "__main__":
