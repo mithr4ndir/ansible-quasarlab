@@ -15,10 +15,26 @@ A syntax check is not deployment validation. It does resolve every module name
 against the collections actually installed, which is the class of breakage that
 a lint-clean, YAML-valid playbook can still carry.
 
-SAFETY: this must never resolve the Proxmox dynamic inventory. That plugin is
-what used to burn 1Password read quota, so the run is pinned to the ini plugin
-with a temporary fixture inventory, and the repo's callback plugins (which
-include the 1Password quota gate) are pointed at an empty directory.
+SAFETY: this must never reach 1Password. Two separate paths could:
+
+1. The Proxmox dynamic inventory plugin, which is what used to burn read quota.
+   The run is pinned to the ini plugin with a temporary fixture inventory.
+2. `ansible.cfg` sets `vault_password_file = scripts/vault-pass.sh`, and that
+   script calls `cached_op_read`. `--syntax-check` really does invoke it, proven
+   by pointing the setting at a script that touches a marker file: the marker
+   appears. With a warm cache that costs nothing, with a stale one it is a live
+   read, so ANSIBLE_VAULT_PASSWORD_FILE is always overridden here and the repo's
+   script is never called.
+
+The repo's callback plugins (which include the 1Password quota gate) are also
+pointed at an empty directory.
+
+Five playbooks plus site.yml load vaulted group_vars and genuinely need the real
+password to pass a syntax check. On the control node `.vault_pass` exists at the
+repo root (gitignored, mode 600) and is used directly, so coverage is complete.
+Anywhere else, those playbooks report `Decryption failed` and are reported as
+skipped rather than failed, which is the honest answer on a machine that has no
+vault password at all.
 """
 
 from __future__ import annotations
@@ -51,6 +67,10 @@ COLLECTION_PATHS = ":".join(
     if (p / "ansible_collections").is_dir()
 )
 CANARY_MODULE = "kubernetes.core.k8s"
+# Gitignored, present on the control node. Never the repo's vault-pass.sh, which
+# would call out to 1Password.
+VAULT_PASS_FILE = REPO / ".vault_pass"
+VAULT_ERROR = "Decryption failed"
 FIXTURE_INVENTORY = """\
 [cmd_center]
 fixture-cc ansible_host=127.0.0.1 ansible_connection=local
@@ -100,6 +120,16 @@ class PlaybookSyntaxTest(unittest.TestCase):
         cls.inventory.write_text(FIXTURE_INVENTORY)
         cls.no_callbacks = root / "no-callbacks"
         cls.no_callbacks.mkdir()
+        cls.vault_available = VAULT_PASS_FILE.is_file()
+        if cls.vault_available:
+            cls.vault_password_file = VAULT_PASS_FILE
+        else:
+            # A wrong password, deliberately. It keeps Ansible from calling the
+            # repo's 1Password-backed script, and the playbooks that actually
+            # need to decrypt something say so plainly.
+            cls.vault_password_file = root / "dummy-vault.sh"
+            cls.vault_password_file.write_text("#!/bin/sh\necho not-the-real-password\n")
+            cls.vault_password_file.chmod(0o700)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -115,6 +145,8 @@ class PlaybookSyntaxTest(unittest.TestCase):
                 # ANSIBLE_CALLBACK_PLUGINS REPLACES ansible.cfg's setting.
                 "ANSIBLE_CALLBACK_PLUGINS": str(self.no_callbacks),
                 "ANSIBLE_CALLBACKS_ENABLED": "",
+                # Never scripts/vault-pass.sh. See the SAFETY note above.
+                "ANSIBLE_VAULT_PASSWORD_FILE": str(self.vault_password_file),
                 # Resolve modules against the control node's real collections.
                 "ANSIBLE_COLLECTIONS_PATH": COLLECTION_PATHS,
             }
@@ -137,21 +169,44 @@ class PlaybookSyntaxTest(unittest.TestCase):
         for playbook in PLAYBOOKS:
             self.assertTrue(playbook.is_file(), f"{playbook} does not exist")
 
+    def test_vault_password_never_comes_from_the_1password_script(self) -> None:
+        self.assertNotIn(
+            "vault-pass.sh",
+            str(self.vault_password_file),
+            "the repo's vault script calls cached_op_read; this test must not",
+        )
+
     def test_every_playbook_passes_syntax_check(self) -> None:
         failures = {}
+        skipped_for_vault = []
         for playbook in PLAYBOOKS:
             result = self._check(playbook)
-            if result.returncode != 0:
-                first_error = next(
-                    (
-                        line
-                        for line in (result.stderr + result.stdout).splitlines()
-                        if line.startswith("ERROR")
-                    ),
-                    f"exit {result.returncode}",
-                )
-                failures[playbook.name] = first_error
+            if result.returncode == 0:
+                continue
+            output = result.stderr + result.stdout
+            if VAULT_ERROR in output and not self.vault_available:
+                skipped_for_vault.append(playbook.name)
+                continue
+            failures[playbook.name] = next(
+                (
+                    line
+                    for line in output.splitlines()
+                    if line.startswith("ERROR")
+                ),
+                f"exit {result.returncode}",
+            )
         self.assertEqual(failures, {})
+        if self.vault_available:
+            # On the control node nothing may be skipped: a vaulted playbook
+            # that cannot be decrypted with the real password is a real failure.
+            self.assertEqual(skipped_for_vault, [])
+        elif skipped_for_vault:
+            print(
+                f"\nno {VAULT_PASS_FILE.name}, so {len(skipped_for_vault)} vaulted "
+                f"playbook(s) were not checked: {', '.join(skipped_for_vault)}"
+            )
+            # Still meaningful: most of the set was checked for real.
+            self.assertLess(len(skipped_for_vault), len(PLAYBOOKS) // 2)
 
 
 if __name__ == "__main__":
