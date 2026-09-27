@@ -24,8 +24,17 @@ TimeoutStopSec=30
 # 'failed to spawn thread: Os { code: 11, kind: WouldBlock }'.
 # Stated absolutely, because the 15% default resolves against a thread
 # ceiling that Proxmox memory hotplug leaves sized for 1 GiB of RAM.
-# LimitNPROC is per uid and applies at exec, so it takes effect at the next
-# reboot or deliberate cutover, not on a daemon-reload.
+# LimitNPROC is not enforced yet, and a herdr cutover on its own will not
+# enforce it. It is a per-uid rlimit, and a process without CAP_SYS_RESOURCE
+# cannot raise one above its own hard limit, so the user manager silently
+# CLAMPS this to whatever RLIMIT_NPROC it was started with (3424 here) while
+# `systemctl --user show` still reports the configured 16384. The clamp is
+# silent, not fatal: a unit with this set starts fine.
+# What lifts it is DefaultLimitNPROC in /etc/systemd/system.conf.d, which PID 1
+# applies when it next starts user@<uid>.service, so this becomes real at the
+# next REBOOT (or a restart of user@<uid>.service, which kills every pane).
+# Check what is enforced with `grep 'Max processes' /proc/$(systemctl --user
+# show herdr.service -p MainPID --value)/limits`, never with systemctl show.
 TasksMax={{ cmd_center_herdr_tasks_max }}
 LimitNPROC={{ cmd_center_herdr_limit_nproc }}
 
