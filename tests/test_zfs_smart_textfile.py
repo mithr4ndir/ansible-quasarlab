@@ -38,6 +38,18 @@ ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_
 199 CRC_Error_Count         0x003e   200   200   000    Old_age   Always       -       7
 """
 
+# smartctl exit bit 2 (4): "some SMART or other ATA command to the disk failed".
+# It still prints the banner and identity block, so stdout is non-empty while
+# carrying no overall-health line and no attribute table.
+PARTIAL = """\
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux] (local build)
+
+Device Model:     Inland IB24AK 1TB
+Serial Number:    VE1R9204ABCD
+
+Read SMART Data failed: scsi error badly formed scsi parameters
+"""
+
 HEALTHY = FAILING.replace(
     "SMART overall-health self-assessment test result: FAILED!",
     "SMART overall-health self-assessment test result: PASSED",
@@ -187,3 +199,47 @@ class ConfiguredDirectoryTests(unittest.TestCase):
             "the service must pass truenas_textfile_dir through, since the script "
             "is copied verbatim from files/ and cannot template it",
         )
+
+
+class PartialOutputTests(unittest.TestCase):
+    """Exit bit 2: output present, health data absent.
+
+    Reported by Codex on #211. Non-empty stdout is not proof of a successful
+    collection, and claiming success here would recreate the original silent
+    hole: a disk whose SMART commands are failing would look collected and
+    simply have no health sample, which nothing alerts on.
+    """
+
+    def test_partial_output_is_not_a_successful_collection(self):
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, PARTIAL, 4).run()
+        ok = samples(out, "smart_collect_ok")
+        self.assertTrue(ok, "no collect_ok sample emitted at all")
+        self.assertTrue(
+            all(l.endswith(" 0") for l in ok),
+            f"banner-only output must not count as a successful collection, got {ok}",
+        )
+
+    def test_partial_output_invents_no_health_value(self):
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, PARTIAL, 4).run()
+        self.assertFalse(
+            samples(out, "smart_device_health"),
+            "must not report a health value when the health line is absent",
+        )
+
+    def test_partial_output_does_not_claim_smart_is_disabled(self):
+        """An unreadable support line is unknown, not 'SMART is off'."""
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, PARTIAL, 4).run()
+        self.assertFalse(
+            samples(out, "smart_enabled"),
+            "claimed smart_enabled 0 when the support line could not be read",
+        )
+
+    def test_exit_status_still_records_bit_two(self):
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, PARTIAL, 4).run()
+        got = samples(out, "smart_smartctl_exit_status")
+        self.assertTrue(got, "the bitmask must still be reported")
+        self.assertTrue(all(l.endswith(" 4") for l in got), f"expected 4, got {got}")
