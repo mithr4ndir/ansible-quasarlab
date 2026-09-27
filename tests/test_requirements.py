@@ -48,7 +48,10 @@ SCANNED_GLOBS = (
     "roles/**/handlers/**/*.yml",
     "playbooks/*.yml",
 )
-MODULE_KEY = re.compile(r"^\s*(?:-\s+)?([a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+):\s*$")
+# The colon does not have to end the line: `ansible.builtin.command: /bin/true`
+# and `ansible.builtin.shell: |` are both common here, and a collection module
+# written that way was invisible to an earlier version of this pattern.
+MODULE_KEY = re.compile(r"^\s*(?:-\s+)?([a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+):(?:\s|$)")
 CORE_NAMESPACES = {"ansible.builtin", "ansible.legacy"}
 
 # Inventory sources name their plugin by FQCN, and ansible.cfg's `inventory`
