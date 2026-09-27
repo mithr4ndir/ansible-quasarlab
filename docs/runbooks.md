@@ -7,9 +7,18 @@
 Two system-scoped timers on cmd_center1 enforce config on a schedule. They run
 at different cadences; check the unit rather than assuming.
 
+Both use **fixed wall-clock slots with a 2 minute jitter, deliberately offset
+from each other**, and neither has a boot trigger: after a reboot each simply
+waits for its next slot. Do not change these back to `OnUnitActiveSec`. That
+counts from the last activation, so the period becomes the interval plus the
+run duration plus the jitter, the two timers drift at different rates, and they
+periodically collide. Overlapping runs used to break each other (shared SSH mux
+sockets, and a dpkg lock fight on pve that `dpkg_selections` cannot ride out).
+Expected windows: security `:00-:05` and `:30-:35`, proxmox `:15-:24`.
+
 | | `ansible-proxmox` | `ansible-security` |
 |---|---|---|
-| Cadence | `OnUnitActiveSec=1h`, `OnBootSec=5min` | `OnUnitActiveSec=30min`, `OnBootSec=2min` |
+| Cadence | `OnCalendar=*:15` | `OnCalendar=*:00,30` |
 | Script | `scripts/run-proxmox.sh` | `scripts/run-security.sh` |
 | Playbooks | `proxmox`, `vm_baseline`, `monitoring`, `jellyfin`, `authentik`, `lb_setup`, `deploy-ha` | `wazuh`, `crowdsec` |
 | Logs | `/var/log/ansible-quasarlab/ansible-*.log` (last 50) | `.../security-*.log` |
