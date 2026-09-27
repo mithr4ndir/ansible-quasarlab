@@ -10,7 +10,10 @@
 # half-written file would surface as a parse error.
 set -uo pipefail
 
-OUT_DIR=/var/lib/node_exporter/textfiles
+# Must match the directory node_exporter was started with. The role passes
+# truenas_textfile_dir through the service environment; the default keeps a
+# manual invocation working.
+OUT_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfiles}"
 OUT="${OUT_DIR}/zfs_smart.prom"
 TMP="$(mktemp "${OUT_DIR}/.zfs_smart.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
@@ -58,12 +61,47 @@ health_code() {
     echo "# TYPE smart_temperature_celsius gauge"
     echo "# HELP smart_enabled Whether SMART is enabled on the device."
     echo "# TYPE smart_enabled gauge"
+    echo "# HELP smart_collect_ok Whether smartctl returned usable output for the device."
+    echo "# TYPE smart_collect_ok gauge"
+    echo "# HELP smart_smartctl_exit_status Raw smartctl exit bitmask; bit 3 set means DISK FAILING."
+    echo "# TYPE smart_smartctl_exit_status gauge"
 
-    for dev in /dev/sd?; do
+    # Overridable so the failing-disk path can be exercised in tests against a
+    # stub smartctl; production always uses the default.
+    for dev in ${SMART_DEV_GLOB:-/dev/sd?}; do
         [ -e "$dev" ] || continue
-        info="$(smartctl -i -A -H "$dev" 2>/dev/null)" || continue
-        [ -z "$info" ] && continue
         d="${dev##*/}"
+
+        # smartctl's exit status is a BITMASK, not pass/fail. A disk that fails
+        # its overall-health check sets bit 3 and still prints the health and
+        # attribute data. The old `|| continue` here therefore skipped exactly
+        # the failing disks this exporter exists to catch, which also left the
+        # `smart_device_health 0` branch below unreachable: the metric could
+        # only ever report 1 or nothing at all.
+        #
+        #   bit 0 (1)   command line did not parse
+        #   bit 1 (2)   device open failed
+        #   bit 2 (4)   some SMART or ATA command to the disk failed
+        #   bit 3 (8)   SMART status check returned DISK FAILING
+        #   bit 4 (16)  prefail attributes <= threshold
+        #   bit 5 (32)  some attribute was <= threshold in the past
+        #   bit 6 (64)  error log contains errors
+        #   bit 7 (128) self-test log contains errors
+        #
+        # Only bits 0-1 mean we never reached the device and have nothing
+        # trustworthy to parse. Every other bit is a health signal to keep.
+        info="$(smartctl -i -A -H "$dev" 2>/dev/null)"
+        rc=$?
+
+        if [ $(( rc & 3 )) -ne 0 ] || [ -z "$info" ]; then
+            # Say so explicitly rather than vanishing from the output: a disk
+            # that silently stops being reported looks identical to a healthy
+            # one on a dashboard.
+            echo "smart_collect_ok{device=\"$d\"} 0"
+            continue
+        fi
+        echo "smart_collect_ok{device=\"$d\"} 1"
+        echo "smart_smartctl_exit_status{device=\"$d\"} $rc"
         model="$(printf '%s' "$info" | awk -F: '/Device Model/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         serial="$(printf '%s' "$info" | awk -F: '/Serial Number/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         sup="$(printf '%s' "$info" | awk -F: '/SMART support is/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' | tail -1)"
