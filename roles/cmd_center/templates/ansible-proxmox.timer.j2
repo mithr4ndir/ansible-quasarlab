@@ -2,8 +2,10 @@
 Description=Run Ansible infrastructure playbooks every hour
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
+# Offset by 15 minutes from ansible-security's :00/:30 slots. See the comment
+# in ansible-security.timer.j2 for why these are fixed OnCalendar slots
+# instead of OnUnitActiveSec.
+OnCalendar=*:15
 RandomizedDelaySec=2min
 
 [Install]
