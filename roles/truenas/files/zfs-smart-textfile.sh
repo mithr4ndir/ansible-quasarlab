@@ -58,12 +58,40 @@ health_code() {
     echo "# TYPE smart_temperature_celsius gauge"
     echo "# HELP smart_enabled Whether SMART is enabled on the device."
     echo "# TYPE smart_enabled gauge"
+    echo "# HELP smart_scrape_ok Whether smartctl returned usable data for the device."
+    echo "# TYPE smart_scrape_ok gauge"
+    echo "# HELP smart_devices_total Devices smartctl was able to read this run."
+    echo "# TYPE smart_devices_total gauge"
 
+    devices_ok=0
     for dev in /dev/sd?; do
         [ -e "$dev" ] || continue
-        info="$(smartctl -i -A -H "$dev" 2>/dev/null)" || continue
-        [ -z "$info" ] && continue
         d="${dev##*/}"
+
+        # smartctl packs FINDINGS into its exit status as a bitmask, and it
+        # still prints full output alongside them:
+        #   bits 0-2  invocation failed (bad args / open failed / command failed)
+        #             -> no usable data
+        #   bit  3    SMART status says DISK FAILING
+        #   bit  4    a prefail attribute is at or below threshold
+        #   bit  5    an attribute was below threshold in the past
+        #   bit  6    the error log has errors
+        #   bit  7    the self-test log has errors
+        #
+        # The previous `|| continue` treated every one of those as fatal, so a
+        # drive reporting DISK FAILING was SKIPPED and emitted no metric at
+        # all. That made the smart_device_health "0" branch unreachable: the
+        # series could only ever be 1 or absent, and it went absent at exactly
+        # the moment it mattered. Only bits 0-2 mean we have nothing to report.
+        info="$(smartctl -i -A -H "$dev" 2>/dev/null)"
+        rc=$?
+
+        if [ "$((rc & 7))" -ne 0 ] || [ -z "$info" ]; then
+            echo "smart_scrape_ok{device=\"$d\"} 0"
+            continue
+        fi
+        echo "smart_scrape_ok{device=\"$d\"} 1"
+        devices_ok=$((devices_ok + 1))
         model="$(printf '%s' "$info" | awk -F: '/Device Model/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         serial="$(printf '%s' "$info" | awk -F: '/Serial Number/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         sup="$(printf '%s' "$info" | awk -F: '/SMART support is/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' | tail -1)"
@@ -71,11 +99,21 @@ health_code() {
 
         case "$sup" in Enabled) echo "smart_enabled{$lbl} 1" ;; *) echo "smart_enabled{$lbl} 0" ;; esac
 
-        case "$(printf '%s' "$info" | awk -F: '/overall-health/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}')" in
-            PASSED) echo "smart_device_health{$lbl} 1" ;;
-            "")     : ;;
-            *)      echo "smart_device_health{$lbl} 0" ;;
-        esac
+        # Exit bit 3 is authoritative for DISK FAILING. Trust it over the
+        # printed line, which varies in wording between ATA and NVMe.
+        if [ "$((rc & 8))" -ne 0 ]; then
+            echo "smart_device_health{$lbl} 0"
+        else
+            case "$(printf '%s' "$info" | awk -F: '/overall-health/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}')" in
+                PASSED) echo "smart_device_health{$lbl} 1" ;;
+                "")     : ;;
+                *)      echo "smart_device_health{$lbl} 0" ;;
+            esac
+        fi
+
+        # Findings that do not fail the overall health check but predict it.
+        echo "smart_prefail_below_threshold{$lbl} $([ "$((rc & 16))" -ne 0 ] && echo 1 || echo 0)"
+        echo "smart_error_log_has_errors{$lbl} $([ "$((rc & 64))" -ne 0 ] && echo 1 || echo 0)"
 
         poh="$(printf '%s' "$info" | awk '/Power_On_Hours/{print $10; exit}')"
         crc="$(printf '%s' "$info" | awk '/CRC_Error_Count/{print $10; exit}')"
@@ -86,6 +124,7 @@ health_code() {
         [ -n "${ral:-}" ] && echo "smart_reallocated_sector_count{$lbl} $ral"
         [ -n "${tmp:-}" ] && echo "smart_temperature_celsius{$lbl} $tmp"
     done
+    echo "smart_devices_total $devices_ok"
 
     echo "# HELP zfs_smart_textfile_last_run_timestamp_seconds Unix time of the last successful run."
     echo "# TYPE zfs_smart_textfile_last_run_timestamp_seconds gauge"
