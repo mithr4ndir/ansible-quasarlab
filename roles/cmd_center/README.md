@@ -213,8 +213,32 @@ the manager, and at the next boot they would be wrong again.
 `memory` in its Proxmox hotplug string has the same undersized ceiling.
 
 `TasksMax` is a cgroup attribute, so a `daemon-reload` applies it to the running
-herdr server without restarting it. `LimitNPROC` is an rlimit, set at exec, so
-it lands at the next reboot or deliberate cutover. Nothing here restarts herdr.
+herdr server without restarting it. That is the directive that fixed the crash,
+together with the slice cap above it.
+
+`LimitNPROC` is a different mechanism and is **not enforced yet**. It is a
+per-uid rlimit, and a process without `CAP_SYS_RESOURCE` cannot raise one above
+its own hard limit, so the user manager clamps the unit's 16384 down to the
+3424 it was itself started with. The clamp is silent, and `systemctl --user show
+herdr.service -p LimitNPROC` reports the configured 16384 regardless, so read
+the enforced value from the process instead:
+
+```
+grep 'Max processes' /proc/$(systemctl --user show herdr.service -p MainPID --value)/limits
+```
+
+`DefaultLimitNPROC` in `/etc/systemd/system.conf.d/50-task-limits.conf` is what
+lifts the user manager's own ceiling, and PID 1 applies it when it next starts
+`user@<uid>.service`. So the rlimit becomes real at the next reboot, not at a
+herdr cutover. Verified that PID 1 can grant it, since it has the capability the
+user manager lacks:
+
+```
+$ sudo systemd-run -q --wait --pipe -p LimitNPROC=16384 /bin/cat /proc/self/limits
+Max processes             16384                16384                processes
+```
+
+Nothing here restarts herdr.
 
 The durable fix is upstream in terraform-quasarlab: drop `memory` from the
 hotplug string so the guest boots with its full RAM. That needs a cold boot per
