@@ -62,6 +62,13 @@ def _resolved_defaults() -> dict:
     fact = _task(TASKS, SET_FACT_TASK)["ansible.builtin.set_fact"]
     for key, value in fact.items():
         variables[key] = _render(value, variables)
+    # The play reads the enforced ceiling from /proc and asserts against it too.
+    # A real host that has had vm_baseline applied reports the computed value,
+    # so that is what the happy path here supplies.
+    variables["cmd_center_kernel_threads_max_live"] = variables[
+        "cmd_center_kernel_threads_max"
+    ]
+    variables["ansible_check_mode"] = False
     return variables
 
 
@@ -175,6 +182,78 @@ class TaskFileTest(unittest.TestCase):
         ]
         self.assertIn("task_limits.yml", imports)
         self.assertLess(imports.index("task_limits.yml"), imports.index("herdr.yml"))
+
+
+class LiveCeilingTest(unittest.TestCase):
+    """The ceiling the assert trusts has to be the one the kernel is running.
+
+    Codex flagged this on #206: cmd_center can run without vm_baseline (the
+    documented DR path), and a computed ~130000 says nothing about a kernel
+    still sitting at the 1 GiB value of 6847. Handing out DefaultTasksMax=8192
+    there puts the clone() failures straight back.
+    """
+
+    def setUp(self) -> None:
+        self.tasks = yaml.safe_load(TASKS.read_text())
+        self.variables = _resolved_defaults()
+
+    def _named(self, needle: str) -> list:
+        return [t for t in self.tasks if needle in t.get("name", "")]
+
+    def test_reads_the_enforced_value_from_proc(self) -> None:
+        slurps = [t for t in self.tasks if "ansible.builtin.slurp" in t]
+        self.assertGreaterEqual(len(slurps), 1, "nothing reads the live ceiling")
+        for task in slurps:
+            self.assertEqual(
+                task["ansible.builtin.slurp"]["src"], "/proc/sys/kernel/threads-max"
+            )
+
+    def test_repairs_the_ceiling_when_it_is_short(self) -> None:
+        repair = [t for t in self.tasks if "ansible.posix.sysctl" in t]
+        self.assertEqual(len(repair), 1, "expected exactly one sysctl repair task")
+        args = repair[0]["ansible.posix.sysctl"]
+        self.assertEqual(args["name"], "kernel.threads-max")
+        self.assertEqual(args["value"], "{{ cmd_center_kernel_threads_max }}")
+        self.assertTrue(args["sysctl_set"])
+        self.assertEqual(args["state"], "present")
+        # Guarded, so a host where vm_baseline already ran is untouched.
+        self.assertIn("cmd_center_default_limit_nproc", repair[0]["when"])
+
+    def test_repair_condition_fires_on_a_hotplug_booted_kernel(self) -> None:
+        condition = self._named("Raise kernel.threads-max")[0]["when"]
+        for live, should_fire in ((6847, True), (130032, False)):
+            with self.subTest(live=live):
+                rendered = _render(
+                    "{{ " + condition.replace(
+                        "cmd_center_threads_max_before.content | b64decode | trim | int",
+                        str(live),
+                    ) + " }}",
+                    self.variables,
+                )
+                self.assertEqual(rendered, str(should_fire))
+
+    def test_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
+        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        broken = dict(self.variables)
+        broken["cmd_center_kernel_threads_max_live"] = 6847
+        results = [
+            _render("{{ " + c + " }}", broken) for c in conditions
+        ]
+        self.assertIn(
+            "False",
+            results,
+            "a kernel ceiling of 6847 under DefaultTasksMax=8192 must fail the assert",
+        )
+
+    def test_check_mode_skips_only_the_live_condition(self) -> None:
+        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        checking = dict(self.variables)
+        checking["ansible_check_mode"] = True
+        checking["cmd_center_kernel_threads_max_live"] = 6847
+        results = [_render("{{ " + c + " }}", checking) for c in conditions]
+        self.assertNotIn(
+            "False", results, "check mode must not fail on an unapplied sysctl"
+        )
 
 
 if __name__ == "__main__":
