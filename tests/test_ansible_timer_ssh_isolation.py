@@ -79,6 +79,36 @@ class ControlPathIsolationTests(unittest.TestCase):
         self.assertEqual(len(set(vals)), 2, f"both services use the same control dir: {vals}")
 
 
+class TimerScheduleTests(unittest.TestCase):
+    def test_timers_use_fixed_slots_not_drifting_intervals(self):
+        for name, path in TIMERS.items():
+            with self.subTest(timer=name):
+                text = path.read_text()
+                self.assertTrue(
+                    directive(text, "OnCalendar"),
+                    f"ansible-{name}.timer must use OnCalendar",
+                )
+                self.assertFalse(
+                    directive(text, "OnUnitActiveSec"),
+                    f"ansible-{name}.timer still uses OnUnitActiveSec, which drifts "
+                    "by the run duration every period and re-creates the collision",
+                )
+
+    def test_slots_do_not_coincide(self):
+        minutes = {}
+        for name, path in TIMERS.items():
+            mins = set()
+            for expr in directive(path.read_text(), "OnCalendar"):
+                tail = expr.split(":")[1] if ":" in expr else ""
+                mins |= {int(m) for m in re.findall(r"\d+", tail)}
+            minutes[name] = mins
+        self.assertTrue(minutes["proxmox"] and minutes["security"])
+        self.assertFalse(
+            minutes["proxmox"] & minutes["security"],
+            f"timers share a start minute: {minutes}",
+        )
+
+
 class SshRetryTests(unittest.TestCase):
     """`retries` only exists under [ssh_connection]; under [defaults] it is inert."""
 
