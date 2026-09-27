@@ -1,0 +1,11 @@
+---
+- name: Reload systemd on truenas
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Run the zfs smart textfile exporter
+  ansible.builtin.systemd:
+    name: zfs-smart-textfile.service
+    state: started
+  become: true

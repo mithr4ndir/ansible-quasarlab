@@ -10,6 +10,12 @@
       when: "'nas' not in group_names"
     - role: unattended_upgrades
       when: "'nas' not in group_names"
+    # TrueNAS only. node_exporter above gives ZFS ARC and per-dataset I/O but
+    # no pool capacity, no pool health and no SMART, so this fills that gap
+    # through the textfile collector rather than a second exporter, which the
+    # read-only appliance root could not host anyway.
+    - role: truenas
+      when: "'nas' in group_names"
 
 - name: Sync Prometheus targets from inventory
   hosts: localhost

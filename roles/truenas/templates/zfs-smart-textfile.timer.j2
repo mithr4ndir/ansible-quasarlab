@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the ZFS/SMART textfile exporter for node_exporter
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ truenas_metrics_interval }}
+AccuracySec=5s
+Unit=zfs-smart-textfile.service
+
+[Install]
+WantedBy=timers.target

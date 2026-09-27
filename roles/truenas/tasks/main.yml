@@ -1,0 +1,127 @@
+---
+# TrueNAS SCALE is an appliance: / is read-only ZFS, Vector cannot be
+# installed, and /usr is not writable. Everything here therefore works
+# through paths the appliance already leaves writable, or through the
+# middleware API (midclt), which stores config in TrueNAS's own database.
+
+- name: Ensure the node_exporter textfile directory exists
+  ansible.builtin.file:
+    path: "{{ truenas_textfile_dir }}"
+    state: directory
+    mode: "1777"
+  become: true
+
+- name: Deploy the ZFS and SMART textfile exporter
+  ansible.builtin.copy:
+    src: zfs-smart-textfile.sh
+    dest: "{{ truenas_exporter_dir }}/zfs-smart-textfile.sh"
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  notify: Run the zfs smart textfile exporter
+
+- name: Deploy the textfile exporter systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  loop:
+    - zfs-smart-textfile.service
+    - zfs-smart-textfile.timer
+  notify:
+    - Reload systemd on truenas
+    - Run the zfs smart textfile exporter
+
+- name: Enable and start the textfile exporter timer
+  ansible.builtin.systemd:
+    name: zfs-smart-textfile.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+# ---------------------------------------------------------------------------
+# SMART
+#
+# Five of eight tank drives (every Inland) had SMART disabled at the
+# controller. smartctl reports "SMART Disabled" and returns no attributes, so
+# smartd had nothing to act on and the TrueNAS alert page said "no alerts".
+# Enabling is a single ATA SET FEATURES command and is idempotent, but this
+# still checks first so a converged run reports no change.
+# ---------------------------------------------------------------------------
+
+- name: Discover attached SATA disks
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      ls -1 /dev/sd? 2>/dev/null || true
+    executable: /bin/bash
+  register: truenas_sata_disks
+  changed_when: false
+  check_mode: false
+  when: truenas_enable_smart | bool
+
+- name: Check which disks have SMART disabled
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      smartctl -i {{ item }} 2>/dev/null | awk -F: '/SMART support is/{gsub(/^[ \t]+/,"",$2); print $2}' | tail -1
+    executable: /bin/bash
+  become: true
+  register: truenas_smart_state
+  changed_when: false
+  check_mode: false
+  loop: "{{ truenas_sata_disks.stdout_lines | default([]) }}"
+  when: truenas_enable_smart | bool
+
+- name: Enable SMART where it is off
+  ansible.builtin.command:
+    cmd: "smartctl -s on {{ item.item }}"
+  become: true
+  loop: "{{ truenas_smart_state.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - truenas_enable_smart | bool
+    - item.stdout is defined
+    - item.stdout | trim == 'Disabled'
+  changed_when: true
+
+# ---------------------------------------------------------------------------
+# Remote syslog
+#
+# TrueNAS has no writable /etc for a syslog drop-in, but system.advanced holds
+# the remote target in its own config database, which survives reboots and
+# version upgrades. That makes midclt the durable option here, unlike the
+# systemd units above.
+# ---------------------------------------------------------------------------
+
+- name: Read current TrueNAS advanced config
+  ansible.builtin.command:
+    cmd: midclt call system.advanced.config
+  become: true
+  register: truenas_advanced_raw
+  changed_when: false
+  check_mode: false
+
+- name: Parse advanced config
+  ansible.builtin.set_fact:
+    truenas_advanced: "{{ truenas_advanced_raw.stdout | from_json }}"
+
+- name: Point syslog at the vector aggregator
+  ansible.builtin.command:
+    cmd: >-
+      midclt call system.advanced.update
+      {{ {'syslogserver': truenas_syslog_server,
+          'syslog_transport': truenas_syslog_transport,
+          'sysloglevel': truenas_syslog_level} | to_json }}
+  become: true
+  when: >-
+    truenas_advanced.syslogserver | default('') != truenas_syslog_server
+    or truenas_advanced.syslog_transport | default('') != truenas_syslog_transport
+    or truenas_advanced.sysloglevel | default('') != truenas_syslog_level
+  changed_when: true
