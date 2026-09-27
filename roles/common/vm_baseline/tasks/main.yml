@@ -43,10 +43,19 @@
 # Kept out of vm_baseline_sysctl because the value is computed per host from
 # the RAM the VM actually has, not a constant shared by the whole fleet.
 # See the comment on vm_baseline_threads_max in defaults/main.yml.
+- name: Read the kernel thread ceiling in force
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/threads-max
+  register: vm_baseline_threads_max_live
+
+# "Only ever raises" has to be enforced, not just intended: an override, or a
+# host whose reported memory shrank, would otherwise lower a working ceiling.
 - name: Restore kernel.threads-max to what the running RAM warrants
   ansible.posix.sysctl:
     name: kernel.threads-max
-    value: "{{ vm_baseline_threads_max }}"
+    value: >-
+      {{ [vm_baseline_threads_max | int,
+          vm_baseline_threads_max_live.content | b64decode | trim | int] | max }}
     sysctl_set: true
     reload: true
     state: present
