@@ -81,11 +81,44 @@ if [[ "$count" -lt "$MIN_EXPECTED_TARGETS" ]]; then
     exit 1
 fi
 
-# Apply as ConfigMap
-kubectl create configmap "${CONFIGMAP_NAME}" \
-  --namespace="${NAMESPACE}" \
-  --from-file=vm-targets.json=/tmp/vm-targets.json \
-  --dry-run=client -o yaml | kubectl apply -f -
+# Apply as ConfigMap.
+#
+# Retried because `kubectl apply` validates client-side, which downloads the
+# OpenAPI schema from the API server first. A transient API-server hiccup makes
+# that download fail with
+#   error validating "STDIN": failed to download openapi: unknown
+# and takes the whole monitoring.yml run down with it, even though the targets
+# were generated correctly and the guard above already passed. Observed
+# 2026-09-20T23:02Z, while the cluster was otherwise healthy.
+#
+# Retry rather than --validate=false: the validation is worth keeping, the
+# flakiness is not. Server-side apply would also sidestep the download, but it
+# changes field-ownership semantics on a ConfigMap this script is the sole
+# writer of, which is a bigger change than the bug warrants.
+APPLY_ATTEMPTS=3
+
+apply_targets() {
+    kubectl create configmap "${CONFIGMAP_NAME}" \
+      --namespace="${NAMESPACE}" \
+      --from-file=vm-targets.json=/tmp/vm-targets.json \
+      --dry-run=client -o yaml | kubectl apply -f -
+}
+
+for attempt in $(seq 1 "${APPLY_ATTEMPTS}"); do
+    if apply_targets; then
+        break
+    fi
+
+    if [[ "${attempt}" -ge "${APPLY_ATTEMPTS}" ]]; then
+        echo "${LOG_PREFIX} ERROR: kubectl apply failed ${APPLY_ATTEMPTS} times, giving up. The existing ConfigMap is left untouched." >&2
+        rm -f /tmp/vm-targets.json
+        exit 1
+    fi
+
+    backoff=$((attempt * 5))
+    echo "${LOG_PREFIX} kubectl apply failed (attempt ${attempt}/${APPLY_ATTEMPTS}), retrying in ${backoff}s" >&2
+    sleep "${backoff}"
+done
 
 echo "${LOG_PREFIX} ConfigMap ${CONFIGMAP_NAME} updated in ${NAMESPACE}"
 rm /tmp/vm-targets.json
