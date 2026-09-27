@@ -1,8 +1,35 @@
 ---
+# Collections this repo's roles and playbooks actually use, with the floor that
+# is proven on the control node (command-center1). tests/test_requirements.py
+# keeps this list and the FQCNs in roles/ and playbooks/ in step, in both
+# directions: a collection used but not declared fails, and so does one
+# declared but used nowhere.
+#
+# Prefer a module from one of these over a command or shell task. See the
+# "Community collections first" section of AGENTS.md.
 collections:
   - name: ansible.posix
     version: ">=1.5.4"
   - name: community.docker
     version: ">=3.7.0"
-  - name: community.grafana
-    version: ">=2.1.0"
+  # community.general.timezone (vm_baseline) and community.general.dpkg_selections
+  # (k8s/kube_pkg). Used since long before this entry existed: the runs worked
+  # only because the control node happened to have the collection installed from
+  # the `ansible` package, so a control node bootstrapped from this file alone
+  # would have failed on both roles.
+  - name: community.general
+    version: ">=8.3.0"
+  # community.postgresql.postgresql_{user,db,privs} in roles/postgresql.
+  # Same story as community.general.
+  - name: community.postgresql
+    version: ">=3.3.0"
+  # kubernetes.core.k8s, k8s_info and k8s_drain across roles/k8s and
+  # roles/k8s_maintenance: 16 tasks, the largest of the undeclared
+  # dependencies. Same story again.
+  - name: kubernetes.core
+    version: ">=2.4.0"
+# Removed: community.grafana, added in 6df6ac3 for Grafana plugin management.
+# Nothing references it any more (Grafana is a kube-prometheus-stack subchart
+# managed from k8s-argocd, and its dashboards are ConfigMaps there), and its
+# declared floor of >=2.1.0 was not even met on the control node, which has
+# 1.7.0. Re-add it in the same commit as the task that needs it.
