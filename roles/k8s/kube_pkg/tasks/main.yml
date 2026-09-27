@@ -42,8 +42,12 @@
     update_cache: false
   become: true
 
+# ansible.builtin.dpkg_selections. community.general.dpkg_selections does not
+# exist in the installed community.general (8.3.0) and this task could not run:
+# "couldn't resolve module/action 'community.general.dpkg_selections'". The
+# wrong namespace came in with cc86f39, a bulk FQCN rewrite to satisfy lint.
 - name: Hold Kubernetes packages (if not already held)
-  community.general.dpkg_selections:
+  ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
   loop:
