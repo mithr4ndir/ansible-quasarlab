@@ -165,11 +165,41 @@ def test_healthy_inventory_does_not_fall_back(sandbox):
 
 
 def test_status_sidecar_is_cleaned_up(sandbox):
-    """The resolver's status sidecar must not be left behind for the next run."""
-    root, _binv, repo = sandbox
+    """No scratch file is left behind, whatever its per-process suffix."""
+    _root, _binv, repo = sandbox
     _run(sandbox, INVENTORY_AGENT_MISSED)
-    assert not (repo / "inventory-cache.ini.status").exists()
-    assert not (repo / "inventory-cache.ini.tmp").exists()
+    leftovers = sorted(
+        p.name
+        for p in repo.iterdir()
+        if ".status" in p.name or ".tmp" in p.name
+    )
+    assert leftovers == [], f"scratch files left behind: {leftovers}"
+
+
+def test_scratch_paths_are_per_process(sandbox):
+    """A concurrent healthy run must not wipe a degraded run's marker.
+
+    Both timers run as the same user and can overlap, so a shared
+    `inventory-cache.ini.status` let a healthy resolver truncate the DEGRADED
+    marker a degraded one had just written. The degraded run then saw an empty
+    status file, concluded the inventory was complete, and went ahead with the
+    addressless inventory: precisely the failure this module exists to stop.
+
+    Asserted structurally rather than by racing two runs. An interleaving test
+    would need a sleep in the fake resolver and a truncate timed against it,
+    which is exactly the flaky, timing-dependent shape worth avoiding; a
+    version of that passed against the buggy code too, so it was dropped.
+    """
+    text = SCRIPT.read_text()
+    assert '"${INVENTORY_CACHE}.status"' not in text, (
+        "shared status path: a concurrent run can truncate it"
+    )
+    assert '"${INVENTORY_CACHE}.tmp"' not in text, (
+        "shared staging path: concurrent runs interleave writes into it"
+    )
+    assert '.status.$$' in text and '.tmp.$$' in text, (
+        "scratch paths should carry the pid so concurrent runs cannot collide"
+    )
 
 
 def test_sandbox_cannot_reach_real_binaries(sandbox):

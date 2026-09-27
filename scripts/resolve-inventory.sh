@@ -12,6 +12,15 @@
 # Cache lives in repo root so group_vars/ and host_vars/ are found when falling back
 INVENTORY_CACHE="${REPO_DIR}/inventory-cache.ini"
 
+# Per-process scratch paths. The proxmox and security timers run as the same
+# user and can overlap (OnUnitActiveSec drift, or one run outliving its slot),
+# so a shared status file lets a healthy run truncate the DEGRADED marker a
+# concurrent degraded run just wrote. That run would then conclude the
+# inventory was complete and proceed with the addressless one, which is the
+# exact failure this file exists to prevent. Same reasoning for .tmp staging.
+_INV_TMP="${INVENTORY_CACHE}.tmp.$$"
+_INV_STATUS="${INVENTORY_CACHE}.status.$$"
+
 # Try to resolve dynamic inventory and cache the result
 _resolve_dynamic_inventory() {
     if [[ -z "${PROXMOX_TOKEN_SECRET:-}" ]]; then
@@ -102,10 +111,10 @@ if degraded:
     sys.stderr.write('DEGRADED ' + ','.join(degraded) + chr(10))
 if dropped:
     sys.stderr.write('DROPPED ' + ','.join(dropped) + chr(10))
-" "$INVENTORY_CACHE" > "${INVENTORY_CACHE}.tmp" 2>"${INVENTORY_CACHE}.status"
+" "$INVENTORY_CACHE" > "$_INV_TMP" 2>"$_INV_STATUS"
 
-    if [[ -s "${INVENTORY_CACHE}.tmp" ]]; then
-        mv "${INVENTORY_CACHE}.tmp" "$INVENTORY_CACHE"
+    if [[ -s "$_INV_TMP" ]]; then
+        mv "$_INV_TMP" "$INVENTORY_CACHE"
         chmod 644 "$INVENTORY_CACHE"
         host_count=$(grep 'ansible_host' "$INVENTORY_CACHE" | awk '{print $1}' | sort -u | wc -l)
         echo "$(date -Iseconds) Inventory cache updated (${host_count} unique hosts)" >> "$LOGFILE"
@@ -114,7 +123,7 @@ if dropped:
         # all. Set INVENTORY_DEGRADED so the caller can prefer the merged cache
         # over a live inventory that would address them by name.
         INVENTORY_DEGRADED=""
-        if [[ -s "${INVENTORY_CACHE}.status" ]]; then
+        if [[ -s "$_INV_STATUS" ]]; then
             while read -r kind hosts; do
                 case "$kind" in
                     DEGRADED)
@@ -126,12 +135,12 @@ if dropped:
                         echo "$(date -Iseconds) ERROR: no address for ${hosts} from the agent or the cache; omitted from inventory rather than addressed by hostname (this lab has no DNS)" >> "$LOGFILE"
                         ;;
                 esac
-            done < "${INVENTORY_CACHE}.status"
+            done < "$_INV_STATUS"
         fi
-        rm -f "${INVENTORY_CACHE}.status"
+        rm -f "$_INV_STATUS"
         return 0
     else
-        rm -f "${INVENTORY_CACHE}.tmp" "${INVENTORY_CACHE}.status"
+        rm -f "$_INV_TMP" "$_INV_STATUS"
         return 1
     fi
 }
