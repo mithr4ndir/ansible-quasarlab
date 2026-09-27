@@ -91,7 +91,7 @@ class ThreadsMaxTaskTest(unittest.TestCase):
     def test_task_writes_and_applies_the_value(self) -> None:
         args = _task()["ansible.posix.sysctl"]
         self.assertEqual(args["name"], "kernel.threads-max")
-        self.assertEqual(args["value"], "{{ vm_baseline_threads_max }}")
+        self.assertIn("vm_baseline_threads_max", args["value"])
         # sysctl_set applies it to the running kernel; state: present persists
         # it, so a reboot does not hand the ceiling back to the 1 GiB value.
         self.assertTrue(args["sysctl_set"])
@@ -103,6 +103,48 @@ class ThreadsMaxTaskTest(unittest.TestCase):
         self.assertNotIn(
             "kernel.threads-max",
             yaml.safe_load(DEFAULTS.read_text())["vm_baseline_sysctl"],
+        )
+
+
+class NeverLowersTest(unittest.TestCase):
+    """"Only ever raises" is enforced, not just intended.
+
+    A vm_baseline_threads_max override, or a host whose reported memory shrank,
+    would otherwise write a value below the ceiling already in force.
+    """
+
+    def _value_expression(self) -> str:
+        return _task()["ansible.posix.sysctl"]["value"]
+
+    def _render_with(self, computed: int, live: int) -> int:
+        expression = self._value_expression().replace(
+            "vm_baseline_threads_max_live.content | b64decode | trim | int", str(live)
+        )
+        rendered = (
+            jinja2.Environment(undefined=jinja2.StrictUndefined)
+            .from_string(expression)
+            .render(vm_baseline_threads_max=computed)
+        )
+        return int(rendered)
+
+    def test_raises_a_hotplug_booted_ceiling(self) -> None:
+        self.assertEqual(self._render_with(130032, 6847), 130032)
+
+    def test_keeps_a_higher_live_ceiling(self) -> None:
+        self.assertEqual(self._render_with(130032, 200000), 200000)
+
+    def test_reads_the_live_value_from_proc(self) -> None:
+        slurps = [
+            t
+            for t in yaml.safe_load(TASKS.read_text())
+            if "ansible.builtin.slurp" in t
+        ]
+        self.assertTrue(
+            any(
+                t["ansible.builtin.slurp"]["src"] == "/proc/sys/kernel/threads-max"
+                for t in slurps
+            ),
+            "nothing reads the ceiling in force, so the max() cannot be honest",
         )
 
 

@@ -59,16 +59,33 @@
   tags:
     - task_limits
 
-- name: Raise kernel.threads-max when this role runs without vm_baseline
+# Two things this deliberately does NOT do, both raised in review of #210.
+#
+# It does not skip when the live value is already high enough. A ceiling raised
+# by hand with `sysctl -w` and never written to a file looks fine until the next
+# boot, which is exactly the state this host was in for a few hours on
+# 2026-09-27. state: present is idempotent, so writing it every run costs an ok.
+#
+# It does not write the computed value blindly. If the computed target were ever
+# below what is in force, whether through a vm_baseline_threads_max override or
+# a host whose reported memory shrank, writing it would LOWER a working ceiling
+# before the assert below had a chance to reject the configuration. Taking the
+# higher of the two makes "only ever raises" true rather than merely intended.
+- name: Choose the ceiling to persist, never lower than what is in force
+  ansible.builtin.set_fact:
+    cmd_center_threads_max_target: >-
+      {{ [cmd_center_kernel_threads_max | int,
+          cmd_center_threads_max_before.content | b64decode | trim | int] | max }}
+  tags:
+    - task_limits
+
+- name: Persist kernel.threads-max, in case this role ran without vm_baseline
   ansible.posix.sysctl:
     name: kernel.threads-max
-    value: "{{ cmd_center_kernel_threads_max }}"
+    value: "{{ cmd_center_threads_max_target }}"
     sysctl_set: true
     reload: true
     state: present
-  when: >-
-    (cmd_center_threads_max_before.content | b64decode | trim | int)
-    < (cmd_center_default_limit_nproc | int)
   tags:
     - task_limits
 

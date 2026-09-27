@@ -208,29 +208,53 @@ class LiveCeilingTest(unittest.TestCase):
                 task["ansible.builtin.slurp"]["src"], "/proc/sys/kernel/threads-max"
             )
 
-    def test_repairs_the_ceiling_when_it_is_short(self) -> None:
+    def test_persists_the_ceiling_on_every_run(self) -> None:
         repair = [t for t in self.tasks if "ansible.posix.sysctl" in t]
-        self.assertEqual(len(repair), 1, "expected exactly one sysctl repair task")
+        self.assertEqual(len(repair), 1, "expected exactly one sysctl task")
         args = repair[0]["ansible.posix.sysctl"]
         self.assertEqual(args["name"], "kernel.threads-max")
-        self.assertEqual(args["value"], "{{ cmd_center_kernel_threads_max }}")
         self.assertTrue(args["sysctl_set"])
         self.assertEqual(args["state"], "present")
-        # Guarded, so a host where vm_baseline already ran is untouched.
-        self.assertIn("cmd_center_default_limit_nproc", repair[0]["when"])
+        # No `when`. A ceiling raised by hand with sysctl -w and never written to
+        # a file passes a live check and regresses at the next boot, so the
+        # idempotent write runs every time.
+        self.assertNotIn("when", repair[0])
 
-    def test_repair_condition_fires_on_a_hotplug_booted_kernel(self) -> None:
-        condition = self._named("Raise kernel.threads-max")[0]["when"]
-        for live, should_fire in ((6847, True), (130032, False)):
+    def test_the_persisted_value_never_lowers_the_live_ceiling(self) -> None:
+        expression = self._named("Choose the ceiling to persist")[0][
+            "ansible.builtin.set_fact"
+        ]["cmd_center_threads_max_target"]
+        computed = int(self.variables["cmd_center_kernel_threads_max"])
+        for live, expected in (
+            (6847, computed),          # hotplug-booted host, raise it
+            (computed, computed),      # already correct, no change
+            (computed * 2, computed * 2),  # someone raised it further, keep that
+        ):
             with self.subTest(live=live):
                 rendered = _render(
-                    "{{ " + condition.replace(
+                    expression.replace(
                         "cmd_center_threads_max_before.content | b64decode | trim | int",
                         str(live),
-                    ) + " }}",
+                    ),
                     self.variables,
                 )
-                self.assertEqual(rendered, str(should_fire))
+                self.assertEqual(int(rendered), expected)
+
+    def test_a_low_override_cannot_lower_a_working_ceiling(self) -> None:
+        # The review case: target 8000, live 10000, so the write must be 10000
+        # and the ordering assert is what rejects the 8000 configuration.
+        expression = self._named("Choose the ceiling to persist")[0][
+            "ansible.builtin.set_fact"
+        ]["cmd_center_threads_max_target"]
+        variables = dict(self.variables, cmd_center_kernel_threads_max=8000)
+        rendered = _render(
+            expression.replace(
+                "cmd_center_threads_max_before.content | b64decode | trim | int",
+                "10000",
+            ),
+            variables,
+        )
+        self.assertEqual(int(rendered), 10000)
 
     def test_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
         conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]

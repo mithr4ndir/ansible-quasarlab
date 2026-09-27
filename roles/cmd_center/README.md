@@ -210,7 +210,22 @@ the manager, and at the next boot they would be wrong again.
 
 `kernel.threads-max` itself is fleet-wide and lives in
 `roles/common/vm_baseline` (`vm_baseline_threads_max`), because every VM with
-`memory` in its Proxmox hotplug string has the same undersized ceiling.
+`memory` in its Proxmox hotplug string has the same undersized ceiling. This role
+writes it too, because `playbooks/cmd_center.yml` can run without `vm_baseline`,
+which the disaster-recovery path below does deliberately, and the systemd ceilings
+here are only deliverable if the kernel ceiling is above them.
+
+Both write `max(computed, in force)` and write it on every run, for two reasons
+that are easy to get wrong:
+
+- Skipping the write when the live value is already high enough passes a live
+  check and regresses at the next boot, because a ceiling raised with `sysctl -w`
+  and never written to a file does not survive one.
+- Writing the computed value blindly would lower a working ceiling if the
+  computed target were ever smaller, through an override or a host whose reported
+  memory shrank. Taking the higher of the two makes "only ever raises" a
+  mechanism rather than an intention. The ordering assert is what rejects a bad
+  configuration, and it must get the chance to run before anything is written.
 
 `TasksMax` is a cgroup attribute, so a `daemon-reload` applies it to the running
 herdr server without restarting it. That is the directive that fixed the crash,
