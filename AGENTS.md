@@ -28,19 +28,33 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Seven separate pytest surfaces exist. Running one proves nothing about the others:
+Nine separate pytest surfaces exist. Running one proves nothing about the others, and
+this list is the whole set on `main`, taken from `git ls-tree` rather than from memory:
 
 ```
 pytest tests/                                # 1P quota gate, cache, killswitch, wrappers,
                                              # requirements drift, playbook syntax
 pytest roles/cmd_center/tests                # apt, helm, herdr, changelog, systemd scope, task limits
+pytest roles/common/apps/kubectl/tests
 pytest roles/common/vm_baseline/tests
-pytest roles/op_ratelimit_collector/tests
-pytest roles/unattended_upgrades/tests
 pytest roles/k8s/common/tests
+pytest roles/op_ratelimit_collector/tests
 pytest roles/pve/gpu_passthrough/tests
+pytest roles/unattended_upgrades/tests
 pytest roles/uptime_kuma/tests
 ```
+
+Or all of them at once, which is what to run before merging anything:
+
+```
+uv run --with pytest --with pyyaml --with jinja2 --with "ansible-core==2.16.3" \
+  pytest roles/ tests/
+```
+
+A `tests/` directory nested deeper than `roles/<role>/tests` is easy to miss:
+`roles/common/apps/kubectl/tests` is four levels down and was omitted from an earlier
+version of this list. Find them with
+`find roles -type d -name tests` rather than assuming the shape.
 
 Adding a `tests/` directory to a role adds a surface nobody runs by habit. Either add it
 to this list in the same commit, or put the test in `tests/` at the repo root.
