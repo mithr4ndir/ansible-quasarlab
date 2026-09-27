@@ -28,6 +28,24 @@ collections:
   # dependencies. Same story again.
   - name: kubernetes.core
     version: ">=2.4.0"
+  # community.proxmox.proxmox is the dynamic inventory plugin named in
+  # inventory.proxmox.yml, which ansible.cfg lists first, so without this
+  # collection a control node has no k8s, cmd_center or security groups at all.
+  # It was the largest gap of the lot and the easiest to miss, because an
+  # inventory plugin is not a task.
+  #
+  # Compatibility note, deliberately not hidden: community.proxmox 1.6.0
+  # declares requires_ansible '>=2.17.0' and the control node runs
+  # ansible-core 2.16.3, so `ansible-doc` warns that the collection does not
+  # support this version. It works in practice, the hourly ansible-proxmox
+  # timer resolves the inventory and targets 20+ hosts, but the combination is
+  # unsupported upstream. Either bump ansible-core on the control node or move
+  # the plugin back to community.general.proxmox, which does support 2.16 and
+  # is already installed. That is a decision, not a drive-by change: the two
+  # plugins group hosts differently and validating a swap means resolving the
+  # inventory, which costs 1Password reads.
+  - name: community.proxmox
+    version: ">=1.6.0"
 # Removed: community.grafana, added in 6df6ac3 for Grafana plugin management.
 # Nothing references it any more (Grafana is a kube-prometheus-stack subchart
 # managed from k8s-argocd, and its dashboards are ConfigMaps there), and its

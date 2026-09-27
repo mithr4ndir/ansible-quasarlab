@@ -20,6 +20,11 @@ Why this exists. Three kinds of drift had all already happened here:
    ansible.posix.sysctl. It reads like a core module and is really a dependency
    on a collection, so the scan resolves redirects rather than trusting the
    namespace it is written with.
+4. Not a task at all. inventory.proxmox.yml names the
+   community.proxmox.proxmox inventory plugin, and ansible.cfg lists that file
+   first, so without the collection a control node has no dynamically
+   discovered groups: no k8s, no cmd_center, no security. A scan that only
+   reads tasks passes happily while the whole inventory is unloadable.
 """
 
 from __future__ import annotations
@@ -45,6 +50,11 @@ SCANNED_GLOBS = (
 )
 MODULE_KEY = re.compile(r"^\s*(?:-\s+)?([a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+):\s*$")
 CORE_NAMESPACES = {"ansible.builtin", "ansible.legacy"}
+
+# Inventory sources name their plugin by FQCN, and ansible.cfg's `inventory`
+# line decides which files are loaded.
+INVENTORY_GLOB = "inventory*.yml"
+PLUGIN_KEY = re.compile(r"^\s*plugin:\s*['\"]?([a-z0-9_]+\.[a-z0-9_]+)\.([a-z0-9_]+)['\"]?\s*$")
 
 
 def _core_module_redirects() -> dict:
@@ -93,6 +103,17 @@ def _used(redirects: dict) -> dict:
                         found.setdefault(owner, set()).add(where + " (core redirect)")
                     continue
                 found.setdefault(namespace, set()).add(where)
+    for path in sorted(REPO.glob(INVENTORY_GLOB)):
+        for line in path.read_text().splitlines():
+            match = PLUGIN_KEY.match(line)
+            if not match:
+                continue
+            namespace, plugin = match.group(1), match.group(2)
+            if namespace in CORE_NAMESPACES:
+                continue
+            found.setdefault(namespace, set()).add(
+                f"{path.relative_to(REPO)}: {namespace}.{plugin} (inventory plugin)"
+            )
     return {k: sorted(v) for k, v in found.items()}
 
 
@@ -137,6 +158,15 @@ class RequirementsTest(unittest.TestCase):
         # the first two assertions vacuously pass.
         for expected in ("kubernetes.core", "community.general", "ansible.posix"):
             self.assertIn(expected, self.used)
+
+    def test_the_scan_covers_inventory_plugins(self) -> None:
+        # The dynamic inventory is not a task, and missing it is what let
+        # community.proxmox stay undeclared while every play still ran here.
+        self.assertIn("community.proxmox", self.used)
+        self.assertTrue(
+            any("inventory plugin" in s for s in self.used["community.proxmox"]),
+            self.used["community.proxmox"],
+        )
 
 
 if __name__ == "__main__":
