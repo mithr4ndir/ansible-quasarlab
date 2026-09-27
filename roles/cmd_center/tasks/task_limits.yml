@@ -1,0 +1,109 @@
+---
+# Task and process ceilings for command-center1.
+#
+# This host runs the agent fleet: a herdr server holding a dozen Claude and
+# codex panes, each with its own MCP servers, plus the ansible timers. It is
+# the only host in the lab that gets anywhere near a thread ceiling, and on
+# 2026-09-21 18:53:54 UTC it hit one:
+#
+#   herdr[1235]: panicked at library/std/src/thread/functions.rs:131:29:
+#   failed to spawn thread: Os { code: 11, kind: WouldBlock }
+#
+# That is EAGAIN from clone(), not memory pressure (no OOM kill, 6.6 GiB peak
+# on a 16 GiB host). herdr.service had TasksMax=1027.
+#
+# 1027 is systemd's DefaultTasksMax=15% resolved against kernel.threads-max,
+# which the kernel had computed from the 1 GiB of static RAM that Proxmox
+# memory hotplug boots this VM with. vm_baseline now raises threads-max on
+# every VM; this file states the three systemd-side ceilings absolutely,
+# because percentages are resolved by PID 1 before systemd-sysctl.service has
+# applied the new threads-max, so they would come back wrong at every boot.
+#
+# The ceilings are layered, and the lowest one wins. Measured with a thread
+# probe in a transient scope on 2026-09-22, before any of this was applied:
+#
+#   TasksMax=1027, slice 2259, nproc 3424   ->  died at 1026 threads
+#   TasksMax=4096, slice 2259, nproc 3424   ->  died at 1969 threads
+#   TasksMax=4096, slice 8192, nproc 3424   ->  died at 2971 threads
+#
+# So all three have to move together, which is what the assert below keeps
+# true. Raising a ceiling reserves nothing; it only stops the kernel refusing
+# a clone() that the host has the memory to serve.
+
+# Resolved here rather than in defaults/main.yml: it reads a fact, and the
+# role's defaults are rendered without facts elsewhere (see
+# tests/test_lab_changelog.py). vm_baseline owns this value, but that role is
+# not in the cmd_center play, so its default is not in scope; the fallback is
+# the same kernel formula (MemTotal_kB / 128, i.e. MemTotal_MB * 8).
+- name: Resolve the kernel thread ceiling the other limits have to fit under
+  ansible.builtin.set_fact:
+    cmd_center_kernel_threads_max: >-
+      {{ vm_baseline_threads_max | default((ansible_memtotal_mb | int) * 8) }}
+  tags:
+    - task_limits
+
+- name: Assert the task ceilings are ordered lowest to highest
+  ansible.builtin.assert:
+    that:
+      - cmd_center_herdr_tasks_max | int <= cmd_center_user_slice_tasks_max | int
+      - cmd_center_user_slice_tasks_max | int <= cmd_center_default_limit_nproc | int
+      - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max | int
+    fail_msg: >-
+      Task ceilings are out of order: herdr TasksMax
+      {{ cmd_center_herdr_tasks_max }}, user slice TasksMax
+      {{ cmd_center_user_slice_tasks_max }}, DefaultLimitNPROC
+      {{ cmd_center_default_limit_nproc }}, kernel.threads-max
+      {{ cmd_center_kernel_threads_max }}. A unit cannot exceed its slice, a slice
+      cannot exceed RLIMIT_NPROC for the uid, and nothing exceeds
+      kernel.threads-max. Raising only the innermost one moves the failure
+      without fixing it.
+    quiet: true
+  tags:
+    - task_limits
+
+- name: Ensure the systemd manager drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - task_limits
+
+- name: State the systemd manager task and process defaults absolutely
+  ansible.builtin.template:
+    src: system-task-limits.conf.j2
+    dest: /etc/systemd/system.conf.d/50-task-limits.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+  tags:
+    - task_limits
+
+- name: Ensure the user slice drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/user-.slice.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - task_limits
+
+# TasksMax on a slice is a cgroup attribute, so a daemon-reload applies it to
+# the slice that is already running. The RLIMIT_NPROC in the manager drop-in is
+# different: rlimits are set when a process is exec'd, so units already running
+# keep the old one until they are restarted or the host reboots. Nothing here
+# restarts herdr.service to hurry that along (see the header of herdr.yml).
+- name: Raise the per-user slice task ceiling
+  ansible.builtin.template:
+    src: user-slice-tasks-max.conf.j2
+    dest: /etc/systemd/system/user-.slice.d/50-tasks-max.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+  tags:
+    - task_limits

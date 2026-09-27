@@ -18,5 +18,16 @@ RestartSec=5
 KillMode=mixed
 TimeoutStopSec=30
 
+# Every agent pane, and every MCP server a pane starts, is a task in this
+# unit's cgroup. On 2026-09-21 the server crossed the inherited
+# DefaultTasksMax of 1027 and panicked with
+# 'failed to spawn thread: Os { code: 11, kind: WouldBlock }'.
+# Stated absolutely, because the 15% default resolves against a thread
+# ceiling that Proxmox memory hotplug leaves sized for 1 GiB of RAM.
+# LimitNPROC is per uid and applies at exec, so it takes effect at the next
+# reboot or deliberate cutover, not on a daemon-reload.
+TasksMax={{ cmd_center_herdr_tasks_max }}
+LimitNPROC={{ cmd_center_herdr_limit_nproc }}
+
 [Install]
 WantedBy=default.target

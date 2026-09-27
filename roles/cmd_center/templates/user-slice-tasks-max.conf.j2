@@ -1,0 +1,9 @@
+# Managed by Ansible (roles/cmd_center/tasks/task_limits.yml)
+#
+# /usr/lib/systemd/system/user-.slice.d/10-defaults.conf ships TasksMax=33%,
+# which is a percentage of the same too-low kernel thread ceiling and lands at
+# 2259 here. Every user unit, herdr.service included, lives inside this slice,
+# so its cap binds before the unit's own. Measured: with herdr.service raised
+# to 4096 and this slice left at 2259, a thread probe still died at 1969.
+[Slice]
+TasksMax={{ cmd_center_user_slice_tasks_max }}

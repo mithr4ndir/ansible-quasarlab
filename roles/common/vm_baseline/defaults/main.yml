@@ -17,6 +17,38 @@ vm_baseline_sysctl:
   net.core.somaxconn: 1024
   net.ipv4.tcp_tw_reuse: 1
 
+# Thread ceiling.
+#
+# Every VM in this lab runs with Proxmox memory hotplug (hotplug=...,memory in
+# the VM config, which PVE only honours with numa=1). PVE implements that by
+# booting the guest with 1 GiB of static RAM and hot-adding the rest as virtual
+# DIMMs. The kernel sizes kernel.threads-max once, during early boot, from the
+# memory it can see at that moment, and never recomputes it when memory is
+# hot-added. So a 16 GiB VM boots with the thread ceiling of a 1 GiB one:
+#
+#   command-center1  16 GiB, memory hotplug     threads-max  6847
+#   k8cluster1       16 GiB, memory hotplug     threads-max  6848
+#   pbs1              4 GiB, no memory hotplug  threads-max 31240
+#   npm               6 GiB, no memory hotplug  threads-max 47094
+#
+# Everything derived from it inherits the mistake, because systemd resolves its
+# percentages against threads-max: DefaultTasksMax=15% lands at 1027 per unit,
+# user-.slice TasksMax=33% at 2259, and the kernel's own default RLIMIT_NPROC
+# (max_threads / 2) at 3423. On 2026-09-21 herdr.service crossed the 1027 and
+# died with 'failed to spawn thread: Os { code: 11, kind: WouldBlock }'.
+#
+# This restores what the running RAM warrants, using the kernel's own formula
+# (mempages / 32, i.e. MemTotal_kB / 128, i.e. MemTotal_MB * 8). It only ever
+# raises the value: on a VM that did boot with all its RAM the result is within
+# a percent of what the kernel already chose.
+#
+# It is a ceiling, not an allocation. Nothing is reserved by raising it.
+#
+# The real fix is upstream in terraform-quasarlab: drop `memory` from the
+# hotplug string so the guest boots with its full RAM. That needs a cold boot
+# per VM, so this stays as the thing that holds regardless.
+vm_baseline_threads_max: "{{ (ansible_memtotal_mb | int) * 8 }}"
+
 # journald disk usage.
 #
 # journald ships uncapped by default, and it shows: on 2026-08-24 a survey of
