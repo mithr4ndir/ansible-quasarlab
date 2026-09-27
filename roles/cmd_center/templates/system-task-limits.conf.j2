@@ -1,0 +1,12 @@
+# Managed by Ansible (roles/cmd_center/tasks/task_limits.yml)
+#
+# systemd resolves DefaultTasksMax=15% and DefaultLimitNPROC against the
+# kernel's thread ceiling as it stood when PID 1 parsed its configuration.
+# On a VM booted through Proxmox memory hotplug that ceiling reflects 1 GiB
+# of RAM, not the 16 GiB the VM ends up with, so the percentages resolve far
+# too low. systemd-sysctl.service runs AFTER PID 1 has already resolved them,
+# which is why raising kernel.threads-max alone does not fix the defaults at
+# boot: they have to be stated absolutely.
+[Manager]
+DefaultTasksMax={{ cmd_center_default_tasks_max }}
+DefaultLimitNPROC={{ cmd_center_default_limit_nproc }}

@@ -33,6 +33,12 @@
 - name: Enable systemd linger for user services
   ansible.builtin.import_tasks: linger.yml
 
+# Before the user units below. A user unit inherits the slice ceiling in force
+# when it starts, and the herdr unit deployed further down carries a TasksMax
+# that its slice has to be able to hold.
+- name: systemd task and process ceilings
+  ansible.builtin.import_tasks: task_limits.yml
+
 - name: Clone homelab git repos
   ansible.builtin.import_tasks: git_repos.yml
 

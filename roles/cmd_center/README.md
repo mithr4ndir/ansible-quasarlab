@@ -175,6 +175,51 @@ install picked up 2.21.4, which removed `Conditional.evaluate_conditional`.
 A missing or unusable ansible-core fails these tests loudly rather than
 skipping them.
 
+## Task and process ceilings
+
+`tasks/task_limits.yml`. This host runs the agent fleet, so it is the only one
+that gets near a thread ceiling, and on 2026-09-21 18:53:54 UTC it hit one:
+
+```
+herdr[1235]: panicked at library/std/src/thread/functions.rs:131:29:
+failed to spawn thread: Os { code: 11, kind: WouldBlock }
+```
+
+EAGAIN from `clone()`, not memory pressure: no OOM kill, 6.6 GiB peak on a
+16 GiB host. `herdr.service` had `TasksMax=1027`, which is systemd's
+`DefaultTasksMax=15%` resolved against `kernel.threads-max`. That was 6847,
+because Proxmox memory hotplug boots this VM with 1 GiB of static RAM and
+hot-adds the rest, and the kernel sizes the thread ceiling once, at boot, from
+what it saw then. A host that boots with all of its RAM gets about 130000; pbs1
+has a quarter of the RAM and no memory hotplug, and gets 31240.
+
+The ceilings are layered and the lowest binds. Measured with a thread probe in a
+transient scope on 2026-09-22, before anything here was applied:
+
+| unit TasksMax | user slice TasksMax | RLIMIT_NPROC | threads spawned |
+|---|---|---|---|
+| 1027 | 2259 | 3424 | died at 1026 |
+| 4096 | 2259 | 3424 | died at 1969 |
+| 4096 | 8192 | 3424 | died at 2971 |
+
+So `task_limits.yml` raises all of them, and asserts the ordering rather than
+trusting it. The values are stated absolutely, never as percentages:
+`systemd-sysctl.service` runs after PID 1 has already resolved its percentages,
+so a raised `kernel.threads-max` does not reach them until something reloads
+the manager, and at the next boot they would be wrong again.
+
+`kernel.threads-max` itself is fleet-wide and lives in
+`roles/common/vm_baseline` (`vm_baseline_threads_max`), because every VM with
+`memory` in its Proxmox hotplug string has the same undersized ceiling.
+
+`TasksMax` is a cgroup attribute, so a `daemon-reload` applies it to the running
+herdr server without restarting it. `LimitNPROC` is an rlimit, set at exec, so
+it lands at the next reboot or deliberate cutover. Nothing here restarts herdr.
+
+The durable fix is upstream in terraform-quasarlab: drop `memory` from the
+hotplug string so the guest boots with its full RAM. That needs a cold boot per
+VM, so these ceilings stay regardless.
+
 ## Disaster recovery runbook
 
 Target RTO: under 30 minutes from fresh Ubuntu 24.04 install to fully working

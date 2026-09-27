@@ -40,6 +40,17 @@
     state: present
   loop: "{{ vm_baseline_sysctl | dict2items }}"
 
+# Kept out of vm_baseline_sysctl because the value is computed per host from
+# the RAM the VM actually has, not a constant shared by the whole fleet.
+# See the comment on vm_baseline_threads_max in defaults/main.yml.
+- name: Restore kernel.threads-max to what the running RAM warrants
+  ansible.posix.sysctl:
+    name: kernel.threads-max
+    value: "{{ vm_baseline_threads_max }}"
+    sysctl_set: true
+    reload: true
+    state: present
+
 - name: Set timezone to UTC
   community.general.timezone:
     name: UTC
