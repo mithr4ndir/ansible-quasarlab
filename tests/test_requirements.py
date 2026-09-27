@@ -43,14 +43,21 @@ REQUIREMENTS = REPO / "requirements.yml"
 # Module keys only, and only in files where a module key is what a mapping key
 # means. defaults/ and vars/ are excluded on purpose: `net.ipv4.tcp_tw_reuse:`
 # in a sysctl dict is not a module.
-SCANNED_GLOBS = (
-    "roles/**/tasks/**/*.yml",
-    "roles/**/handlers/**/*.yml",
-    "playbooks/*.yml",
-    # site.yml is a playbook too, and a collection-backed task added there would
-    # otherwise be invisible to this scan while the syntax check passed, because
-    # the collection happens to be installed on whatever machine ran it.
-    "site.yml",
+# Both extensions: Ansible accepts .yaml as readily as .yml, and a single
+# tasks/main.yaml would otherwise be a hole straight through this scan.
+SCANNED_GLOBS = tuple(
+    pattern.format(ext=ext)
+    for ext in ("yml", "yaml")
+    for pattern in (
+        "roles/**/tasks/**/*.{ext}",
+        "roles/**/handlers/**/*.{ext}",
+        "playbooks/*.{ext}",
+        # site.yml is a playbook too, and a collection-backed task added there
+        # would otherwise be invisible to this scan while the syntax check
+        # passed, because the collection happens to be installed on whatever
+        # machine ran it.
+        "site.{ext}",
+    )
 )
 # The colon does not have to end the line: `ansible.builtin.command: /bin/true`
 # and `ansible.builtin.shell: |` are both common here, and a collection module
@@ -60,7 +67,7 @@ CORE_NAMESPACES = {"ansible.builtin", "ansible.legacy"}
 
 # Inventory sources name their plugin by FQCN, and ansible.cfg's `inventory`
 # line decides which files are loaded.
-INVENTORY_GLOB = "inventory*.yml"
+INVENTORY_GLOBS = ("inventory*.yml", "inventory*.yaml")
 PLUGIN_KEY = re.compile(r"^\s*plugin:\s*['\"]?([a-z0-9_]+\.[a-z0-9_]+)\.([a-z0-9_]+)['\"]?\s*$")
 
 
@@ -110,7 +117,10 @@ def _used(redirects: dict) -> dict:
                         found.setdefault(owner, set()).add(where + " (core redirect)")
                     continue
                 found.setdefault(namespace, set()).add(where)
-    for path in sorted(REPO.glob(INVENTORY_GLOB)):
+    inventories = sorted(
+        path for glob in INVENTORY_GLOBS for path in REPO.glob(glob)
+    )
+    for path in inventories:
         for line in path.read_text().splitlines():
             match = PLUGIN_KEY.match(line)
             if not match:

@@ -50,7 +50,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # site.yml at the repo root is a playbook as well: it imports the others, so a
 # malformed import there breaks everything while playbooks/ stays clean.
-PLAYBOOKS = sorted((REPO / "playbooks").glob("*.yml")) + [REPO / "site.yml"]
+PLAYBOOKS = sorted(
+    [p for ext in ("yml", "yaml") for p in (REPO / "playbooks").glob(f"*.{ext}")]
+    + [p for p in (REPO / "site.yml", REPO / "site.yaml") if p.is_file()]
+)
 
 # A syntax check resolves module names against the collections it can see, so it
 # is only meaningful against the set the control node actually has. The pinned
@@ -163,8 +166,9 @@ class PlaybookSyntaxTest(unittest.TestCase):
     def test_there_are_playbooks_to_check(self) -> None:
         # Guards against the glob finding nothing and the suite passing empty.
         self.assertGreaterEqual(len(PLAYBOOKS), 15, f"found {PLAYBOOKS}")
-        self.assertIn(
-            REPO / "site.yml", PLAYBOOKS, "the root entry point must be checked"
+        self.assertTrue(
+            any(p.stem == "site" for p in PLAYBOOKS),
+            "the root entry point must be checked",
         )
         for playbook in PLAYBOOKS:
             self.assertTrue(playbook.is_file(), f"{playbook} does not exist")
