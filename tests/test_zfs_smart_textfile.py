@@ -50,6 +50,27 @@ Serial Number:    VE1R9204ABCD
 Read SMART Data failed: scsi error badly formed scsi parameters
 """
 
+# SCSI/SAS wording. These also appear as /dev/sdX.
+SCSI_OK = """\
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux] (local build)
+
+Device Model:     SEAGATE ST4000NM0023
+Serial Number:    Z1Z3ABCD
+SMART support is: Enabled
+
+SMART Health Status: OK
+
+ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+  9 Power_On_Hours          0x0032   099   099   000    Old_age   Always       -       8100
+"""
+
+# Exit bit 3 set while the printed line still says PASSED. The bit is
+# authoritative, so health must be 0 regardless of the text.
+CONTRADICTORY = FAILING.replace(
+    "SMART overall-health self-assessment test result: FAILED!",
+    "SMART overall-health self-assessment test result: PASSED",
+)
+
 HEALTHY = FAILING.replace(
     "SMART overall-health self-assessment test result: FAILED!",
     "SMART overall-health self-assessment test result: PASSED",
@@ -243,3 +264,46 @@ class PartialOutputTests(unittest.TestCase):
         got = samples(out, "smart_smartctl_exit_status")
         self.assertTrue(got, "the bitmask must still be reported")
         self.assertTrue(all(l.endswith(" 4") for l in got), f"expected 4, got {got}")
+
+
+class ExitBitAuthorityTests(unittest.TestCase):
+    """Exit bit 3 outranks the printed wording.
+
+    Taken from the sibling PR #209, which trusts the bitmask rather than the
+    text because the wording differs between ATA and SCSI. A disk can report
+    DISK FAILING in its exit status while the parsed line still reads PASSED.
+    """
+
+    def test_bit_three_wins_over_a_passed_line(self):
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, CONTRADICTORY, 8).run()
+        health = samples(out, "smart_device_health")
+        self.assertTrue(health, "no health sample emitted")
+        self.assertTrue(
+            all(l.endswith(" 0") for l in health),
+            f"exit bit 3 says DISK FAILING; the printed PASSED must not win: {health}",
+        )
+
+    def test_bit_three_counts_as_a_successful_collection(self):
+        """We did get a verdict, so this is not a collection failure."""
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, CONTRADICTORY, 8).run()
+        ok = samples(out, "smart_collect_ok")
+        self.assertTrue(all(l.endswith(" 1") for l in ok), f"expected collect_ok 1, got {ok}")
+
+
+class ScsiWordingTests(unittest.TestCase):
+    def test_scsi_health_status_ok_is_healthy(self):
+        """A SAS disk must not look like a permanent collection failure."""
+        with TemporaryDirectory() as tmp:
+            out = Harness(tmp, SCSI_OK, 0).run()
+        health = samples(out, "smart_device_health")
+        self.assertTrue(health, "SCSI wording produced no health sample at all")
+        self.assertTrue(
+            all(l.endswith(" 1") for l in health), f"expected health 1, got {health}"
+        )
+        ok = samples(out, "smart_collect_ok")
+        self.assertTrue(
+            all(l.endswith(" 1") for l in ok),
+            f"SCSI disk wrongly reported as a failed collection: {ok}",
+        )

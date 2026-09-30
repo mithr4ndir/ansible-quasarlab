@@ -115,26 +115,40 @@ health_code() {
             *)       echo "smart_enabled{$lbl} 0" ;;
         esac
 
-        health="$(printf '%s' "$info" | awk -F: '/overall-health/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}')"
+        # ATA prints "SMART overall-health self-assessment test result: PASSED",
+        # SCSI and SAS print "SMART Health Status: OK". Both appear as /dev/sdX,
+        # so matching only the ATA wording would leave a SAS disk permanently
+        # looking like a failed collection and firing a standing false warning.
+        health="$(printf '%s' "$info" \
+            | awk -F: '/overall-health|SMART Health Status/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
 
-        # Exit bit 2 means some SMART or ATA command failed, and smartctl still
-        # prints its banner and identity block in that case. Non-empty output is
-        # therefore NOT proof that we got health data, so collection counts as
-        # successful only when the overall-health line is actually present.
-        # Without this a disk whose SMART commands are failing would report
-        # smart_collect_ok 1 with no health sample at all, which is the same
-        # silent hole this script already had, one layer further in.
-        if [ -n "$health" ]; then
+        # Exit bit 3 is authoritative for DISK FAILING and does not depend on the
+        # printed wording, so trust it ahead of the text. Bit 2 means some SMART
+        # or ATA command failed while smartctl still printed its banner and
+        # identity block, so non-empty output is NOT proof we obtained a verdict.
+        # The device is deliberately NOT skipped on bit 2: health can be present
+        # while only an attribute command failed, and skipping would reintroduce
+        # the very drop this change removes.
+        if [ $(( rc & 8 )) -ne 0 ]; then
+            health_code=0
+        else
+            case "$health" in
+                PASSED|OK) health_code=1 ;;
+                "")        health_code="" ;;
+                *)         health_code=0 ;;
+            esac
+        fi
+
+        # Collection counted as successful only when a verdict actually arrived.
+        # Otherwise a disk whose SMART commands are failing would report
+        # smart_collect_ok 1 with no health sample, which is the same silent hole
+        # this script already had, one layer further in.
+        if [ -n "$health_code" ]; then
             echo "smart_collect_ok{device=\"$d\"} 1"
+            echo "smart_device_health{$lbl} $health_code"
         else
             echo "smart_collect_ok{device=\"$d\"} 0"
         fi
-
-        case "$health" in
-            PASSED) echo "smart_device_health{$lbl} 1" ;;
-            "")     : ;;
-            *)      echo "smart_device_health{$lbl} 0" ;;
-        esac
 
         poh="$(printf '%s' "$info" | awk '/Power_On_Hours/{print $10; exit}')"
         crc="$(printf '%s' "$info" | awk '/CRC_Error_Count/{print $10; exit}')"
