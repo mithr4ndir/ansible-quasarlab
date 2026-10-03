@@ -64,15 +64,31 @@ data = json.load(sys.stdin)
 hostvars = data.get('_meta', {}).get('hostvars', {})
 
 groups = {}
+children = {}
 for group_name, group_data in data.items():
     if group_name == '_meta':
         continue
     hosts = group_data.get('hosts', [])
+    kids = [c for c in group_data.get('children', []) if c not in ('ungrouped',)]
     if hosts:
         groups[group_name] = hosts
+    if kids:
+        children[group_name] = kids
 
-degraded = []   # agent reported no address this cycle, recovered from cache
-dropped = []    # no address anywhere, omitted rather than written addressless
+
+def group_hosts_recursive(name, _seen=None):
+    # Every host under a group, following children.
+    _seen = _seen or set()
+    if name in _seen:
+        return set()
+    _seen.add(name)
+    out = set(groups.get(name, []))
+    for kid in children.get(name, []):
+        out |= group_hosts_recursive(kid, _seen)
+    return out
+
+degraded = []    # had an address last cycle and lost it: worth falling back for
+no_address = []  # never had one (stopped/agentless): expected, not a fault
 resolved = {}
 
 for host in sorted({h for hs in groups.values() for h in hs}):
@@ -81,9 +97,16 @@ for host in sorted({h for hs in groups.values() for h in hs}):
     if not ip:
         ip = prev.get(host, '')
         if ip:
+            # Had an address last cycle and lost it: genuinely degraded.
             degraded.append(host)
         else:
-            dropped.append(host)
+            # Never had one. A stopped or agentless VM (templates, Windows
+            # guests, powered-off hosts) has no guest agent and so no address,
+            # permanently and correctly. Treating that as an
+            # incomplete inventory fired the cache fallback on EVERY run, which then
+            # exposed the children bug below and silently dropped truenas,
+            # pve, pve2 and uptime-kuma out of the linux group.
+            no_address.append(host)
             continue
     resolved[host] = (ip, hv.get('ansible_user', 'ladino'))
 
@@ -97,20 +120,30 @@ for group_name in sorted(groups.keys()):
             print(f'{host} ansible_host={ip} ansible_user={user}')
     print()
 
-print('[linux:children]')
-for group_name in sorted(groups.keys()):
-    if group_name in ('linux', 'all', 'ungrouped') or group_name.startswith('proxmox_'):
+# Reproduce the real parent/child structure. The previous version guessed it
+# with group_hosts.issubset(groups[linux]), but that holds only
+# the hosts listed directly under linux, never those reached through its
+# children. So nas, proxmox and uptime_kuma (which exist ONLY as
+# [linux:children] entries in inventory.static.ini) failed the subset test
+# and were left out, putting truenas, pve, pve2 and uptime-kuma in no managed
+# group at all. Every hosts: linux play then skipped them silently.
+for parent in sorted(children.keys()):
+    if parent in ('all', 'ungrouped') or parent.startswith('proxmox_'):
         continue
-    linux_hosts = set(groups.get('linux', []))
-    group_hosts = set(groups[group_name])
-    if group_hosts and group_hosts.issubset(linux_hosts):
-        print(group_name)
-print()
+    kids = [k for k in sorted(children[parent])
+            if not k.startswith('proxmox_')
+            and (k in groups or k in children)]
+    if not kids:
+        continue
+    print(f'[{parent}:children]')
+    for kid in kids:
+        print(kid)
+    print()
 
 if degraded:
     sys.stderr.write('DEGRADED ' + ','.join(degraded) + chr(10))
-if dropped:
-    sys.stderr.write('DROPPED ' + ','.join(dropped) + chr(10))
+if no_address:
+    sys.stderr.write('NOADDR ' + ','.join(no_address) + chr(10))
 " "$INVENTORY_CACHE" > "$_INV_TMP" 2>"$_INV_STATUS"
 
     if [[ -s "$_INV_TMP" ]]; then
@@ -130,9 +163,12 @@ if dropped:
                         INVENTORY_DEGRADED="$hosts"
                         echo "$(date -Iseconds) WARNING: guest agent reported no address for ${hosts}; using last known good address from cache" >> "$LOGFILE"
                         ;;
-                    DROPPED)
-                        INVENTORY_DEGRADED="${INVENTORY_DEGRADED:+$INVENTORY_DEGRADED,}$hosts"
-                        echo "$(date -Iseconds) ERROR: no address for ${hosts} from the agent or the cache; omitted from inventory rather than addressed by hostname (this lab has no DNS)" >> "$LOGFILE"
+                    NOADDR)
+                        # Expected, not a fault: a stopped or agentless guest
+                        # has no address and never had one. Logged so it stays
+                        # visible, but deliberately NOT counted as degraded,
+                        # because doing so fired the fallback on every run.
+                        echo "$(date -Iseconds) INFO: no address for ${hosts} (stopped or agentless); omitted from inventory rather than addressed by hostname, this lab has no DNS" >> "$LOGFILE"
                         ;;
                 esac
             done < "$_INV_STATUS"

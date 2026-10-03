@@ -31,6 +31,7 @@ was supposed to rescue the next run had already been poisoned by this one.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -68,6 +69,30 @@ print(json.dumps({
  "_meta": {"hostvars": {
     "k8cluster1": {"ansible_host": "192.168.1.90", "ansible_user": "ladino"},
     "nginx1": {"ansible_host": "192.168.1.92", "ansible_user": "ladino"},
+ }}}))
+"""
+
+
+# linux reaches proxmox/nas/uptime_kuma ONLY through children, exactly as
+# inventory.static.ini declares them, and four powered-off guests report no
+# address because a stopped VM has no guest agent.
+INVENTORY_WITH_CHILDREN_AND_STOPPED = """#!/usr/bin/env python3
+import json
+print(json.dumps({
+ "all": {"children": ["linux", "ungrouped"]},
+ "linux": {"children": ["proxmox", "nas", "uptime_kuma"], "hosts": ["jellyfin"]},
+ "proxmox": {"hosts": ["pve", "pve2"]},
+ "nas": {"hosts": ["truenas"]},
+ "uptime_kuma": {"hosts": ["uptime-kuma"]},
+ "untagged": {"hosts": ["ad", "windows-2022"]},
+ "_meta": {"hostvars": {
+   "jellyfin": {"ansible_host": "192.168.1.170", "ansible_user": "ladino"},
+   "pve": {"ansible_host": "192.168.1.10", "ansible_user": "root"},
+   "pve2": {"ansible_host": "192.168.1.11", "ansible_user": "root"},
+   "truenas": {"ansible_host": "192.168.1.15", "ansible_user": "truenas_admin"},
+   "uptime-kuma": {"ansible_host": "192.168.1.129", "ansible_user": "ladino"},
+   "ad": {"ansible_user": "ladino"},
+   "windows-2022": {"ansible_user": "ladino"},
  }}}))
 """
 
@@ -151,7 +176,11 @@ def test_host_with_no_address_anywhere_is_omitted(sandbox):
         "host written without an address; Ansible would address it by hostname"
     )
     assert "k8cluster1 ansible_host=" not in cache
+    # Logged informationally, and NOT treated as degraded: a host with no
+    # address and no cache history is indistinguishable from a stopped guest,
+    # and counting it as degraded fired the fallback on every run.
     assert "no address for k8cluster1" in log
+    assert "live inventory incomplete" not in log
 
 
 def test_healthy_inventory_does_not_fall_back(sandbox):
@@ -200,6 +229,42 @@ def test_scratch_paths_are_per_process(sandbox):
     assert '.status.$$' in text and '.tmp.$$' in text, (
         "scratch paths should carry the pid so concurrent runs cannot collide"
     )
+
+
+def test_groups_reached_only_through_children_survive(sandbox):
+    """nas, proxmox and uptime_kuma must stay children of linux.
+
+    The cache writer used to infer parent/child with
+    group_hosts.issubset(groups[linux]), but groups[linux] holds only the hosts
+    listed DIRECTLY under linux, never those reached through its children. The
+    three groups that exist solely as [linux:children] entries in
+    inventory.static.ini therefore failed the subset test and were dropped, so
+    truenas, pve, pve2 and uptime-kuma ended up in no managed group and every
+    `hosts: linux` play skipped them in silence.
+    """
+    _args, cache, _log = _run(sandbox, INVENTORY_WITH_CHILDREN_AND_STOPPED, seed_cache=None)
+    assert "[linux:children]" in cache
+    kids = cache.split("[linux:children]", 1)[1]
+    for group in ("nas", "proxmox", "uptime_kuma"):
+        assert re.search(rf"^{group}$", kids, re.M), (
+            f"{group} missing from [linux:children]; its hosts are unmanaged"
+        )
+    for host in ("truenas", "pve", "pve2", "uptime-kuma"):
+        assert re.search(rf"^{host} ansible_host=", cache, re.M), f"{host} absent"
+
+
+def test_stopped_vms_do_not_force_the_cache_fallback(sandbox):
+    """A powered-off guest has no agent and no address, by design.
+
+    Counting that as an incomplete inventory fired the fallback on every single
+    run, which then exposed the children bug above and silently un-managed four
+    hosts. Only a host that HAD an address and lost it is degraded.
+    """
+    args, _cache, log = _run(sandbox, INVENTORY_WITH_CHILDREN_AND_STOPPED, seed_cache=None)
+    assert args.strip() == "", (
+        f"stopped VMs forced a needless fallback: INVENTORY_ARGS={args!r}"
+    )
+    assert "live inventory incomplete" not in log
 
 
 def test_sandbox_cannot_reach_real_binaries(sandbox):
