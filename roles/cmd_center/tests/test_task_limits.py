@@ -161,6 +161,8 @@ class TaskFileTest(unittest.TestCase):
         wanted = {
             "system-task-limits.conf.j2": "/etc/systemd/system.conf.d/50-task-limits.conf",
             "user-slice-tasks-max.conf.j2": "/etc/systemd/system/user-.slice.d/50-tasks-max.conf",
+            # Not a systemd path at all: pam_limits is what reads this one.
+            "nproc-limits.conf.j2": "/etc/security/limits.d/50-agent-nproc.conf",
         }
         found = {
             task["ansible.builtin.template"]["src"]: task["ansible.builtin.template"]["dest"]
@@ -169,10 +171,17 @@ class TaskFileTest(unittest.TestCase):
         }
         self.assertEqual(found, wanted)
 
-    def test_drop_ins_notify_a_daemon_reload(self) -> None:
+    def test_systemd_drop_ins_notify_a_daemon_reload(self) -> None:
         for task in yaml.safe_load(TASKS.read_text()):
-            if "ansible.builtin.template" in task:
+            args = task.get("ansible.builtin.template")
+            if not args:
+                continue
+            if args["dest"].startswith("/etc/systemd/"):
                 self.assertEqual(task.get("notify"), "Reload systemd", task["name"])
+            else:
+                # pam_limits reads its file when a session starts. A reload
+                # would change nothing, and a restart would kill every pane.
+                self.assertNotIn("notify", task, task["name"])
 
     def test_handler_exists(self) -> None:
         handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
@@ -323,6 +332,60 @@ class PersistedCeilingTest(unittest.TestCase):
         for name, computed, live, conf, expected in cases:
             with self.subTest(name):
                 self.assertEqual(self._render(computed, live, conf), expected)
+
+
+class NprocLimitsTest(unittest.TestCase):
+    """RLIMIT_NPROC comes from pam_limits, not from systemd.
+
+    A reboot on 2026-10-02 falsified the previous explanation: with
+    DefaultLimitNPROC=16384 in /etc/systemd/system.conf.d the user manager still
+    came up with a hard limit of 3423, because user@<uid>.service runs with
+    PAMName=systemd-user and pam_limits resets the limit afterwards from
+    /etc/security/limits.d. These tests pin the file that actually wins.
+    """
+
+    def setUp(self) -> None:
+        self.variables = _resolved_defaults()
+        self.tasks = yaml.safe_load(TASKS.read_text())
+
+    def test_deploys_a_limits_d_file(self) -> None:
+        dests = [
+            t["ansible.builtin.template"]["dest"]
+            for t in self.tasks
+            if "ansible.builtin.template" in t
+        ]
+        self.assertIn("/etc/security/limits.d/50-agent-nproc.conf", dests)
+
+    def test_the_file_sets_both_soft_and_hard_nproc(self) -> None:
+        rendered = _render(
+            (TEMPLATES / "nproc-limits.conf.j2").read_text(), self.variables
+        )
+        wanted = self.variables["cmd_center_user_nproc"]
+        for kind in ("soft", "hard"):
+            self.assertRegex(rendered, rf"ladino\s+{kind}\s+nproc\s+{wanted}\b")
+
+    def test_it_is_not_below_what_the_units_ask_for(self) -> None:
+        # A limits.d value under DefaultLimitNPROC would clamp every unit back
+        # down, which is the failure this whole file exists to stop.
+        self.assertGreaterEqual(
+            int(self.variables["cmd_center_user_nproc"]),
+            int(self.variables["cmd_center_default_limit_nproc"]),
+        )
+
+    def test_the_play_asserts_that_relationship(self) -> None:
+        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        self.assertTrue(
+            any("cmd_center_user_nproc" in c for c in conditions),
+            "nothing in the play checks the limits.d value against the units'",
+        )
+
+    def test_no_handler_restarts_the_user_manager(self) -> None:
+        # Restarting user@<uid>.service would apply it immediately and kill
+        # every agent pane with it.
+        for task in self.tasks:
+            args = task.get("ansible.builtin.template", {})
+            if args.get("dest", "").startswith("/etc/security/limits.d/"):
+                self.assertNotIn("notify", task)
 
 
 if __name__ == "__main__":
