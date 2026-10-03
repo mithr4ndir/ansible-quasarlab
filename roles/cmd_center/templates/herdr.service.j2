@@ -24,15 +24,23 @@ TimeoutStopSec=30
 # 'failed to spawn thread: Os { code: 11, kind: WouldBlock }'.
 # Stated absolutely, because the 15% default resolves against a thread
 # ceiling that Proxmox memory hotplug leaves sized for 1 GiB of RAM.
-# LimitNPROC is not enforced yet, and a herdr cutover on its own will not
-# enforce it. It is a per-uid rlimit, and a process without CAP_SYS_RESOURCE
-# cannot raise one above its own hard limit, so the user manager silently
-# CLAMPS this to whatever RLIMIT_NPROC it was started with (3424 here) while
-# `systemctl --user show` still reports the configured 16384. The clamp is
-# silent, not fatal: a unit with this set starts fine.
-# What lifts it is DefaultLimitNPROC in /etc/systemd/system.conf.d, which PID 1
-# applies when it next starts user@<uid>.service, so this becomes real at the
-# next REBOOT (or a restart of user@<uid>.service, which kills every pane).
+# LimitNPROC here is close to decoration, and the honest reason took a reboot to
+# learn. It is a per-uid rlimit, and a process without CAP_SYS_RESOURCE cannot
+# raise one above its own hard limit, so the user manager silently CLAMPS this
+# to whatever RLIMIT_NPROC it was started with while `systemctl --user show`
+# reports the configured value regardless. The clamp is silent, not fatal.
+#
+# An earlier version of this comment said DefaultLimitNPROC in
+# /etc/systemd/system.conf.d would make it real at the next reboot. It did not.
+# command-center1 rebooted 2026-10-02 with that drop-in in place and the user
+# manager still came up with a hard limit of 3423, because
+# user@<uid>.service runs with PAMName=systemd-user and pam_limits resets the
+# limit AFTER systemd has applied it. The value that wins comes from
+# /etc/security/limits.d/50-agent-nproc.conf, which this role now manages.
+#
+# This line stays because it is the correct ceiling to ask for and it costs
+# nothing, but it is not what delivers the number.
+#
 # Check what is enforced with `grep 'Max processes' /proc/$(systemctl --user
 # show herdr.service -p MainPID --value)/limits`, never with systemctl show.
 TasksMax={{ cmd_center_herdr_tasks_max }}

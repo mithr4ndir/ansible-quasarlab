@@ -47,6 +47,7 @@
     that:
       - cmd_center_herdr_tasks_max | int <= cmd_center_user_slice_tasks_max | int
       - cmd_center_herdr_limit_nproc | int <= cmd_center_default_limit_nproc | int
+      - cmd_center_user_nproc | int >= cmd_center_default_limit_nproc | int
       - cmd_center_user_slice_tasks_max | int <= cmd_center_default_limit_nproc | int
       - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max | int
     fail_msg: >-
@@ -190,6 +191,24 @@
     group: root
     mode: '0644'
   notify: Reload systemd
+  tags:
+    - task_limits
+
+# The one ceiling systemd cannot set. See the template's header: PID 1 applies
+# the unit's LimitNPROC and pam_limits then overwrites it from here, so without
+# this file herdr runs with the 1 GiB-derived kernel default of 3423 no matter
+# what `systemctl show` reports. Verified by measurement, not by reading docs.
+#
+# No handler: pam_limits reads this file when a session starts, so the value
+# reaches the user manager at the next reboot. Nothing here restarts
+# user@<uid>.service, which would kill every agent pane.
+- name: Raise RLIMIT_NPROC for the agent user, where pam_limits will read it
+  ansible.builtin.template:
+    src: nproc-limits.conf.j2
+    dest: /etc/security/limits.d/50-agent-nproc.conf
+    owner: root
+    group: root
+    mode: '0644'
   tags:
     - task_limits
 

@@ -242,16 +242,34 @@ the enforced value from the process instead:
 grep 'Max processes' /proc/$(systemctl --user show herdr.service -p MainPID --value)/limits
 ```
 
-`DefaultLimitNPROC` in `/etc/systemd/system.conf.d/50-task-limits.conf` is what
-lifts the user manager's own ceiling, and PID 1 applies it when it next starts
-`user@<uid>.service`. So the rlimit becomes real at the next reboot, not at a
-herdr cutover. Verified that PID 1 can grant it, since it has the capability the
-user manager lacks:
+What delivers the number is `/etc/security/limits.d/50-agent-nproc.conf`, not
+systemd. This was wrong here until a reboot proved it: command-center1 rebooted
+on 2026-10-02 with `DefaultLimitNPROC=16384` already in
+`/etc/systemd/system.conf.d/50-task-limits.conf`, and the user manager still came
+up with a hard limit of 3423.
+
+`user@<uid>.service` runs with `PAMName=systemd-user`, whose stack includes
+`pam_limits` (`/usr/lib/pam.d/systemd-user`), and `pam_limits` resets
+`RLIMIT_NPROC` after systemd has applied the unit's value. Measured:
+
+| | value |
+|---|---|
+| `systemctl show user@1000.service -p LimitNPROC` | 16384, reported |
+| `/proc/<user manager pid>/limits` | 3423, enforced |
+| a fresh PAM session, before the limits.d file | 3423 |
+| a fresh PAM session, after it | 16384 |
+
+PID 1 *can* grant the higher limit, which is what made the wrong explanation
+plausible:
 
 ```
 $ sudo systemd-run -q --wait --pipe -p LimitNPROC=16384 /bin/cat /proc/self/limits
 Max processes             16384                16384                processes
 ```
+
+It just does not survive PAM for a user manager. The `limits.d` value reaches
+the manager at its next start, so at the next reboot; nothing here restarts
+`user@<uid>.service`, which would kill every agent pane.
 
 Nothing here restarts herdr.
 
