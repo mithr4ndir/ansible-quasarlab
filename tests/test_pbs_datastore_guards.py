@@ -136,6 +136,79 @@ class PbsDatastoreGuards(unittest.TestCase):
             "resizefs=true silently grows the datastore on any disk resize",
         )
 
+    def test_lun_link_is_resolved_via_lnk_source_not_path(self) -> None:
+        """Regression: follow:true made stat report the path it was given.
+
+        The first run of this role failed with
+            lsblk: /dev/pci-0000:01:02.0-scsi-0:0:0:1: not a block device
+        because ansible.builtin.stat with follow:true reports `stat.path` as the
+        input path, not the resolved target. The canonical device is in
+        `stat.lnk_source`, which is only populated when the link is NOT followed.
+        """
+        stat_tasks = [
+            t for t in self.tasks
+            if "ansible.builtin.stat" in t
+            and "pbs_lun_links" in str(t["ansible.builtin.stat"].get("path", ""))
+        ]
+        self.assertEqual(
+            len(stat_tasks), 1,
+            "expected exactly one stat task resolving the LUN link",
+        )
+        stat_args = stat_tasks[0]["ansible.builtin.stat"]
+        self.assertFalse(
+            stat_args.get("follow", False),
+            "stat must NOT follow the link: with follow:true, stat.path is the "
+            "input path and lnk_source is absent, which yielded a non-block "
+            "device at runtime",
+        )
+
+        device_fact = next(
+            (t["ansible.builtin.set_fact"] for t in self.tasks
+             if "ansible.builtin.set_fact" in t
+             and "pbs_datastore_device" in t["ansible.builtin.set_fact"]),
+            None,
+        )
+        self.assertIsNotNone(device_fact, "pbs_datastore_device is never set")
+        expr = str(device_fact["pbs_datastore_device"])
+        self.assertIn(
+            "lnk_source", expr,
+            f"pbs_datastore_device is built from {expr!r}; it must come from "
+            "stat.lnk_source, the resolved target",
+        )
+        self.assertNotIn(
+            "stat.path", expr,
+            "stat.path is the input path, not the resolved device",
+        )
+
+    def test_block_device_guard_runs_before_the_root_disk_guard(self) -> None:
+        """A malformed path makes the root-disk guard pass for the wrong reason.
+
+        '/dev/sda1'.startswith('/dev/pci-0000:...') is false, so "not the root
+        disk" passes on nonsense. The block-device check has to come first or
+        the root-disk guard proves nothing.
+        """
+        def guard_index(needle: str) -> int:
+            for i, t in enumerate(self.tasks):
+                if "ansible.builtin.assert" not in t:
+                    continue
+                if needle in yaml.safe_dump(t["ansible.builtin.assert"]):
+                    return i
+            return -1
+
+        blockdev = guard_index("isblk")
+        root = guard_index("pbs_root_source.stdout")
+        self.assertNotEqual(
+            blockdev, -1,
+            "no assertion that the resolved path is actually a block device",
+        )
+        self.assertNotEqual(root, -1, "no root-disk guard")
+        self.assertLess(
+            blockdev, root,
+            f"block-device check at task {blockdev} must precede the root-disk "
+            f"guard at task {root}; otherwise an unresolved path satisfies the "
+            "root-disk guard trivially",
+        )
+
     def test_four_guards_all_run_before_the_mkfs(self) -> None:
         """Each guard must precede the destructive step, not merely exist.
 
@@ -230,3 +303,38 @@ class PbsDatastoreGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PbsScheduleDefaults(unittest.TestCase):
+    """The default schedules must be valid systemd calendar events.
+
+    `daily 03:30` looked reasonable and is rejected: the shorthands are complete
+    expressions and cannot take a time. PBS only surfaces that from inside
+    `datastore create`, after the filesystem is mounted, so it is worth catching
+    here.
+    """
+
+    def setUp(self) -> None:
+        self.defaults = yaml.safe_load(DEFAULTS.read_text())
+
+    def test_schedules_parse(self) -> None:
+        import shutil
+        import subprocess
+
+        analyzer = shutil.which("systemd-analyze")
+        if analyzer is None:
+            self.skipTest("systemd-analyze not available to validate calendars")
+
+        for key in ("pbs_gc_schedule", "pbs_prune_schedule",
+                    "pbs_verify_schedule"):
+            value = self.defaults[key]
+            with self.subTest(schedule=key, value=value):
+                result = subprocess.run(
+                    [analyzer, "calendar", str(value)],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    f"{key}={value!r} is not a valid systemd calendar event: "
+                    f"{result.stderr.strip()}",
+                )

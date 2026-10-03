@@ -42,7 +42,11 @@ pbs_prune_keep_weekly: 4
 pbs_prune_keep_monthly: 3
 
 pbs_prune_schedule: "hourly"
-pbs_gc_schedule: "daily 03:30"
+# Schedules are systemd calendar events, validated against `systemd-analyze
+# calendar` before use. "daily 03:30" is NOT valid: the shorthands (hourly,
+# daily, weekly) are complete expressions and cannot take a time, which cost a
+# failed run to discover. Use a bare time for "every day at".
+pbs_gc_schedule: "03:30"
 pbs_verify_job_id: "verify-{{ pbs_datastore_name }}"
 pbs_verify_schedule: "weekly"
 # Verify re-reads stored chunks, so it is the only thing that proves a backup is

@@ -23,6 +23,9 @@
     owner: root
     group: root
     mode: '0644'
+    # Without force:false this re-downloads and reports changed on every run,
+    # which then re-triggers the apt cache update below forever.
+    force: false
   register: pbs_key
 
 - name: Configure the PBS no-subscription repository
@@ -36,15 +39,38 @@
     mode: '0644'
   register: pbs_repo
 
+# The proxmox-backup-server package ships /etc/apt/sources.list.d/pbs-enterprise.list
+# as a conffile, pointing at a repo that returns 401 without a subscription. So it
+# does not exist on a fresh guest and does exist the moment PBS installs, which is
+# why this is disabled both before and after the install: the first run would
+# otherwise leave the host with an apt cache that cannot refresh. Same idiom as
+# roles/pve/common.
+- name: Disable the PBS enterprise repo if present
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/pbs-enterprise.list
+    regexp: '^deb https://enterprise\.proxmox\.com'
+    line: '# deb https://enterprise.proxmox.com/debian/pbs {{ pbs_repo_suite }} pbs-enterprise'
+  failed_when: false
+  register: pbs_enterprise_pre
+
 - name: Update apt cache after repo change
   ansible.builtin.apt:
     update_cache: true
-  when: pbs_repo.changed or pbs_key.changed
+  when: pbs_repo.changed or pbs_key.changed or pbs_enterprise_pre.changed
 
 - name: Install proxmox-backup-server
   ansible.builtin.apt:
     name: proxmox-backup-server
     state: present
+  register: pbs_package
+
+- name: Disable the enterprise repo the package just installed
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/pbs-enterprise.list
+    regexp: '^deb https://enterprise\.proxmox\.com'
+    line: '# deb https://enterprise.proxmox.com/debian/pbs {{ pbs_repo_suite }} pbs-enterprise'
+  failed_when: false
+  when: pbs_package.changed
 
 # ---------------------------------------------------------------------------
 # Datastore disk resolution. Guarded, because the next step formats it.
@@ -68,15 +94,42 @@
       continue rather than guess which disk to format.
     quiet: true
 
+# follow: false is deliberate. With follow: true, stat follows the link but
+# reports `stat.path` as the path it was GIVEN, so the resolved device came back
+# as /dev/pci-0000:01:02.0-scsi-0:0:0:1 and lsblk rejected it with "not a block
+# device". The canonical target is in `stat.lnk_source`, which only exists when
+# the link is not followed. Found by running this role, not by reading it.
 - name: Resolve the LUN link to its kernel device
   ansible.builtin.stat:
     path: "{{ pbs_lun_links.files[0].path }}"
-    follow: true
+    follow: false
   register: pbs_datastore_stat
 
 - name: Record the resolved datastore device
   ansible.builtin.set_fact:
-    pbs_datastore_device: "/dev/{{ pbs_datastore_stat.stat.path | basename }}"
+    pbs_datastore_device: "{{ pbs_datastore_stat.stat.lnk_source }}"
+
+# Without this, a malformed device path sails straight through the root-disk
+# guard below: `'/dev/sda1'.startswith('/dev/pci-0000:...')` is false, so the
+# assertion "this is not the root disk" passes for entirely the wrong reason.
+# A guard that cannot distinguish "safe" from "nonsense" is not a guard.
+- name: Confirm the resolved path is a real block device
+  ansible.builtin.stat:
+    path: "{{ pbs_datastore_device }}"
+  register: pbs_datastore_blockdev
+
+- name: Assert the resolved datastore path is a block device
+  ansible.builtin.assert:
+    that:
+      - pbs_datastore_stat.stat.islnk | default(false)
+      - pbs_datastore_stat.stat.lnk_source is defined
+      - pbs_datastore_blockdev.stat.exists | default(false)
+      - pbs_datastore_blockdev.stat.isblk | default(false)
+    fail_msg: >-
+      {{ pbs_datastore_device | default('(unresolved)') }} is not a block
+      device. The LUN link did not resolve, so every guard below would be
+      comparing against nonsense rather than a disk.
+    quiet: true
 
 - name: Identify the device backing the root filesystem
   ansible.builtin.command: findmnt -no SOURCE /
@@ -176,6 +229,21 @@
   check_mode: false
   register: pbs_mounted_source
   failed_when: pbs_datastore_device not in pbs_mounted_source.stdout
+
+# PBS reports a schedule typo as `unable to parse calendar event at 'daily' -
+# Context("weekday")` from inside datastore create, after the filesystem is
+# already mounted. Validating up front turns that into a clear failure naming
+# the offending value. systemd-analyze is the same parser PBS uses.
+- name: Validate the configured schedules are systemd calendar events
+  ansible.builtin.command: "systemd-analyze calendar {{ item }}"
+  changed_when: false
+  check_mode: false
+  loop:
+    - "{{ pbs_gc_schedule }}"
+    - "{{ pbs_prune_schedule }}"
+    - "{{ pbs_verify_schedule }}"
+  register: pbs_schedule_check
+  failed_when: pbs_schedule_check.rc != 0
 
 - name: Read existing PBS datastores
   ansible.builtin.command: proxmox-backup-manager datastore list --output-format json

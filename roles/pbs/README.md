@@ -58,6 +58,31 @@ evidence; a verified read is. See `feedback_pve_disk_backup_flag_vacuous`.
 
 `vm9000` (the ubuntu template) still carries `backup=0` and should stay excluded.
 
+## Retention lives in prune.cfg, not datastore.cfg
+
+The `--keep-*` and `--prune-schedule` arguments to `datastore create` are
+accepted, then migrated by PBS into a separate prune job. So
+`proxmox-backup-manager datastore show lab` lists only `gc-schedule` and
+`verify-new`, and retention looks absent when it is not:
+
+```
+# proxmox-backup-manager prune-job list
+default-lab-f7b1615e...  store lab  schedule hourly
+  keep-hourly 24  keep-daily 7  keep-weekly 4  keep-monthly 3
+```
+
+Check `prune-job list` or `/etc/proxmox-backup/prune.cfg` before concluding that
+retention was dropped.
+
+## Schedules are systemd calendar events
+
+Validated by a pre-flight `systemd-analyze calendar` task, because PBS reports a
+bad value from inside `datastore create` as `unable to parse calendar event at
+'daily' - Context("weekday")`, after the filesystem is already mounted.
+
+`daily 03:30` is **not** valid: `hourly`, `daily` and `weekly` are complete
+expressions and cannot take a time. Use a bare `03:30` for "every day at".
+
 ## Version pairing
 
 PBS 3.x is the bookworm line and the correct pair for PVE 8.4. Both guests are
