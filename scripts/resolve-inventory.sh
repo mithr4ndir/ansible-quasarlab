@@ -12,6 +12,15 @@
 # Cache lives in repo root so group_vars/ and host_vars/ are found when falling back
 INVENTORY_CACHE="${REPO_DIR}/inventory-cache.ini"
 
+# Per-process scratch paths. The proxmox and security timers run as the same
+# user and can overlap (OnUnitActiveSec drift, or one run outliving its slot),
+# so a shared status file lets a healthy run truncate the DEGRADED marker a
+# concurrent degraded run just wrote. That run would then conclude the
+# inventory was complete and proceed with the addressless one, which is the
+# exact failure this file exists to prevent. Same reasoning for .tmp staging.
+_INV_TMP="${INVENTORY_CACHE}.tmp.$$"
+_INV_STATUS="${INVENTORY_CACHE}.status.$$"
+
 # Try to resolve dynamic inventory and cache the result
 _resolve_dynamic_inventory() {
     if [[ -z "${PROXMOX_TOKEN_SECRET:-}" ]]; then
@@ -28,61 +37,110 @@ _resolve_dynamic_inventory() {
         return 1
     fi
 
-    # Dynamic inventory works — cache a static snapshot for fallback
-    cd "$REPO_DIR"
+    # Dynamic inventory works, so cache a static snapshot for fallback.
+    #
+    # The snapshot is MERGED with the previous cache rather than replacing it.
+    # `ansible_host` is composed from proxmox_agent_interfaces, so a guest agent
+    # that misses one reply leaves it undefined for that host. This lab has no
+    # DNS (pfSense returns NXDOMAIN for every lab name), so Ansible then falls
+    # back to the inventory hostname and the host is simply unreachable. The old
+    # writer made that permanent by rewriting the cache entry without an address.
+    cd "$REPO_DIR" || return 1
     ansible-inventory --list 2>/dev/null | python3 -c "
-import json, sys
+import json, os, re, sys
+
+cache_path = sys.argv[1] if len(sys.argv) > 1 else ''
+
+# Last known good address per host, from the previous cache.
+prev = {}
+if cache_path and os.path.exists(cache_path):
+    with open(cache_path) as fh:
+        for line in fh:
+            m = re.match(r'^(\S+)\s+ansible_host=(\S+)', line)
+            if m:
+                prev[m.group(1)] = m.group(2)
 
 data = json.load(sys.stdin)
 hostvars = data.get('_meta', {}).get('hostvars', {})
 
-# Build group->hosts mapping
 groups = {}
 for group_name, group_data in data.items():
     if group_name == '_meta':
         continue
     hosts = group_data.get('hosts', [])
-    children = group_data.get('children', [])
     if hosts:
         groups[group_name] = hosts
 
-# Write INI-style inventory
+degraded = []   # agent reported no address this cycle, recovered from cache
+dropped = []    # no address anywhere, omitted rather than written addressless
+resolved = {}
+
+for host in sorted({h for hs in groups.values() for h in hs}):
+    hv = hostvars.get(host, {})
+    ip = hv.get('ansible_host', '')
+    if not ip:
+        ip = prev.get(host, '')
+        if ip:
+            degraded.append(host)
+        else:
+            dropped.append(host)
+            continue
+    resolved[host] = (ip, hv.get('ansible_user', 'ladino'))
+
 for group_name in sorted(groups.keys()):
-    # Skip proxmox auto-generated groups
     if group_name.startswith('proxmox_'):
         continue
     print(f'[{group_name}]')
     for host in sorted(groups[group_name]):
-        hv = hostvars.get(host, {})
-        ip = hv.get('ansible_host', '')
-        user = hv.get('ansible_user', 'ladino')
-        if ip:
+        if host in resolved:
+            ip, user = resolved[host]
             print(f'{host} ansible_host={ip} ansible_user={user}')
-        else:
-            print(f'{host} ansible_user={user}')
     print()
 
-# Write parent group relationships
 print('[linux:children]')
 for group_name in sorted(groups.keys()):
     if group_name in ('linux', 'all', 'ungrouped') or group_name.startswith('proxmox_'):
         continue
-    # Check if this group's hosts are a subset of linux
     linux_hosts = set(groups.get('linux', []))
     group_hosts = set(groups[group_name])
     if group_hosts and group_hosts.issubset(linux_hosts):
         print(group_name)
 print()
-" > "${INVENTORY_CACHE}.tmp" 2>/dev/null
 
-    if [[ -s "${INVENTORY_CACHE}.tmp" ]]; then
-        mv "${INVENTORY_CACHE}.tmp" "$INVENTORY_CACHE"
+if degraded:
+    sys.stderr.write('DEGRADED ' + ','.join(degraded) + chr(10))
+if dropped:
+    sys.stderr.write('DROPPED ' + ','.join(dropped) + chr(10))
+" "$INVENTORY_CACHE" > "$_INV_TMP" 2>"$_INV_STATUS"
+
+    if [[ -s "$_INV_TMP" ]]; then
+        mv "$_INV_TMP" "$INVENTORY_CACHE"
         chmod 644 "$INVENTORY_CACHE"
         host_count=$(grep 'ansible_host' "$INVENTORY_CACHE" | awk '{print $1}' | sort -u | wc -l)
         echo "$(date -Iseconds) Inventory cache updated (${host_count} unique hosts)" >> "$LOGFILE"
+
+        # Hosts whose address had to come from the cache, or that have none at
+        # all. Set INVENTORY_DEGRADED so the caller can prefer the merged cache
+        # over a live inventory that would address them by name.
+        INVENTORY_DEGRADED=""
+        if [[ -s "$_INV_STATUS" ]]; then
+            while read -r kind hosts; do
+                case "$kind" in
+                    DEGRADED)
+                        INVENTORY_DEGRADED="$hosts"
+                        echo "$(date -Iseconds) WARNING: guest agent reported no address for ${hosts}; using last known good address from cache" >> "$LOGFILE"
+                        ;;
+                    DROPPED)
+                        INVENTORY_DEGRADED="${INVENTORY_DEGRADED:+$INVENTORY_DEGRADED,}$hosts"
+                        echo "$(date -Iseconds) ERROR: no address for ${hosts} from the agent or the cache; omitted from inventory rather than addressed by hostname (this lab has no DNS)" >> "$LOGFILE"
+                        ;;
+                esac
+            done < "$_INV_STATUS"
+        fi
+        rm -f "$_INV_STATUS"
         return 0
     else
-        rm -f "${INVENTORY_CACHE}.tmp"
+        rm -f "$_INV_TMP" "$_INV_STATUS"
         return 1
     fi
 }
@@ -91,10 +149,19 @@ print()
 INVENTORY_ARGS=""
 
 if _resolve_dynamic_inventory; then
-    # Dynamic inventory works — use it normally (no extra args needed)
-    INVENTORY_ARGS=""
+    if [[ -n "${INVENTORY_DEGRADED:-}" ]]; then
+        # The API answered, but at least one host came back without an address.
+        # Using the live inventory would address that host by hostname, which
+        # cannot resolve here, so prefer the cache we just merged: it carries
+        # the last known good address for exactly those hosts.
+        echo "$(date -Iseconds) WARNING: live inventory incomplete (${INVENTORY_DEGRADED}), using merged cache instead" >> "$LOGFILE"
+        INVENTORY_ARGS="-i $INVENTORY_CACHE"
+    else
+        # Dynamic inventory works, use it normally (no extra args needed)
+        INVENTORY_ARGS=""
+    fi
 else
-    # Dynamic inventory failed — fall back to cache
+    # Dynamic inventory failed, fall back to cache
     if [[ -f "$INVENTORY_CACHE" ]]; then
         cache_age=$(( $(date +%s) - $(stat -c %Y "$INVENTORY_CACHE" 2>/dev/null || echo 0) ))
         cache_age_human=$(printf '%dd %dh' $((cache_age/86400)) $((cache_age%86400/3600)))
