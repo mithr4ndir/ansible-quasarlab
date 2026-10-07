@@ -452,3 +452,51 @@ class PbsTokenPrivileges(unittest.TestCase):
             "commands succeed regardless, which is how the intersection "
             "behaviour stayed hidden",
         )
+
+
+class PveBackupJobPrune(unittest.TestCase):
+    """The PVE job must DELETE prune-backups, not merely omit it.
+
+    The pre-existing job carried `prune-backups keep-daily=7,keep-weekly=4` from
+    its nas-backup days. Omitting the flag left it in place, so PVE attempted a
+    prune on PBS, which needs Datastore.Prune that the scoped token deliberately
+    lacks. The backup data succeeded and the task still reported
+        ERROR: Backup of VM 105 failed - error pruning backups
+    so every hourly run looked like a failure while the snapshots were fine.
+    """
+
+    PVE_TASKS = (REPO / "roles" / "pve" / "pbs_storage" / "tasks" / "main.yml")
+
+    def setUp(self) -> None:
+        self.assertTrue(self.PVE_TASKS.is_file(), f"missing {self.PVE_TASKS}")
+        self.tasks = yaml.safe_load(self.PVE_TASKS.read_text())
+
+    def _job_argv(self) -> list[str]:
+        for t in self.tasks:
+            cmd = t.get("ansible.builtin.command")
+            if not isinstance(cmd, dict):
+                continue
+            argv = [str(a) for a in cmd.get("argv", [])]
+            if argv and argv[0] == "pvesh" and "set" in argv:
+                return argv
+        self.fail("no `pvesh set` task configuring the backup job")
+
+    def test_job_deletes_prune_backups(self) -> None:
+        argv = self._job_argv()
+        self.assertIn(
+            "--delete", argv,
+            "the job update must --delete prune-backups; a declarative role has "
+            "to remove what it does not want, not just stop setting it",
+        )
+        self.assertEqual(
+            argv[argv.index("--delete") + 1], "prune-backups",
+            "--delete must name prune-backups",
+        )
+
+    def test_job_does_not_also_set_prune_backups(self) -> None:
+        argv = self._job_argv()
+        self.assertNotIn(
+            "--prune-backups", argv,
+            "setting and deleting prune-backups in the same call is "
+            "contradictory; PBS owns retention",
+        )

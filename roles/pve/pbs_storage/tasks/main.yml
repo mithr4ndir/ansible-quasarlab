@@ -77,6 +77,17 @@
       - "{{ pbs_backup_exclude_vmids | join(',') }}"
       - --enabled
       - "1"
+      # Deleting, not merely omitting. The pre-existing job carried
+      # `prune-backups keep-daily=7,keep-weekly=4` from its nas-backup days, and
+      # leaving the property in place made PVE attempt a prune on PBS, which
+      # needs Datastore.Prune that this token deliberately does not have. The
+      # backup DATA succeeded and the task still reported
+      #   ERROR: Backup of VM 105 failed - error pruning backups
+      # so every hourly run looked like a failure while the snapshots were fine.
+      # A declarative role has to remove what it does not want, not just stop
+      # setting it.
+      - --delete
+      - prune-backups
   run_once: true
   when: pbs_backup_job_id in
         ((pbs_jobs.stdout | from_json) | map(attribute='id') | list)
