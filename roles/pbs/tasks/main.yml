@@ -1,0 +1,530 @@
+---
+# Install and configure Proxmox Backup Server inside pbs1/pbs2.
+#
+# This role contains the only genuinely destructive step in the repo: it puts a
+# filesystem on a raw disk. Everything up to that mkfs is a guard, because
+# getting the device wrong means formatting the guest's root disk. The guards
+# are not ceremony, they encode a real inversion between the two hosts (see
+# defaults/main.yml).
+
+- name: Install prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install the Proxmox release keyring
+  ansible.builtin.get_url:
+    url: "{{ pbs_release_key_url }}"
+    dest: "{{ pbs_release_key_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    # Without force:false this re-downloads and reports changed on every run,
+    # which then re-triggers the apt cache update below forever.
+    force: false
+  register: pbs_key
+
+- name: Configure the PBS no-subscription repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pbs.list
+    content: |
+      # Managed by ansible role `pbs`. Proxmox Backup Server, no-subscription.
+      deb [signed-by={{ pbs_release_key_path }}] {{ pbs_repo_url }} {{ pbs_repo_suite }} {{ pbs_repo_component }}
+    owner: root
+    group: root
+    mode: '0644'
+  register: pbs_repo
+
+# The proxmox-backup-server package ships /etc/apt/sources.list.d/pbs-enterprise.list
+# as a conffile, pointing at a repo that returns 401 without a subscription. So it
+# does not exist on a fresh guest and does exist the moment PBS installs, which is
+# why this is disabled both before and after the install: the first run would
+# otherwise leave the host with an apt cache that cannot refresh. Same idiom as
+# roles/pve/common.
+- name: Disable the PBS enterprise repo if present
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/pbs-enterprise.list
+    regexp: '^deb https://enterprise\.proxmox\.com'
+    line: '# deb https://enterprise.proxmox.com/debian/pbs {{ pbs_repo_suite }} pbs-enterprise'
+  failed_when: false
+  register: pbs_enterprise_pre
+
+- name: Update apt cache after repo change
+  ansible.builtin.apt:
+    update_cache: true
+  when: pbs_repo.changed or pbs_key.changed or pbs_enterprise_pre.changed
+
+- name: Install proxmox-backup-server
+  ansible.builtin.apt:
+    name: proxmox-backup-server
+    state: present
+  register: pbs_package
+
+- name: Disable the enterprise repo the package just installed
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/pbs-enterprise.list
+    regexp: '^deb https://enterprise\.proxmox\.com'
+    line: '# deb https://enterprise.proxmox.com/debian/pbs {{ pbs_repo_suite }} pbs-enterprise'
+  failed_when: false
+  when: pbs_package.changed
+
+# ---------------------------------------------------------------------------
+# Datastore disk resolution. Guarded, because the next step formats it.
+# ---------------------------------------------------------------------------
+
+- name: Resolve the datastore disk by its virtual SCSI LUN slot
+  ansible.builtin.find:
+    paths: /dev/disk/by-path
+    patterns: "*-scsi-0:0:0:1"
+    file_type: link
+    excludes: "*-part*"
+  register: pbs_lun_links
+
+- name: Assert exactly one disk occupies the datastore LUN slot
+  ansible.builtin.assert:
+    that:
+      - pbs_lun_links.files | length == 1
+    fail_msg: >-
+      Expected exactly one /dev/disk/by-path/*-scsi-0:0:0:1 link (the scsi1
+      datastore disk), found {{ pbs_lun_links.files | length }}. Refusing to
+      continue rather than guess which disk to format.
+    quiet: true
+
+# follow: false is deliberate. With follow: true, stat follows the link but
+# reports `stat.path` as the path it was GIVEN, so the resolved device came back
+# as /dev/pci-0000:01:02.0-scsi-0:0:0:1 and lsblk rejected it with "not a block
+# device". The canonical target is in `stat.lnk_source`, which only exists when
+# the link is not followed. Found by running this role, not by reading it.
+- name: Resolve the LUN link to its kernel device
+  ansible.builtin.stat:
+    path: "{{ pbs_lun_links.files[0].path }}"
+    follow: false
+  register: pbs_datastore_stat
+
+- name: Record the resolved datastore device
+  ansible.builtin.set_fact:
+    pbs_datastore_device: "{{ pbs_datastore_stat.stat.lnk_source }}"
+
+# Without this, a malformed device path sails straight through the root-disk
+# guard below: `'/dev/sda1'.startswith('/dev/pci-0000:...')` is false, so the
+# assertion "this is not the root disk" passes for entirely the wrong reason.
+# A guard that cannot distinguish "safe" from "nonsense" is not a guard.
+- name: Confirm the resolved path is a real block device
+  ansible.builtin.stat:
+    path: "{{ pbs_datastore_device }}"
+  register: pbs_datastore_blockdev
+
+- name: Assert the resolved datastore path is a block device
+  ansible.builtin.assert:
+    that:
+      - pbs_datastore_stat.stat.islnk | default(false)
+      - pbs_datastore_stat.stat.lnk_source is defined
+      - pbs_datastore_blockdev.stat.exists | default(false)
+      - pbs_datastore_blockdev.stat.isblk | default(false)
+    fail_msg: >-
+      {{ pbs_datastore_device | default('(unresolved)') }} is not a block
+      device. The LUN link did not resolve, so every guard below would be
+      comparing against nonsense rather than a disk.
+    quiet: true
+
+- name: Identify the device backing the root filesystem
+  ansible.builtin.command: findmnt -no SOURCE /
+  changed_when: false
+  check_mode: false
+  register: pbs_root_source
+
+- name: Assert the datastore disk is not the root disk
+  ansible.builtin.assert:
+    that:
+      - not pbs_root_source.stdout.startswith(pbs_datastore_device)
+    fail_msg: >-
+      The LUN slot resolved to {{ pbs_datastore_device }}, but the root
+      filesystem lives on {{ pbs_root_source.stdout }}. Formatting this would
+      destroy the guest. This is exactly the inversion documented in
+      defaults/main.yml, so treat a failure here as a real finding.
+    quiet: true
+
+- name: Measure the resolved disk
+  ansible.builtin.command: "lsblk -bdno SIZE {{ pbs_datastore_device }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_datastore_size
+
+- name: Assert the disk is the expected size
+  ansible.builtin.assert:
+    that:
+      - ((pbs_datastore_size.stdout | trim | int) / (1024 ** 3)) | round(0, 'floor') | int
+        >= (pbs_datastore_expected_gb - pbs_datastore_size_tolerance_gb)
+      - ((pbs_datastore_size.stdout | trim | int) / (1024 ** 3)) | round(0, 'floor') | int
+        <= (pbs_datastore_expected_gb + pbs_datastore_size_tolerance_gb)
+    fail_msg: >-
+      {{ pbs_datastore_device }} measures
+      {{ ((pbs_datastore_size.stdout | trim | int) / (1024 ** 3)) | round(1) }}GiB,
+      outside {{ pbs_datastore_expected_gb }}GiB +/-
+      {{ pbs_datastore_size_tolerance_gb }}GiB. Refusing to format an
+      unexpected disk.
+    quiet: true
+
+# Probe EVERY signature, not just TYPE. `blkid -s TYPE` prints only the TYPE
+# tag, so a disk carrying a partition table but no whole-disk filesystem comes
+# back empty and reads as blank. Verified on command-center1:
+#
+#   blkid -p -o value -s TYPE /dev/sda  ->  ''          (and rc 0)
+#   blkid -p -o export       /dev/sda  ->  PTTYPE=gpt
+#
+# The old guard equated that empty TYPE with an unused disk and would have
+# formatted a partitioned one. `failed_when: false` made it worse: a probe that
+# failed outright also produced empty stdout and also read as blank.
+#
+# blkid exit codes: 0 signature found, 2 nothing found (a genuinely blank
+# device), anything else a real failure. Only 0 and 2 are acceptable, so a
+# broken probe can no longer be mistaken for an empty disk.
+- name: Probe every signature on the datastore disk
+  ansible.builtin.command: "blkid -p -o export {{ pbs_datastore_device }}"
+  changed_when: false
+  check_mode: false
+  failed_when: pbs_existing_fs.rc not in [0, 2]
+  register: pbs_existing_fs
+
+# A disk already carrying our filesystem is the normal re-run case. Anything
+# else, including a bare partition table or a RAID member signature, is a
+# surprise, and surprises do not get formatted.
+- name: Assert the datastore disk is blank or already ours
+  ansible.builtin.assert:
+    that:
+      - (pbs_existing_fs.stdout | trim | length == 0)
+        or (
+          ('TYPE=' ~ pbs_datastore_fstype) in pbs_existing_fs.stdout_lines
+          and (pbs_existing_fs.stdout is not search('(?m)^PTTYPE='))
+        )
+    fail_msg: >-
+      {{ pbs_datastore_device }} already carries signatures this role did not
+      create:
+      {{ pbs_existing_fs.stdout_lines
+         | select('match', '^(TYPE|PTTYPE|USAGE)=')
+         | join(', ') | default('none reported', true) }}.
+      Inspect it by hand; refusing to overwrite unrecognised data.
+    quiet: true
+
+- name: Create the datastore filesystem
+  community.general.filesystem:
+    fstype: "{{ pbs_datastore_fstype }}"
+    dev: "{{ pbs_datastore_device }}"
+    # Never resize or force. If the disk grows, that is a deliberate decision.
+    resizefs: false
+
+# Ownership and mode are deliberately NOT set here. Before the mount this
+# directory is a placeholder whose ownership is masked anyway, and AFTER the
+# mount this path resolves to the mounted filesystem's root, so setting
+# root:root here un-did the backup:backup ownership set below on every single
+# run. The two tasks flip-flopped the same inode and the role never converged.
+- name: Create the datastore mount point
+  ansible.builtin.file:
+    path: "{{ pbs_datastore_mount }}"
+    state: directory
+
+# Mount by UUID, not by kernel name, for the same reason the disk is resolved by
+# LUN slot: /dev/sdX is not stable across these two guests.
+- name: Read the datastore filesystem UUID
+  ansible.builtin.command: "blkid -o value -s UUID {{ pbs_datastore_device }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_datastore_uuid
+
+- name: Mount the datastore by UUID and persist it
+  ansible.posix.mount:
+    path: "{{ pbs_datastore_mount }}"
+    src: "UUID={{ pbs_datastore_uuid.stdout | trim }}"
+    fstype: "{{ pbs_datastore_fstype }}"
+    opts: defaults,noatime
+    state: mounted
+
+# Proving the mount is live before handing the path to PBS. A datastore created
+# over an unmounted directory silently fills the 32G root disk instead, which
+# looks healthy until the guest wedges.
+- name: Assert the datastore is actually mounted on its own device
+  ansible.builtin.command: "findmnt -no SOURCE {{ pbs_datastore_mount }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_mounted_source
+  failed_when: pbs_datastore_device not in pbs_mounted_source.stdout
+
+# PBS reports a schedule typo as `unable to parse calendar event at 'daily' -
+# Context("weekday")` from inside datastore create, after the filesystem is
+# already mounted. Validating up front turns that into a clear failure naming
+# the offending value. systemd-analyze is the same parser PBS uses.
+- name: Validate the configured schedules are systemd calendar events
+  ansible.builtin.command: "systemd-analyze calendar {{ item }}"
+  changed_when: false
+  check_mode: false
+  loop:
+    - "{{ pbs_gc_schedule }}"
+    - "{{ pbs_prune_schedule }}"
+    - "{{ pbs_verify_schedule }}"
+  register: pbs_schedule_check
+  failed_when: pbs_schedule_check.rc != 0
+
+# proxmox-backup-proxy runs as `backup`, and it creates the per-guest
+# directories (vm/<vmid>/...) at the TOP level of the datastore. If the
+# datastore root is root-owned, PBS creates .chunks correctly (the manager runs
+# as root) and then every backup fails with
+#   backup connect failed: command error: Permission denied (os error 13)
+# which names neither the path nor the user. Verified 2026-10-06.
+#
+# This has to run AFTER the mount: ownership of a mount point is masked by the
+# filesystem mounted over it, so chowning the directory before mounting sets
+# the wrong inode.
+- name: Give the mounted datastore root to the backup user
+  ansible.builtin.file:
+    path: "{{ pbs_datastore_mount }}"
+    state: directory
+    owner: backup
+    group: backup
+    mode: '0755'
+
+- name: Read existing PBS datastores
+  ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_datastore_list
+
+- name: Record which datastores already exist
+  ansible.builtin.set_fact:
+    pbs_existing_datastores: >-
+      {{ (pbs_datastore_list.stdout | from_json) | map(attribute='name') | list }}
+
+# --verify-new makes PBS re-read every chunk of a backup immediately after it is
+# written. That is what distinguishes "the job went green" from "the data is
+# readable", which this lab has been bitten by before: a vzdump job once
+# succeeded while producing a 767-byte archive because the disk carried
+# `backup=0`. See feedback_pve_disk_backup_flag_vacuous.
+- name: Create the PBS datastore
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - datastore
+      - create
+      - "{{ pbs_datastore_name }}"
+      - "{{ pbs_datastore_mount }}"
+      - --gc-schedule
+      - "{{ pbs_gc_schedule }}"
+      - --prune-schedule
+      - "{{ pbs_prune_schedule }}"
+      - --keep-hourly
+      - "{{ pbs_prune_keep_hourly }}"
+      - --keep-daily
+      - "{{ pbs_prune_keep_daily }}"
+      - --keep-weekly
+      - "{{ pbs_prune_keep_weekly }}"
+      - --keep-monthly
+      - "{{ pbs_prune_keep_monthly }}"
+      - --verify-new
+      - "true"
+      - --notification-mode
+      - notification-system
+      - --comment
+      - "Managed by ansible role pbs"
+  when: pbs_datastore_name not in pbs_existing_datastores
+  notify: Restart proxmox-backup-proxy
+
+# A datastore whose NAME exists is not a datastore that is CONFIGURED. Creating
+# it only when the name is absent means a drifted or hand-made datastore keeps
+# the wrong path, verify-new disabled, or stale GC and retention, while this
+# role reports success. The dangerous case is a wrong path: backups then fill a
+# directory on the 32G root filesystem even though the mount check above proved
+# the real mount is live.
+#
+# Same class of defect as the PVE job that kept `prune-backups` because the role
+# merely stopped setting it. Converge, do not assume.
+- name: Re-read the datastore config for reconciliation
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore show {{ pbs_datastore_name }}
+    --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_datastore_show
+
+- name: Record the live datastore config
+  ansible.builtin.set_fact:
+    pbs_datastore_live: "{{ pbs_datastore_show.stdout | from_json }}"
+
+# `path` cannot be changed by `datastore update`, so a mismatch is not something
+# this role can fix. Fail loudly rather than carry on against the wrong
+# directory.
+- name: Assert the existing datastore points at the intended path
+  ansible.builtin.assert:
+    that:
+      - pbs_datastore_live.path == pbs_datastore_mount
+    fail_msg: >-
+      Datastore '{{ pbs_datastore_name }}' points at
+      '{{ pbs_datastore_live.path }}', not '{{ pbs_datastore_mount }}'.
+      PBS cannot move a datastore's path in place, so this needs a human:
+      backups written here would land outside the mounted datastore disk.
+    quiet: true
+
+- name: Converge the mutable datastore properties
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - datastore
+      - update
+      - "{{ pbs_datastore_name }}"
+      - --gc-schedule
+      - "{{ pbs_gc_schedule }}"
+      - --verify-new
+      - "true"
+      - --notification-mode
+      - notification-system
+  when: >-
+    pbs_datastore_live['gc-schedule'] | default('') != pbs_gc_schedule
+    or not (pbs_datastore_live['verify-new'] | default(false) | bool)
+    or pbs_datastore_live['notification-mode'] | default('') != 'notification-system'
+
+# Retention does not live on the datastore. `datastore create` accepts the
+# keep-* flags and then migrates them into a separate prune job, which is why
+# `datastore show` lists neither prune-schedule nor keep-*. Reconcile the job.
+- name: Read the prune jobs
+  ansible.builtin.command: proxmox-backup-manager prune-job list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_prune_jobs
+
+- name: Identify the prune job for this datastore
+  ansible.builtin.set_fact:
+    pbs_prune_job: >-
+      {{ (pbs_prune_jobs.stdout | from_json)
+         | selectattr('store', 'equalto', pbs_datastore_name)
+         | list | first | default({}) }}
+
+- name: Assert exactly one prune job owns this datastore
+  ansible.builtin.assert:
+    that:
+      - ((pbs_prune_jobs.stdout | from_json)
+         | selectattr('store', 'equalto', pbs_datastore_name) | list | length) == 1
+    fail_msg: >-
+      Expected exactly one prune job for datastore
+      '{{ pbs_datastore_name }}', found
+      {{ ((pbs_prune_jobs.stdout | from_json)
+          | selectattr('store', 'equalto', pbs_datastore_name) | list | length) }}.
+      Two prune policies on one datastore fight each other; resolve by hand.
+    quiet: true
+
+- name: Converge the prune job retention and schedule
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - prune-job
+      - update
+      - "{{ pbs_prune_job.id }}"
+      - --schedule
+      - "{{ pbs_prune_schedule }}"
+      - --keep-hourly
+      - "{{ pbs_prune_keep_hourly }}"
+      - --keep-daily
+      - "{{ pbs_prune_keep_daily }}"
+      - --keep-weekly
+      - "{{ pbs_prune_keep_weekly }}"
+      - --keep-monthly
+      - "{{ pbs_prune_keep_monthly }}"
+  when: >-
+    pbs_prune_job.schedule | default('') != pbs_prune_schedule
+    or (pbs_prune_job['keep-hourly'] | default(0) | int) != (pbs_prune_keep_hourly | int)
+    or (pbs_prune_job['keep-daily'] | default(0) | int) != (pbs_prune_keep_daily | int)
+    or (pbs_prune_job['keep-weekly'] | default(0) | int) != (pbs_prune_keep_weekly | int)
+    or (pbs_prune_job['keep-monthly'] | default(0) | int) != (pbs_prune_keep_monthly | int)
+
+- name: Read existing verification jobs
+  ansible.builtin.command: proxmox-backup-manager verify-job list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_verify_job_list
+
+# A scheduled verify is the only thing that catches bit rot and silently
+# truncated chunks in backups that were written correctly weeks ago.
+# --verify-new covers new backups; this covers the rest of the datastore.
+- name: Create the scheduled verification job
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - verify-job
+      - create
+      - "{{ pbs_verify_job_id }}"
+      - --store
+      - "{{ pbs_datastore_name }}"
+      - --schedule
+      - "{{ pbs_verify_schedule }}"
+      - --outdated-after
+      - "{{ pbs_verify_outdated_after_days }}"
+      - --ignore-verified
+      - "true"
+      - --comment
+      - "Managed by ansible role pbs"
+  when: pbs_verify_job_id not in
+        ((pbs_verify_job_list.stdout | from_json) | map(attribute='id') | list)
+
+- name: Read existing PBS users
+  ansible.builtin.command: proxmox-backup-manager user list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_user_list
+
+- name: Create the PVE backup client user
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - create
+      - "{{ pbs_pve_user }}"
+      - --comment
+      - "PVE backup client (ansible role pbs)"
+  when: pbs_pve_user not in
+        ((pbs_user_list.stdout | from_json) | map(attribute='userid') | list)
+
+# Granted to the user AND the token, because the effective privileges are the
+# intersection of the two. See the note in defaults/main.yml.
+- name: Grant datastore roles to both the user and its API token
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - "/datastore/{{ pbs_datastore_name }}"
+      - "{{ item.1 }}"
+      - --auth-id
+      - "{{ item.0 }}"
+  loop: "{{ [pbs_pve_user, pbs_pve_token_authid] | product(pbs_pve_roles) | list }}"
+  changed_when: false
+
+- name: Read the effective privileges of the PVE token
+  ansible.builtin.command: >-
+    proxmox-backup-manager user permissions {{ pbs_pve_token_authid }}
+    --path /datastore/{{ pbs_datastore_name }}
+  changed_when: false
+  check_mode: false
+  register: pbs_token_privs
+
+# Asserting the END STATE, because the acl update calls return 0 even when the
+# resulting permission set is empty, which is exactly how the intersection
+# behaviour stayed hidden until PVE failed.
+- name: Assert the token actually resolves the privileges it needs
+  ansible.builtin.assert:
+    that:
+      - "'Datastore.Backup' in pbs_token_privs.stdout"
+      - "'Datastore.Audit' in pbs_token_privs.stdout"
+    fail_msg: >-
+      {{ pbs_pve_token_authid }} resolves no usable privileges on
+      /datastore/{{ pbs_datastore_name }}:
+      {{ pbs_token_privs.stdout | default('(none)') }}
+      A PBS token's privileges are the intersection of its own ACL and its
+      owning user's, so granting only one of the two yields nothing.
+    quiet: true
+
+- name: Ensure the PBS service is enabled and running
+  ansible.builtin.systemd:
+    name: proxmox-backup-proxy.service
+    enabled: true
+    state: started

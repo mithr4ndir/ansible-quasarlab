@@ -1,0 +1,74 @@
+---
+# Proxmox Backup Server, in-guest configuration.
+#
+# The VMs themselves (pbs1 vmid 103 on pve, pbs2 vmid 120 on pve2) are owned by
+# terraform-quasarlab (proxmox/pbs). This role never creates or resizes them.
+# It configures what lives inside the guest.
+
+# PBS 3.x is the bookworm line and is the correct pair for PVE 8.4.
+# When the cluster moves to PVE 9 (Debian 13 trixie), PBS 4.x on trixie is the
+# matching release and this suite needs revisiting together with the storage
+# plugin migration. See project_2026-09-21_thin_provisioning_and_pve9.
+pbs_repo_suite: bookworm
+pbs_repo_component: pbs-no-subscription
+pbs_repo_url: "http://download.proxmox.com/debian/pbs"
+pbs_release_key_url: "https://enterprise.proxmox.com/debian/proxmox-release-{{ pbs_repo_suite }}.gpg"
+pbs_release_key_path: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+# The datastore disk is scsi1 on both guests, which the kernel enumerates
+# INCONSISTENTLY: on pbs1 scsi1 is /dev/sdb, on pbs2 it is /dev/sda, because
+# cloud-init attaches them in a different order. Verified 2026-10-03:
+#
+#   pbs1  scsi-0:0:0:0 -> sda (root=/dev/sda1)   scsi-0:0:0:1 -> sdb
+#   pbs2  scsi-0:0:0:0 -> sdb (root=/dev/sdb1)   scsi-0:0:0:1 -> sda
+#
+# So this role resolves the disk by its stable virtual SCSI LUN slot, never by
+# kernel name. A role hardcoding /dev/sdb would have formatted pbs2's root disk.
+pbs_datastore_lun_glob: "/dev/disk/by-path/*-scsi-0:0:0:1"
+pbs_datastore_expected_gb: 600
+# How far the measured disk may deviate from the expected size before this role
+# refuses to touch it. Guards against the glob resolving to something unexpected.
+pbs_datastore_size_tolerance_gb: 32
+
+pbs_datastore_name: lab
+pbs_datastore_mount: /mnt/datastore/lab
+pbs_datastore_fstype: ext4
+
+# Retention. Deliberately expressed here rather than only in the PVE job so the
+# datastore enforces its own floor even if a job is misconfigured.
+pbs_prune_keep_hourly: 24
+pbs_prune_keep_daily: 7
+pbs_prune_keep_weekly: 4
+pbs_prune_keep_monthly: 3
+
+pbs_prune_schedule: "hourly"
+# Schedules are systemd calendar events, validated against `systemd-analyze
+# calendar` before use. "daily 03:30" is NOT valid: the shorthands (hourly,
+# daily, weekly) are complete expressions and cannot take a time, which cost a
+# failed run to discover. Use a bare time for "every day at".
+pbs_gc_schedule: "03:30"
+pbs_verify_job_id: "verify-{{ pbs_datastore_name }}"
+pbs_verify_schedule: "weekly"
+# Verify re-reads stored chunks, so it is the only thing that proves a backup is
+# readable rather than merely present. Keep it on.
+pbs_verify_outdated_after_days: 30
+
+# The PVE-side client identity. PVE authenticates with the API token; the token
+# SECRET is created once by hand and stored in 1Password (item
+# "PBS pve@pbs!pve token", Infrastructure vault), because generating it is not
+# an idempotent operation. The user and the ACLs below are managed here.
+#
+# Both the user AND the token need the roles. A PBS API token's effective
+# privileges are the INTERSECTION of the token's ACL and the owning user's ACL,
+# so granting only the token yields an empty permission set: the datastore list
+# comes back as {"data":[]} over the API, and `pvesm add pbs` then fails with
+# "Cannot find datastore 'lab', check permissions and existence!" while the
+# token still authenticates with HTTP 200. Verified 2026-10-06.
+#
+# DatastoreAudit is required on top of DatastoreBackup because `pvesm add`
+# validates the datastore by enumerating it, which Backup alone does not allow.
+pbs_pve_user: "pve@pbs"
+pbs_pve_token_authid: "pve@pbs!pve"
+pbs_pve_roles:
+  - DatastoreBackup
+  - DatastoreAudit

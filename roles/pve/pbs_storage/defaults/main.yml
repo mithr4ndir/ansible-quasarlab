@@ -1,0 +1,42 @@
+---
+# Registers the PBS datastore as a PVE storage and points the cluster backup
+# job at it. The PBS side (datastore, retention, verification) is roles/pbs.
+
+pbs_storage_id: pbs-lab
+pbs_storage_server: 192.168.1.61
+pbs_storage_datastore: lab
+pbs_storage_tokenid: "pve@pbs!pve"
+
+# PBS presents a self-signed cert, so PVE pins it by fingerprint. Read from
+# `proxmox-backup-manager cert info` on pbs1. If pbs1 is rebuilt, this changes
+# and every backup fails with a TLS error until it is updated.
+pbs_storage_fingerprint: >-
+  c5:91:53:91:3f:fc:06:10:af:b8:a7:12:f1:0a:41:a1:a7:7c:b6:75:1b:4e:99:4b:46:33:d7:3d:4f:d6:8e:0a
+
+# Secret comes from the env, populated from 1Password item
+# "PBS pve@pbs!pve token" in the Infrastructure vault. Never inline it here:
+# this repo is public.
+pbs_storage_token_env: PBS_TOKEN_SECRET
+
+# The cluster backup job. Reuses the EXISTING job id rather than adding a
+# second one, because the old job still points at the decommissioned
+# `nas-backup` and is disabled. Updating it in place avoids two jobs competing.
+pbs_backup_job_id: "99a51b34-59e4-4fde-aab1-912f7c309112"
+pbs_backup_schedule: "hourly"
+pbs_backup_mode: snapshot
+# vm9000 carries backup=0 on its disk, which makes vzdump produce a tiny,
+# useless archive while reporting success. It is a template; exclude it rather
+# than ship a backup that looks fine and restores nothing.
+# See feedback_pve_disk_backup_flag_vacuous.
+pbs_backup_exclude_vmids: [9000]
+# Retention is deliberately NOT set on the PVE job. PBS owns it via its own
+# hourly prune job (roles/pbs: keep 24/7/4/3), so setting it here too would
+# mean two policies pruning the same datastore, and would additionally require
+# granting Datastore.Prune to the PVE token. One enforcing side is correct.
+
+# pvesm cannot read a storage's password back, so drift in the SECRET is not
+# detectable. The readable fields (server, username, fingerprint, content) are
+# reconciled every run. Set this true for one run to push the credential again,
+# which is what a PBS rebuild or token rotation needs: the fingerprint changes
+# with the certificate and every backup then fails on TLS.
+pbs_storage_refresh_credentials: false

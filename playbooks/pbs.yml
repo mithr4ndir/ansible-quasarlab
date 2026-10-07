@@ -1,0 +1,9 @@
+---
+# Proxmox Backup Server guests. The `pbs` group comes from the Proxmox tag
+# `pbs` on vmid 103 (pbs1) and 120 (pbs2), via keyed_groups in
+# inventory.proxmox.yml.
+- name: Configure Proxmox Backup Server
+  hosts: pbs
+  become: true
+  roles:
+    - pbs

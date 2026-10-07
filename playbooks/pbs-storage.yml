@@ -1,0 +1,9 @@
+---
+# Registers the PBS datastore as a PVE storage and enables the cluster backup
+# job. Separate from playbooks/pbs.yml because it targets the PVE hosts, not
+# the PBS guests, and needs the token secret in the environment.
+- name: Register PBS storage on the Proxmox cluster
+  hosts: proxmox
+  become: true
+  roles:
+    - pve/pbs_storage
