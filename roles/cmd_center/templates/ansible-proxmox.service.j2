@@ -7,6 +7,25 @@ After=network-online.target
 Type=oneshot
 User={{ ansible_user }}
 Group={{ ansible_user }}
+# Private SSH ControlPath directory for this service.
+#
+# Both timers run as the same user with the same HOME, so with Ansible's
+# default control_path_dir (~/.ansible/cp) they share one mux socket per
+# target host. These units are Type=oneshot with KillMode=control-group, so
+# when one finishes, systemd SIGTERMs everything left in its cgroup, and the
+# lingering ControlPersist masters go with it. That tears down the socket the
+# OTHER service is mid-task on, which surfaces as
+# "Failed to connect to the host via ssh: Shared connection to <ip> closed"
+# on whichever hosts the surviving run happened to be touching. 17 of 17 such
+# failures between 2026-09-21 and 2026-09-27 landed 0-6s after the other
+# service's last playbook ended.
+#
+# RuntimeDirectory gives each service its own dir under /run, owned by User=
+# and removed on stop, so a cgroup kill can only ever reap its own masters.
+# Reproduced and confirmed: shared socket gives ssh rc=255 with the remote
+# task cut off mid-execution; separate dirs give rc=0 and the task completes.
+RuntimeDirectory=ansible-cp-proxmox
+Environment=ANSIBLE_SSH_CONTROL_PATH_DIR=/run/ansible-cp-proxmox
 ExecStart={{ ansible_automation_repo_path }}/scripts/run-proxmox.sh
 WorkingDirectory={{ ansible_automation_repo_path }}
 Environment=ANSIBLE_CONFIG={{ ansible_automation_repo_path }}/ansible.cfg

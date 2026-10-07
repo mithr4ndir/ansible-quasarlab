@@ -2,8 +2,21 @@
 Description=Run Ansible security playbooks every 30 minutes
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=30min
+# Fixed wall-clock slots, NOT OnUnitActiveSec.
+#
+# OnUnitActiveSec measures from the last activation, so each period was
+# 30min PLUS the run duration PLUS RandomizedDelaySec. Both ansible timers
+# therefore drifted forward at different rates and periodically walked into
+# each other, which is what made the failures bursty rather than steady:
+# collisions for a run or two, then quiet again as the phase pulled apart.
+# Overlap is what produced the dpkg frontend lock failure on pve
+# (2026-09-25 13:53), and dpkg_selections has no lock_timeout parameter to
+# ride it out the way ansible.builtin.apt does, so retries cannot cover it.
+#
+# Budget with this schedule: security :00-:02 start, ~3min run, done by :05.
+# proxmox :15-:17 start, ~7min run, done by :24. Next security :30. Margins
+# are 6min and 10min, so the 2min jitter cannot close the gap.
+OnCalendar=*:00,30
 RandomizedDelaySec=2min
 
 [Install]
