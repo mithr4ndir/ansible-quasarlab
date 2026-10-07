@@ -46,8 +46,12 @@
     group: root
     mode: '0644'
 
+# ansible.posix.sysctl, not ansible.builtin.sysctl. The latter works, because
+# ansible-core keeps a redirect for it, but it reads as a core module while
+# really depending on a collection, which is how ansible.posix stayed an
+# undeclared dependency of this role. See requirements.yml.
 - name: Apply Kubernetes networking sysctls
-  ansible.builtin.sysctl:
+  ansible.posix.sysctl:
     name: "{{ item.name }}"
     value: "{{ item.value }}"
     state: present
