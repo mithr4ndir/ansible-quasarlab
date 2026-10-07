@@ -52,3 +52,23 @@ pbs_verify_schedule: "weekly"
 # Verify re-reads stored chunks, so it is the only thing that proves a backup is
 # readable rather than merely present. Keep it on.
 pbs_verify_outdated_after_days: 30
+
+# The PVE-side client identity. PVE authenticates with the API token; the token
+# SECRET is created once by hand and stored in 1Password (item
+# "PBS pve@pbs!pve token", Infrastructure vault), because generating it is not
+# an idempotent operation. The user and the ACLs below are managed here.
+#
+# Both the user AND the token need the roles. A PBS API token's effective
+# privileges are the INTERSECTION of the token's ACL and the owning user's ACL,
+# so granting only the token yields an empty permission set: the datastore list
+# comes back as {"data":[]} over the API, and `pvesm add pbs` then fails with
+# "Cannot find datastore 'lab', check permissions and existence!" while the
+# token still authenticates with HTTP 200. Verified 2026-10-06.
+#
+# DatastoreAudit is required on top of DatastoreBackup because `pvesm add`
+# validates the datastore by enumerating it, which Backup alone does not allow.
+pbs_pve_user: "pve@pbs"
+pbs_pve_token_authid: "pve@pbs!pve"
+pbs_pve_roles:
+  - DatastoreBackup
+  - DatastoreAudit

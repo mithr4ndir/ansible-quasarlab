@@ -104,6 +104,66 @@ by the open `#212` (fix/declare-used-collections), which also adds a test keepin
 deliberately does not touch `requirements.yml`, to avoid a pointless conflict with
 that PR. If #212 has not landed when this merges, add `community.general` there.
 
+## Two things that only a real backup reveals
+
+**The datastore root must belong to `backup`.** `proxmox-backup-proxy` runs as
+the `backup` user and creates `vm/<vmid>/` at the top level of the datastore.
+PBS creates `.chunks` with the right ownership itself, because the manager CLI
+runs as root, so a root-owned datastore root looks fine until the first backup
+fails with:
+
+```
+backup connect failed: command error: Permission denied (os error 13)
+```
+
+which names neither the path nor the user. The chown must run *after* the mount,
+since a mount point's ownership is masked by the filesystem mounted over it.
+
+**A token's privileges are the intersection of its own ACL and its user's.**
+Granting roles only to `pve@pbs!pve` and not to `pve@pbs` resolves to an empty
+permission set. The symptom is confusing: the token authenticates with HTTP 200
+and the datastore API returns `{"data":[]}` rather than a 403, so `pvesm add
+pbs` reports
+
+```
+create storage failed: pbs-lab: Cannot find datastore 'lab', check permissions
+and existence!
+```
+
+as though the datastore were missing. `proxmox-backup-manager user permissions
+'pve@pbs!pve' --path /datastore/lab` showing nothing is the tell. Both identities
+need the roles, and `DatastoreAudit` is needed on top of `DatastoreBackup`
+because `pvesm add` validates by enumerating the datastore.
+
+The role asserts the resolved privileges rather than trusting that `acl update`
+returned 0, because it returns 0 either way.
+
+## Retention has exactly one owner
+
+PBS owns it, via its own hourly prune job. The PVE backup job deliberately sets
+no `prune-backups`, so there is one policy rather than two pruning the same
+datastore, and the PVE token does not need `Datastore.Prune`.
+
+## Restore drill, 2026-10-06
+
+nginx2 (vm113) backed up in 1m16s, 1.05 GiB stored, 89% of the disk detected as
+zero and skipped. Snapshot verified on write (`verification: state ok`).
+Restored to a scratch VMID on local `SSD1` in 6.7s, booted with its NIC
+link-down to avoid colliding with the live host's IP, and compared:
+
+| marker | live | restored |
+|---|---|---|
+| hostname | nginx2 | nginx2 |
+| kernel | 6.8.0-146-generic | 6.8.0-146-generic |
+| root fs | 51G / 3.1G / 6% | 51G / 3.1G / 6% |
+| packages | 687 | 687 |
+| `/etc` manifest md5 | 5dc3ba9f8c06bf03 | 5dc3ba9f8c06bf03 |
+
+Scratch VM destroyed afterwards, no stray volumes.
+
+Incidentally: nginx2 runs no nginx. It is the kube-apiserver LB, listening on
+6443. The name is historical, and the restore did not lose anything.
+
 ## Still to do, deliberately not in this role
 
 - **PVE-side registration.** A `pbs:` storage entry plus the backup job. Needs a

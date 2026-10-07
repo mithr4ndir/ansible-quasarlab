@@ -338,3 +338,117 @@ class PbsScheduleDefaults(unittest.TestCase):
                     f"{key}={value!r} is not a valid systemd calendar event: "
                     f"{result.stderr.strip()}",
                 )
+
+
+class PbsDatastoreOwnership(unittest.TestCase):
+    """proxmox-backup-proxy runs as `backup` and writes vm/<vmid>/ at the root.
+
+    A root-owned datastore root fails every backup with
+        backup connect failed: command error: Permission denied (os error 13)
+    which names neither the path nor the user. PBS fixes .chunks itself because
+    the manager CLI runs as root, which masks the problem until a real backup
+    is attempted.
+    """
+
+    def setUp(self) -> None:
+        self.tasks = _tasks()
+
+    def _index(self, predicate) -> int:
+        return _index_of(self.tasks, predicate)
+
+    def test_datastore_root_is_given_to_the_backup_user(self) -> None:
+        owner_task = next(
+            (t for t in self.tasks
+             if "ansible.builtin.file" in t
+             and t["ansible.builtin.file"].get("path") == "{{ pbs_datastore_mount }}"
+             and t["ansible.builtin.file"].get("owner") == "backup"),
+            None,
+        )
+        self.assertIsNotNone(
+            owner_task,
+            "no task giving {{ pbs_datastore_mount }} to owner 'backup'; the "
+            "PBS proxy cannot create vm/<vmid>/ under a root-owned datastore",
+        )
+        self.assertEqual(owner_task["ansible.builtin.file"].get("group"), "backup")
+
+    def test_chown_happens_after_the_mount(self) -> None:
+        """Ownership of a mount point is masked by the filesystem mounted over it."""
+        mount = self._index(lambda t: "ansible.posix.mount" in t)
+        chown = self._index(
+            lambda t: "ansible.builtin.file" in t
+            and t["ansible.builtin.file"].get("owner") == "backup"
+            and t["ansible.builtin.file"].get("path") == "{{ pbs_datastore_mount }}"
+        )
+        create = self._index(
+            lambda t: isinstance(t.get("ansible.builtin.command"), dict)
+            and {"datastore", "create"} <= set(
+                str(a) for a in t["ansible.builtin.command"].get("argv", []))
+        )
+        self.assertNotEqual(mount, -1, "no mount task")
+        self.assertNotEqual(chown, -1, "no chown-to-backup task")
+        self.assertLess(
+            mount, chown,
+            f"mount is task {mount} but the chown is task {chown}; chowning a "
+            "mount point before mounting sets ownership on the hidden inode",
+        )
+        self.assertLess(
+            chown, create,
+            "the datastore root must belong to `backup` before PBS is pointed "
+            "at it",
+        )
+
+
+class PbsTokenPrivileges(unittest.TestCase):
+    """A PBS token's privileges are the INTERSECTION of its own and its user's.
+
+    Granting only the token yields an empty permission set, the datastore API
+    returns {"data":[]} instead of a 403, and `pvesm add pbs` then reports
+    "Cannot find datastore 'lab', check permissions and existence!" while the
+    token still authenticates with HTTP 200.
+    """
+
+    def setUp(self) -> None:
+        self.tasks = _tasks()
+        self.defaults = yaml.safe_load(DEFAULTS.read_text())
+
+    def test_roles_are_granted_to_both_the_user_and_the_token(self) -> None:
+        acl = next(
+            (t for t in self.tasks
+             if isinstance(t.get("ansible.builtin.command"), dict)
+             and "acl" in [str(a) for a in
+                           t["ansible.builtin.command"].get("argv", [])]),
+            None,
+        )
+        self.assertIsNotNone(acl, "no acl update task")
+        loop = str(acl.get("loop", ""))
+        for needed in ("pbs_pve_user", "pbs_pve_token_authid"):
+            with self.subTest(authid=needed):
+                self.assertIn(
+                    needed, loop,
+                    f"the acl loop does not cover {needed}; granting only one "
+                    "side of the intersection resolves to no privileges",
+                )
+
+    def test_audit_role_is_requested_not_just_backup(self) -> None:
+        roles = self.defaults.get("pbs_pve_roles", [])
+        self.assertIn("DatastoreBackup", roles)
+        self.assertIn(
+            "DatastoreAudit", roles,
+            "pvesm add validates by enumerating the datastore, which "
+            "DatastoreBackup alone does not permit",
+        )
+
+    def test_effective_privileges_are_asserted(self) -> None:
+        """acl update returns 0 even when the resulting permission set is empty."""
+        guard = next(
+            (t for t in self.tasks
+             if "ansible.builtin.assert" in t
+             and "Datastore.Backup" in yaml.safe_dump(t["ansible.builtin.assert"])),
+            None,
+        )
+        self.assertIsNotNone(
+            guard,
+            "role never asserts the token resolves Datastore.Backup; the acl "
+            "commands succeed regardless, which is how the intersection "
+            "behaviour stayed hidden",
+        )

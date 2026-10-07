@@ -1,0 +1,106 @@
+---
+- name: Assert the PBS token secret is present in the environment
+  delegate_to: localhost
+  become: false
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - lookup('env', pbs_storage_token_env) | length > 0
+    fail_msg: >-
+      {{ pbs_storage_token_env }} is empty or unset. It holds the
+      `{{ pbs_storage_tokenid }}` secret from the 1Password item
+      "PBS pve@pbs!pve token" (Infrastructure vault). Export it, or run via a
+      wrapper that does. A `| mandatory` lookup would pass an empty string
+      through silently, which is why this is an explicit assert.
+    quiet: true
+
+# `pvesm status` has no --output-format; pvesh does, and /storage lists the
+# cluster-wide configured storages rather than per-node availability, which is
+# what "is this storage already registered" actually means.
+- name: Read the configured storages
+  ansible.builtin.command: pvesh get /storage --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_pvesm
+
+- name: Register the PBS datastore as a PVE storage
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - add
+      - pbs
+      - "{{ pbs_storage_id }}"
+      - --server
+      - "{{ pbs_storage_server }}"
+      - --datastore
+      - "{{ pbs_storage_datastore }}"
+      - --username
+      - "{{ pbs_storage_tokenid }}"
+      - --password
+      - "{{ lookup('env', pbs_storage_token_env) }}"
+      - --fingerprint
+      - "{{ pbs_storage_fingerprint | trim }}"
+      - --content
+      - backup
+  # pvesm writes the secret to /etc/pve/priv/storage/<id>.pw, not to
+  # storage.cfg, so it does not land in the cluster config. Keep it out of the
+  # ansible log all the same.
+  no_log: true
+  when: pbs_storage_id not in
+        ((pbs_pvesm.stdout | from_json) | map(attribute='storage') | list)
+  run_once: true
+  register: pbs_storage_added
+
+- name: Read the current cluster backup jobs
+  ansible.builtin.command: pvesh get /cluster/backup --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_jobs
+
+- name: Point the existing backup job at PBS and enable it
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - set
+      - "/cluster/backup/{{ pbs_backup_job_id }}"
+      - --storage
+      - "{{ pbs_storage_id }}"
+      - --schedule
+      - "{{ pbs_backup_schedule }}"
+      - --mode
+      - "{{ pbs_backup_mode }}"
+      - --all
+      - "1"
+      - --exclude
+      - "{{ pbs_backup_exclude_vmids | join(',') }}"
+      - --enabled
+      - "1"
+  run_once: true
+  when: pbs_backup_job_id in
+        ((pbs_jobs.stdout | from_json) | map(attribute='id') | list)
+  register: pbs_job_updated
+  changed_when: true
+
+- name: Re-read the backup job to confirm it points at PBS and is enabled
+  ansible.builtin.command: pvesh get /cluster/backup/{{ pbs_backup_job_id }} --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_job_after
+
+# A job that exists but is disabled, or points at a storage that does not
+# exist, is exactly the state this role was written to end. Assert the end
+# state rather than trusting that the set command returned 0.
+- name: Assert the backup job is enabled and targets the PBS storage
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - (pbs_job_after.stdout | from_json).storage == pbs_storage_id
+      - (pbs_job_after.stdout | from_json).enabled | int == 1
+      - (pbs_job_after.stdout | from_json).schedule == pbs_backup_schedule
+    fail_msg: >-
+      Backup job {{ pbs_backup_job_id }} is not in the expected state:
+      {{ pbs_job_after.stdout }}
+    quiet: true

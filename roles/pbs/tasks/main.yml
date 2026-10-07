@@ -245,6 +245,24 @@
   register: pbs_schedule_check
   failed_when: pbs_schedule_check.rc != 0
 
+# proxmox-backup-proxy runs as `backup`, and it creates the per-guest
+# directories (vm/<vmid>/...) at the TOP level of the datastore. If the
+# datastore root is root-owned, PBS creates .chunks correctly (the manager runs
+# as root) and then every backup fails with
+#   backup connect failed: command error: Permission denied (os error 13)
+# which names neither the path nor the user. Verified 2026-10-06.
+#
+# This has to run AFTER the mount: ownership of a mount point is masked by the
+# filesystem mounted over it, so chowning the directory before mounting sets
+# the wrong inode.
+- name: Give the mounted datastore root to the backup user
+  ansible.builtin.file:
+    path: "{{ pbs_datastore_mount }}"
+    state: directory
+    owner: backup
+    group: backup
+    mode: '0755'
+
 - name: Read existing PBS datastores
   ansible.builtin.command: proxmox-backup-manager datastore list --output-format json
   changed_when: false
@@ -318,6 +336,63 @@
       - "Managed by ansible role pbs"
   when: pbs_verify_job_id not in
         ((pbs_verify_job_list.stdout | from_json) | map(attribute='id') | list)
+
+- name: Read existing PBS users
+  ansible.builtin.command: proxmox-backup-manager user list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_user_list
+
+- name: Create the PVE backup client user
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - create
+      - "{{ pbs_pve_user }}"
+      - --comment
+      - "PVE backup client (ansible role pbs)"
+  when: pbs_pve_user not in
+        ((pbs_user_list.stdout | from_json) | map(attribute='userid') | list)
+
+# Granted to the user AND the token, because the effective privileges are the
+# intersection of the two. See the note in defaults/main.yml.
+- name: Grant datastore roles to both the user and its API token
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - "/datastore/{{ pbs_datastore_name }}"
+      - "{{ item.1 }}"
+      - --auth-id
+      - "{{ item.0 }}"
+  loop: "{{ [pbs_pve_user, pbs_pve_token_authid] | product(pbs_pve_roles) | list }}"
+  changed_when: false
+
+- name: Read the effective privileges of the PVE token
+  ansible.builtin.command: >-
+    proxmox-backup-manager user permissions {{ pbs_pve_token_authid }}
+    --path /datastore/{{ pbs_datastore_name }}
+  changed_when: false
+  check_mode: false
+  register: pbs_token_privs
+
+# Asserting the END STATE, because the acl update calls return 0 even when the
+# resulting permission set is empty, which is exactly how the intersection
+# behaviour stayed hidden until PVE failed.
+- name: Assert the token actually resolves the privileges it needs
+  ansible.builtin.assert:
+    that:
+      - "'Datastore.Backup' in pbs_token_privs.stdout"
+      - "'Datastore.Audit' in pbs_token_privs.stdout"
+    fail_msg: >-
+      {{ pbs_pve_token_authid }} resolves no usable privileges on
+      /datastore/{{ pbs_datastore_name }}:
+      {{ pbs_token_privs.stdout | default('(none)') }}
+      A PBS token's privileges are the intersection of its own ACL and its
+      owning user's, so granting only one of the two yields nothing.
+    quiet: true
 
 - name: Ensure the PBS service is enabled and running
   ansible.builtin.systemd:
