@@ -10,7 +10,12 @@
 # half-written file would surface as a parse error.
 set -uo pipefail
 
-OUT_DIR=/var/lib/node_exporter/textfiles
+# Must match the directory node_exporter was started with. The role defines
+# truenas_textfile_dir and creates it, but this file is copied verbatim from
+# files/ so it cannot template the value; the service passes it through the
+# environment. Without this, overriding the documented setting creates a
+# directory nobody writes to and metrics nobody scrapes.
+OUT_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfiles}"
 OUT="${OUT_DIR}/zfs_smart.prom"
 TMP="$(mktemp "${OUT_DIR}/.zfs_smart.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
@@ -64,7 +69,11 @@ health_code() {
     echo "# TYPE smart_devices_total gauge"
 
     devices_ok=0
-    for dev in /dev/sd?; do
+    # Overridable so the failing-disk and unreadable-disk paths can be driven
+    # against a stub smartctl in tests. Production always uses the default;
+    # without it a test silently iterates the real disks of whatever host it
+    # runs on, which passes or fails depending on the hardware present.
+    for dev in ${SMART_DEV_GLOB:-/dev/sd?}; do
         [ -e "$dev" ] || continue
         d="${dev##*/}"
 
@@ -86,29 +95,60 @@ health_code() {
         info="$(smartctl -i -A -H "$dev" 2>/dev/null)"
         rc=$?
 
-        if [ "$((rc & 7))" -ne 0 ] || [ -z "$info" ]; then
+        # Bits 0-1 mean we never reached the device, so there is nothing to
+        # parse. Bit 2 is different: "some SMART or ATA command failed" can mean
+        # a single attribute command failed while the health verdict arrived
+        # fine, and smartctl still prints its banner and identity block either
+        # way. Skipping on bit 2 therefore drops a disk we do have a verdict
+        # for, which is a smaller version of the drop this script already had.
+        # Whether the scrape was usable is decided below, on whether a verdict
+        # actually arrived, rather than on the exit status alone.
+        if [ "$((rc & 3))" -ne 0 ] || [ -z "$info" ]; then
             echo "smart_scrape_ok{device=\"$d\"} 0"
             continue
         fi
-        echo "smart_scrape_ok{device=\"$d\"} 1"
-        devices_ok=$((devices_ok + 1))
         model="$(printf '%s' "$info" | awk -F: '/Device Model/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         serial="$(printf '%s' "$info" | awk -F: '/Serial Number/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
         sup="$(printf '%s' "$info" | awk -F: '/SMART support is/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' | tail -1)"
         lbl="device=\"$d\",model=\"${model:-unknown}\",serial=\"${serial:-unknown}\""
 
-        case "$sup" in Enabled) echo "smart_enabled{$lbl} 1" ;; *) echo "smart_enabled{$lbl} 0" ;; esac
+        # An absent "SMART support is" line means we could not read it, which is
+        # not the same as SMART being switched off, so do not assert 0 there.
+        case "$sup" in
+            Enabled) echo "smart_enabled{$lbl} 1" ;;
+            "")      : ;;
+            *)       echo "smart_enabled{$lbl} 0" ;;
+        esac
+
+        # ATA prints "SMART overall-health self-assessment test result: PASSED".
+        # SCSI and SAS print "SMART Health Status: OK" and also appear as
+        # /dev/sdX, so matching only the ATA wording left such a disk with no
+        # verdict at all: no health series, and smart_scrape_ok 0 forever.
+        health="$(printf '%s' "$info" \
+            | awk -F: '/overall-health|SMART Health Status/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}')"
 
         # Exit bit 3 is authoritative for DISK FAILING. Trust it over the
-        # printed line, which varies in wording between ATA and NVMe.
+        # printed line, whose wording varies between ATA, SCSI and NVMe.
         if [ "$((rc & 8))" -ne 0 ]; then
-            echo "smart_device_health{$lbl} 0"
+            health_code=0
         else
-            case "$(printf '%s' "$info" | awk -F: '/overall-health/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}')" in
-                PASSED) echo "smart_device_health{$lbl} 1" ;;
-                "")     : ;;
-                *)      echo "smart_device_health{$lbl} 0" ;;
+            case "$health" in
+                PASSED|OK) health_code=1 ;;
+                "")        health_code="" ;;
+                *)         health_code=0 ;;
             esac
+        fi
+
+        # The scrape counts as usable only if a verdict actually arrived.
+        # Otherwise a disk whose SMART commands are failing would report
+        # smart_scrape_ok 1 with no health series at all, which is the same
+        # silent hole as before, one layer further in.
+        if [ -n "$health_code" ]; then
+            echo "smart_scrape_ok{device=\"$d\"} 1"
+            devices_ok=$((devices_ok + 1))
+            echo "smart_device_health{$lbl} $health_code"
+        else
+            echo "smart_scrape_ok{device=\"$d\"} 0"
         fi
 
         # Findings that do not fail the overall health check but predict it.
