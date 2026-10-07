@@ -656,3 +656,62 @@ class PveStorageFixedParameters(unittest.TestCase):
             "it can never honestly claim convergence",
         )
         self.assertIn("when", job, "the job update must be conditional on drift")
+
+
+class PveBackupExclusions(unittest.TestCase):
+    """The PBS servers must never be in the job, and templates should not be.
+
+    vm103 (pbs1) is the backup TARGET. Including it means backing it up to
+    itself, which is circular and demonstrably fails every run:
+        ERROR: VM 103 qmp command 'backup' failed - backup connect failed:
+               command error: http upgrade request timed out
+    A job that is red every hour trains you to ignore it, which is worse than
+    no job at all.
+    """
+
+    PVE_DEFAULTS = (REPO / "roles" / "pve" / "pbs_storage" / "defaults" / "main.yml")
+    PVE_TASKS = (REPO / "roles" / "pve" / "pbs_storage" / "tasks" / "main.yml")
+
+    def setUp(self) -> None:
+        self.defaults = yaml.safe_load(self.PVE_DEFAULTS.read_text())
+        self.tasks = yaml.safe_load(self.PVE_TASKS.read_text())
+
+    def test_both_pbs_servers_are_excluded(self) -> None:
+        pbs_vmids = self.defaults.get("pbs_backup_exclude_pbs_vmids", [])
+        for vmid in (103, 120):
+            with self.subTest(vmid=vmid):
+                self.assertIn(
+                    vmid, pbs_vmids,
+                    f"vm{vmid} is a PBS server and must not be backed up to "
+                    "the datastore it serves",
+                )
+
+    def test_templates_are_discovered_not_hardcoded(self) -> None:
+        """A hardcoded template list goes stale the next time one is added."""
+        text = self.PVE_TASKS.read_text()
+        self.assertIn(
+            "/cluster/resources", text,
+            "templates must be discovered from live cluster state",
+        )
+        self.assertIn(
+            "pbs_backup_exclude_templates", text,
+            "template exclusion must be switchable",
+        )
+
+    def test_exclusion_list_is_sorted_for_stable_comparison(self) -> None:
+        """PVE stores exclude as a string; unstable order would flap the diff."""
+        fact = next(
+            (t["ansible.builtin.set_fact"] for t in self.tasks
+             if "ansible.builtin.set_fact" in t
+             and "pbs_backup_exclude_computed" in t["ansible.builtin.set_fact"]),
+            None,
+        )
+        self.assertIsNotNone(fact, "pbs_backup_exclude_computed is never built")
+        expr = str(fact["pbs_backup_exclude_computed"])
+        for required in ("unique", "sort"):
+            with self.subTest(filter=required):
+                self.assertIn(
+                    required, expr,
+                    f"the computed exclude list must be {required}d, or the "
+                    "drift comparison against PVE's stored string will flap",
+                )

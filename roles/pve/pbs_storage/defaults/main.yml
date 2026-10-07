@@ -24,9 +24,27 @@ pbs_storage_token_env: PBS_TOKEN_SECRET
 pbs_backup_job_id: "99a51b34-59e4-4fde-aab1-912f7c309112"
 pbs_backup_schedule: "hourly"
 pbs_backup_mode: snapshot
-# vm9000 carries backup=0 on its disk, which makes vzdump produce a tiny,
-# useless archive while reporting success. It is a template; exclude it rather
-# than ship a backup that looks fine and restores nothing.
+# Exclusions. The job is `all 1`, so anything not excluded gets backed up.
+#
+# The PBS servers must be excluded. vm103 (pbs1) is the backup TARGET, so
+# backing it up to itself is circular, and it demonstrably fails every run:
+#   ERROR: VM 103 qmp command 'backup' failed - backup connect failed:
+#          command error: http upgrade request timed out
+# pbs1 is saturated hashing chunks at the moment it is also asked to be the
+# destination. A job that is red every hour trains you to ignore it, which is
+# worse than no job. Both PBS guests are rebuildable from roles/pbs plus
+# terraform, and the datastore itself is the thing with the value.
+pbs_backup_exclude_pbs_vmids: [103, 120]
+
+# Templates are static and reproducible from scripts/build-cloud-template.sh,
+# so backing them up hourly is wasted read I/O on a pool that currently has a
+# vdev running ~50x the latency of its siblings. Discovered from the live
+# cluster rather than hardcoded, so a new template is excluded automatically.
+pbs_backup_exclude_templates: true
+
+# Anything else, by vmid. vm9000 carries backup=0 on its disk, which makes
+# vzdump report success while producing a useless archive, so it must never be
+# relied on. It is also a template, so it is covered twice on purpose.
 # See feedback_pve_disk_backup_flag_vacuous.
 pbs_backup_exclude_vmids: [9000]
 # Retention is deliberately NOT set on the PVE job. PBS owns it via its own

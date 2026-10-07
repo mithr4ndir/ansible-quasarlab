@@ -136,6 +136,32 @@
       reconciliation: {{ pbs_storage_after.stdout }}
     quiet: true
 
+- name: Read cluster VM inventory to discover templates
+  ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_cluster_vms
+
+# Built from live state so a template added later is excluded without editing
+# this role. Sorted numerically because PVE stores the list as a string and an
+# unstable order would make the drift comparison below flap.
+- name: Compute the backup exclusion list
+  ansible.builtin.set_fact:
+    pbs_backup_exclude_computed: >-
+      {{ (
+           pbs_backup_exclude_vmids
+           + pbs_backup_exclude_pbs_vmids
+           + (
+               (pbs_cluster_vms.stdout | from_json)
+               | selectattr('template', 'defined')
+               | selectattr('template', 'equalto', 1)
+               | map(attribute='vmid') | list
+               if pbs_backup_exclude_templates | bool else []
+             )
+         ) | map('int') | unique | sort | join(',') }}
+  run_once: true
+
 - name: Read the current cluster backup jobs
   ansible.builtin.command: pvesh get /cluster/backup --output-format json
   changed_when: false
@@ -166,7 +192,7 @@
       - --all
       - "1"
       - --exclude
-      - "{{ pbs_backup_exclude_vmids | join(',') }}"
+      - "{{ pbs_backup_exclude_computed }}"
       - --enabled
       - "1"
       # Deleting, not merely omitting. The pre-existing job carried
@@ -192,7 +218,7 @@
       or (pbs_job_live.enabled | default(0) | int) != 1
       or pbs_job_live.schedule | default('') != pbs_backup_schedule
       or pbs_job_live.mode | default('') != pbs_backup_mode
-      or (pbs_job_live.exclude | default('')) != (pbs_backup_exclude_vmids | join(','))
+      or (pbs_job_live.exclude | default('')) != pbs_backup_exclude_computed
       or ('prune-backups' in pbs_job_live)
   register: pbs_job_updated
 
