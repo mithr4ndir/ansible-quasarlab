@@ -43,10 +43,39 @@
 # Kept out of vm_baseline_sysctl because the value is computed per host from
 # the RAM the VM actually has, not a constant shared by the whole fleet.
 # See the comment on vm_baseline_threads_max in defaults/main.yml.
+- name: Read the kernel thread ceiling in force
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/threads-max
+  register: vm_baseline_threads_max_live
+
+# And what is already written down, which is what the next boot will use. A file
+# ahead of the running kernel means somebody wrote it without applying it, and
+# lowering that regresses silently at the next reboot.
+- name: Read the kernel thread ceiling already persisted
+  ansible.builtin.slurp:
+    src: /etc/sysctl.conf
+  register: vm_baseline_sysctl_conf
+  failed_when: false
+
+# "Only ever raises" has to be enforced, not just intended: an override, a host
+# whose reported memory shrank, or a persisted value ahead of the running one
+# would otherwise lower a working ceiling. Highest of the three wins.
+#
+# Single backslashes and .splitlines(): a folded YAML scalar hands Jinja the
+# characters as written, so `\\s` would reach the regex as a literal backslash
+# and match nothing, silently. roles/cmd_center/tasks/task_limits.yml carries the
+# same expression, and a test asserts the two stay identical.
 - name: Restore kernel.threads-max to what the running RAM warrants
   ansible.posix.sysctl:
     name: kernel.threads-max
-    value: "{{ vm_baseline_threads_max }}"
+    value: >-
+      {{ [vm_baseline_threads_max | int,
+          vm_baseline_threads_max_live.content | b64decode | trim | int,
+          (((vm_baseline_sysctl_conf.content | default('') | b64decode).splitlines()
+          | select('match', '^\s*kernel\.threads-max\s*=')
+          | map('regex_replace', '^[^=]*=\s*', '')
+          | map('trim') | select('match', '^[0-9]+$') | map('int')
+          | list) + [0]) | max] | max }}
     sysctl_set: true
     reload: true
     state: present

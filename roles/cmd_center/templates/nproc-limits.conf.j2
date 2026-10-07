@@ -1,0 +1,23 @@
+# Managed by Ansible (roles/cmd_center/tasks/task_limits.yml)
+#
+# RLIMIT_NPROC for the agent user, and the only place it can be set.
+#
+# Not the unit's LimitNPROC, and not DefaultLimitNPROC in system.conf.d. Both of
+# those are applied by PID 1 and then UNDONE: user@<uid>.service runs with
+# PAMName=systemd-user, whose stack includes pam_limits (see
+# /usr/lib/pam.d/systemd-user), and pam_limits resets the limit afterwards from
+# this file. With nothing here the kernel default stands, which on a VM booted
+# through Proxmox memory hotplug is max_threads / 2 computed from 1 GiB of RAM:
+# 3423 on a 16 GiB host.
+#
+# Measured on command-center1 2026-10-03, after a real reboot with
+# DefaultLimitNPROC=16384 already in place:
+#
+#   systemctl show user@1000.service -p LimitNPROC   16384   reported
+#   /proc/<user manager pid>/limits Max processes     3423   enforced
+#   a fresh PAM session, before this file               3423
+#   a fresh PAM session, after this file              16384
+#
+# Takes effect for the user manager at its next start, so at the next reboot.
+{{ ansible_user }}    soft    nproc    {{ cmd_center_user_nproc }}
+{{ ansible_user }}    hard    nproc    {{ cmd_center_user_nproc }}

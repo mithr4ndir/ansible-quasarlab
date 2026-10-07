@@ -21,6 +21,7 @@ so raising one ceiling without the ones outside it fails here.
 
 from __future__ import annotations
 
+import base64
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,10 @@ MEMTOTAL_MB = 16254
 # The ceiling herdr.service actually had when it crashed.
 CRASH_TASKS_MAX = 1027
 ASSERT_TASK = "Assert the task ceilings are ordered lowest to highest"
+LIVE_ASSERT_TASK = "Assert the kernel ceiling in force can deliver those limits"
+TARGET_TASK = (
+    "Choose the ceiling to persist, never lower than computed, live or persisted"
+)
 SET_FACT_TASK = "Resolve the kernel thread ceiling the other limits have to fit under"
 
 
@@ -62,6 +67,12 @@ def _resolved_defaults() -> dict:
     fact = _task(TASKS, SET_FACT_TASK)["ansible.builtin.set_fact"]
     for key, value in fact.items():
         variables[key] = _render(value, variables)
+    # The play reads the enforced ceiling from /proc and asserts against it too.
+    # A real host that has had vm_baseline applied reports the computed value,
+    # so that is what the happy path here supplies.
+    variables["cmd_center_kernel_threads_max_live"] = variables[
+        "cmd_center_kernel_threads_max"
+    ]
     return variables
 
 
@@ -150,6 +161,8 @@ class TaskFileTest(unittest.TestCase):
         wanted = {
             "system-task-limits.conf.j2": "/etc/systemd/system.conf.d/50-task-limits.conf",
             "user-slice-tasks-max.conf.j2": "/etc/systemd/system/user-.slice.d/50-tasks-max.conf",
+            # Not a systemd path at all: pam_limits is what reads this one.
+            "nproc-limits.conf.j2": "/etc/security/limits.d/50-agent-nproc.conf",
         }
         found = {
             task["ansible.builtin.template"]["src"]: task["ansible.builtin.template"]["dest"]
@@ -158,10 +171,17 @@ class TaskFileTest(unittest.TestCase):
         }
         self.assertEqual(found, wanted)
 
-    def test_drop_ins_notify_a_daemon_reload(self) -> None:
+    def test_systemd_drop_ins_notify_a_daemon_reload(self) -> None:
         for task in yaml.safe_load(TASKS.read_text()):
-            if "ansible.builtin.template" in task:
+            args = task.get("ansible.builtin.template")
+            if not args:
+                continue
+            if args["dest"].startswith("/etc/systemd/"):
                 self.assertEqual(task.get("notify"), "Reload systemd", task["name"])
+            else:
+                # pam_limits reads its file when a session starts. A reload
+                # would change nothing, and a restart would kill every pane.
+                self.assertNotIn("notify", task, task["name"])
 
     def test_handler_exists(self) -> None:
         handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
@@ -175,6 +195,197 @@ class TaskFileTest(unittest.TestCase):
         ]
         self.assertIn("task_limits.yml", imports)
         self.assertLess(imports.index("task_limits.yml"), imports.index("herdr.yml"))
+
+
+class LiveCeilingTest(unittest.TestCase):
+    """The ceiling the assert trusts has to be the one the kernel is running.
+
+    Codex flagged this on #206: cmd_center can run without vm_baseline (the
+    documented DR path), and a computed ~130000 says nothing about a kernel
+    still sitting at the 1 GiB value of 6847. Handing out DefaultTasksMax=8192
+    there puts the clone() failures straight back.
+    """
+
+    def setUp(self) -> None:
+        self.tasks = yaml.safe_load(TASKS.read_text())
+        self.variables = _resolved_defaults()
+
+    def _named(self, needle: str) -> list:
+        return [t for t in self.tasks if needle in t.get("name", "")]
+
+    def test_reads_both_the_enforced_and_the_persisted_value(self) -> None:
+        sources = {
+            t["ansible.builtin.slurp"]["src"]
+            for t in self.tasks
+            if "ansible.builtin.slurp" in t
+        }
+        # /proc is what the kernel is running; /etc/sysctl.conf is what the next
+        # boot will use, and lowering that is the silent regression.
+        self.assertIn("/proc/sys/kernel/threads-max", sources)
+        self.assertIn("/etc/sysctl.conf", sources)
+
+    def test_persists_the_ceiling_on_every_run(self) -> None:
+        repair = [t for t in self.tasks if "ansible.posix.sysctl" in t]
+        self.assertEqual(len(repair), 1, "expected exactly one sysctl task")
+        args = repair[0]["ansible.posix.sysctl"]
+        self.assertEqual(args["name"], "kernel.threads-max")
+        self.assertTrue(args["sysctl_set"])
+        self.assertEqual(args["state"], "present")
+        # No `when`. A ceiling raised by hand with sysctl -w and never written to
+        # a file passes a live check and regresses at the next boot, so the
+        # idempotent write runs every time.
+        self.assertNotIn("when", repair[0])
+
+    def test_live_assert_rejects_a_kernel_ceiling_below_the_limits(self) -> None:
+        conditions = _task(TASKS, LIVE_ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        broken = dict(self.variables, cmd_center_kernel_threads_max_live=6847)
+        results = [_render("{{ " + c + " }}", broken) for c in conditions]
+        self.assertIn(
+            "False",
+            results,
+            "a kernel ceiling of 6847 under DefaultTasksMax=8192 must fail the assert",
+        )
+
+    def test_live_assert_is_skipped_under_check_mode(self) -> None:
+        # The sysctl is not applied under --check, so asserting the live value
+        # there would fail for the wrong reason.
+        self.assertEqual(
+            _task(TASKS, LIVE_ASSERT_TASK)["when"], "not ansible_check_mode"
+        )
+
+    def test_nothing_is_written_before_the_configuration_is_checked(self) -> None:
+        """The review case: a bad target must be rejected before it is persisted.
+
+        With an override of 8000 and a live ceiling of 10000, writing first put
+        10000 into /etc/sysctl.conf, overwriting whatever higher value was there,
+        and failed the play afterwards.
+        """
+        names = [t.get("name", "") for t in self.tasks]
+        writes = [
+            i
+            for i, t in enumerate(self.tasks)
+            if "ansible.posix.sysctl" in t or "ansible.builtin.template" in t
+        ]
+        config_assert = names.index(ASSERT_TASK)
+        self.assertTrue(writes, "no write tasks found, test would be vacuous")
+        self.assertLess(
+            config_assert,
+            min(writes),
+            "the configuration assert must run before anything touches the host",
+        )
+
+
+class PersistedCeilingTest(unittest.TestCase):
+    """The chosen ceiling, evaluated through Ansible's own templating.
+
+    Three sources have to be compared, and the review of #210 found each one in
+    turn: the value the RAM warrants, the value in force, and the value already
+    written to /etc/sysctl.conf. Lowering any of them is a regression, the last
+    one silently, at the next boot.
+
+    Rendered with Templar rather than bare Jinja2 on purpose. Two bugs in this
+    expression only showed up that way: an unbalanced parenthesis, and `\\s` in a
+    folded YAML scalar reaching the regex as a literal backslash so the persisted
+    value never matched. Both produced a plausible-looking number.
+    """
+
+    def setUp(self) -> None:
+        try:
+            from ansible.parsing.dataloader import DataLoader  # noqa: F401
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("ansible-core is not importable")
+        self.expression = _task(TASKS, TARGET_TASK)["ansible.builtin.set_fact"][
+            "cmd_center_threads_max_target"
+        ]
+
+    def _render(self, computed: int, live: int, sysctl_conf: str) -> int:
+        from ansible.parsing.dataloader import DataLoader
+        from ansible.template import Templar
+
+        variables = {
+            "cmd_center_kernel_threads_max": computed,
+            "cmd_center_threads_max_before": {
+                "content": base64.b64encode(f"{live}\n".encode()).decode()
+            },
+            "cmd_center_sysctl_conf": {
+                "content": base64.b64encode(sysctl_conf.encode()).decode()
+            },
+        }
+        return int(Templar(loader=DataLoader(), variables=variables).template(self.expression))
+
+    def test_cases(self) -> None:
+        none = "net.ipv4.ip_forward=1\n"
+        low = "kernel.threads-max=6847\n"
+        high = "net.core.somaxconn=1024\nkernel.threads-max = 200000\n"
+        commented = "# kernel.threads-max=999999\nkernel.threads-max=130032\n"
+        cases = [
+            ("hotplug host, nothing persisted", 130032, 6847, none, 130032),
+            ("steady state", 130032, 130032, low, 130032),
+            # The review case: the file is ahead of the running kernel.
+            ("persisted above computed and live", 130032, 130000, high, 200000),
+            ("live raised by hand, file stale", 130032, 500000, low, 500000),
+            # A low override must not win; the ordering assert rejects it instead.
+            ("low override cannot lower", 8000, 10000, none, 10000),
+            ("a commented line is not a value", 130032, 6847, commented, 130032),
+            ("no sysctl.conf content", 130032, 6847, "", 130032),
+        ]
+        for name, computed, live, conf, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(self._render(computed, live, conf), expected)
+
+
+class NprocLimitsTest(unittest.TestCase):
+    """RLIMIT_NPROC comes from pam_limits, not from systemd.
+
+    A reboot on 2026-10-02 falsified the previous explanation: with
+    DefaultLimitNPROC=16384 in /etc/systemd/system.conf.d the user manager still
+    came up with a hard limit of 3423, because user@<uid>.service runs with
+    PAMName=systemd-user and pam_limits resets the limit afterwards from
+    /etc/security/limits.d. These tests pin the file that actually wins.
+    """
+
+    def setUp(self) -> None:
+        self.variables = _resolved_defaults()
+        self.tasks = yaml.safe_load(TASKS.read_text())
+
+    def test_deploys_a_limits_d_file(self) -> None:
+        dests = [
+            t["ansible.builtin.template"]["dest"]
+            for t in self.tasks
+            if "ansible.builtin.template" in t
+        ]
+        self.assertIn("/etc/security/limits.d/50-agent-nproc.conf", dests)
+
+    def test_the_file_sets_both_soft_and_hard_nproc(self) -> None:
+        rendered = _render(
+            (TEMPLATES / "nproc-limits.conf.j2").read_text(), self.variables
+        )
+        wanted = self.variables["cmd_center_user_nproc"]
+        for kind in ("soft", "hard"):
+            self.assertRegex(rendered, rf"ladino\s+{kind}\s+nproc\s+{wanted}\b")
+
+    def test_it_is_not_below_what_the_units_ask_for(self) -> None:
+        # A limits.d value under DefaultLimitNPROC would clamp every unit back
+        # down, which is the failure this whole file exists to stop.
+        self.assertGreaterEqual(
+            int(self.variables["cmd_center_user_nproc"]),
+            int(self.variables["cmd_center_default_limit_nproc"]),
+        )
+
+    def test_the_play_asserts_that_relationship(self) -> None:
+        conditions = _task(TASKS, ASSERT_TASK)["ansible.builtin.assert"]["that"]
+        self.assertTrue(
+            any("cmd_center_user_nproc" in c for c in conditions),
+            "nothing in the play checks the limits.d value against the units'",
+        )
+
+    def test_no_handler_restarts_the_user_manager(self) -> None:
+        # Restarting user@<uid>.service would apply it immediately and kill
+        # every agent pane with it.
+        for task in self.tasks:
+            args = task.get("ansible.builtin.template", {})
+            if args.get("dest", "").startswith("/etc/security/limits.d/"):
+                self.assertNotIn("notify", task)
 
 
 if __name__ == "__main__":

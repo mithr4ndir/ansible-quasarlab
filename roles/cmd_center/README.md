@@ -210,11 +210,68 @@ the manager, and at the next boot they would be wrong again.
 
 `kernel.threads-max` itself is fleet-wide and lives in
 `roles/common/vm_baseline` (`vm_baseline_threads_max`), because every VM with
-`memory` in its Proxmox hotplug string has the same undersized ceiling.
+`memory` in its Proxmox hotplug string has the same undersized ceiling. This role
+writes it too, because `playbooks/cmd_center.yml` can run without `vm_baseline`,
+which the disaster-recovery path below does deliberately, and the systemd ceilings
+here are only deliverable if the kernel ceiling is above them.
+
+Both write `max(computed, in force)` and write it on every run, for two reasons
+that are easy to get wrong:
+
+- Skipping the write when the live value is already high enough passes a live
+  check and regresses at the next boot, because a ceiling raised with `sysctl -w`
+  and never written to a file does not survive one.
+- Writing the computed value blindly would lower a working ceiling if the
+  computed target were ever smaller, through an override or a host whose reported
+  memory shrank. Taking the higher of the two makes "only ever raises" a
+  mechanism rather than an intention. The ordering assert is what rejects a bad
+  configuration, and it must get the chance to run before anything is written.
 
 `TasksMax` is a cgroup attribute, so a `daemon-reload` applies it to the running
-herdr server without restarting it. `LimitNPROC` is an rlimit, set at exec, so
-it lands at the next reboot or deliberate cutover. Nothing here restarts herdr.
+herdr server without restarting it. That is the directive that fixed the crash,
+together with the slice cap above it.
+
+`LimitNPROC` is a different mechanism and is **not enforced yet**. It is a
+per-uid rlimit, and a process without `CAP_SYS_RESOURCE` cannot raise one above
+its own hard limit, so the user manager clamps the unit's 16384 down to the
+3424 it was itself started with. The clamp is silent, and `systemctl --user show
+herdr.service -p LimitNPROC` reports the configured 16384 regardless, so read
+the enforced value from the process instead:
+
+```
+grep 'Max processes' /proc/$(systemctl --user show herdr.service -p MainPID --value)/limits
+```
+
+What delivers the number is `/etc/security/limits.d/50-agent-nproc.conf`, not
+systemd. This was wrong here until a reboot proved it: command-center1 rebooted
+on 2026-10-02 with `DefaultLimitNPROC=16384` already in
+`/etc/systemd/system.conf.d/50-task-limits.conf`, and the user manager still came
+up with a hard limit of 3423.
+
+`user@<uid>.service` runs with `PAMName=systemd-user`, whose stack includes
+`pam_limits` (`/usr/lib/pam.d/systemd-user`), and `pam_limits` resets
+`RLIMIT_NPROC` after systemd has applied the unit's value. Measured:
+
+| | value |
+|---|---|
+| `systemctl show user@1000.service -p LimitNPROC` | 16384, reported |
+| `/proc/<user manager pid>/limits` | 3423, enforced |
+| a fresh PAM session, before the limits.d file | 3423 |
+| a fresh PAM session, after it | 16384 |
+
+PID 1 *can* grant the higher limit, which is what made the wrong explanation
+plausible:
+
+```
+$ sudo systemd-run -q --wait --pipe -p LimitNPROC=16384 /bin/cat /proc/self/limits
+Max processes             16384                16384                processes
+```
+
+It just does not survive PAM for a user manager. The `limits.d` value reaches
+the manager at its next start, so at the next reboot; nothing here restarts
+`user@<uid>.service`, which would kill every agent pane.
+
+Nothing here restarts herdr.
 
 The durable fix is upstream in terraform-quasarlab: drop `memory` from the
 hotplug string so the guest boots with its full RAM. That needs a cold boot per

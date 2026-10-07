@@ -46,18 +46,130 @@
   ansible.builtin.assert:
     that:
       - cmd_center_herdr_tasks_max | int <= cmd_center_user_slice_tasks_max | int
+      - cmd_center_herdr_limit_nproc | int <= cmd_center_default_limit_nproc | int
+      - cmd_center_user_nproc | int >= cmd_center_default_limit_nproc | int
       - cmd_center_user_slice_tasks_max | int <= cmd_center_default_limit_nproc | int
       - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max | int
     fail_msg: >-
       Task ceilings are out of order: herdr TasksMax
-      {{ cmd_center_herdr_tasks_max }}, user slice TasksMax
+      {{ cmd_center_herdr_tasks_max }}, herdr LimitNPROC
+      {{ cmd_center_herdr_limit_nproc }}, user slice TasksMax
       {{ cmd_center_user_slice_tasks_max }}, DefaultLimitNPROC
       {{ cmd_center_default_limit_nproc }}, kernel.threads-max
-      {{ cmd_center_kernel_threads_max }}. A unit cannot exceed its slice, a slice
+      {{ cmd_center_kernel_threads_max }} computed. A unit cannot exceed its slice, a slice
       cannot exceed RLIMIT_NPROC for the uid, and nothing exceeds
-      kernel.threads-max. Raising only the innermost one moves the failure
-      without fixing it.
+      kernel.threads-max. A user unit's LimitNPROC above DefaultLimitNPROC is
+      worse than wrong, it is invisible: the user manager clamps it to its own
+      hard limit and systemctl show still reports the configured value.
     quiet: true
+  tags:
+    - task_limits
+
+# Ordered after the configuration assert on purpose. Writing first meant a bad
+# configuration could be persisted and only then rejected: with a
+# vm_baseline_threads_max override of 8000 and a live ceiling of 10000, the old
+# order wrote 10000 to /etc/sysctl.conf, overwriting whatever higher value was
+# there, and failed the play afterwards. Nothing touches the host until the
+# numbers in the repo have been checked against each other.
+#
+# The ceiling above is what the RAM warrants, not necessarily what the kernel
+# is running. vm_baseline owns it fleet-wide, but this role can run on its own
+# (the disaster-recovery path in the README does exactly that), and then the
+# assert below would pass against a computed ~130000 while the kernel was still
+# at the 1 GiB value of 6847. Handing out a DefaultTasksMax of 8192 on a host
+# whose kernel ceiling is 6847 puts the clone() failures straight back.
+#
+# So read what is in force, and repair it here when it is short. Same module,
+# same value, so a later vm_baseline run is a no-op. Raised only when short:
+# on a host where vm_baseline already ran, this changes nothing.
+- name: Read the kernel thread ceiling actually in force
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/threads-max
+  register: cmd_center_threads_max_before
+  tags:
+    - task_limits
+
+# And the value already written down. ansible.posix.sysctl manages
+# /etc/sysctl.conf, and a value there that is higher than the running one means
+# somebody wrote it without applying it. Lowering that would be a regression at
+# the next boot, which is precisely what this role exists to prevent, so the
+# persisted number joins the comparison below.
+#
+# Single backslashes in the regexes and .splitlines() rather than split('\n'):
+# this is a folded YAML scalar, so it hands Jinja the characters as written. `\\s`
+# would reach the regex as a literal backslash, and '\n' as backslash-n rather
+# than a newline, both of which fail silently by matching nothing.
+- name: Read the kernel thread ceiling already persisted
+  ansible.builtin.slurp:
+    src: /etc/sysctl.conf
+  register: cmd_center_sysctl_conf
+  failed_when: false
+  tags:
+    - task_limits
+
+# Two things this deliberately does NOT do, both raised in review of #210.
+#
+# It does not skip when the live value is already high enough. A ceiling raised
+# by hand with `sysctl -w` and never written to a file looks fine until the next
+# boot, which is exactly the state this host was in for a few hours on
+# 2026-09-27. state: present is idempotent, so writing it every run costs an ok.
+#
+# It does not write the computed value blindly. If the computed target were ever
+# below what is in force, whether through a vm_baseline_threads_max override or
+# a host whose reported memory shrank, writing it would LOWER a working ceiling
+# before the assert below had a chance to reject the configuration. Taking the
+# higher of the two makes "only ever raises" true rather than merely intended.
+- name: Choose the ceiling to persist, never lower than computed, live or persisted
+  ansible.builtin.set_fact:
+    cmd_center_threads_max_target: >-
+      {{ [cmd_center_kernel_threads_max | int,
+          cmd_center_threads_max_before.content | b64decode | trim | int,
+          (((cmd_center_sysctl_conf.content | default('') | b64decode).splitlines()
+            | select('match', '^\s*kernel\.threads-max\s*=')
+            | map('regex_replace', '^[^=]*=\s*', '')
+            | map('trim') | select('match', '^[0-9]+$') | map('int')
+            | list) + [0]) | max] | max }}
+  tags:
+    - task_limits
+
+- name: Persist kernel.threads-max, in case this role ran without vm_baseline
+  ansible.posix.sysctl:
+    name: kernel.threads-max
+    value: "{{ cmd_center_threads_max_target }}"
+    sysctl_set: true
+    reload: true
+    state: present
+  tags:
+    - task_limits
+
+# Re-read rather than assume the task above worked. Under --check the sysctl
+# is not applied, so the live condition in the assert is skipped there and the
+# config-ordering conditions still run.
+- name: Read the kernel thread ceiling again, after any repair
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/threads-max
+  register: cmd_center_threads_max_after
+  tags:
+    - task_limits
+
+- name: Record the enforced kernel thread ceiling
+  ansible.builtin.set_fact:
+    cmd_center_kernel_threads_max_live: >-
+      {{ cmd_center_threads_max_after.content | b64decode | trim | int }}
+  tags:
+    - task_limits
+
+- name: Assert the kernel ceiling in force can deliver those limits
+  ansible.builtin.assert:
+    that:
+      - cmd_center_default_limit_nproc | int <= cmd_center_kernel_threads_max_live | int
+    fail_msg: >-
+      kernel.threads-max is {{ cmd_center_kernel_threads_max_live }} in force, below
+      the DefaultLimitNPROC of {{ cmd_center_default_limit_nproc }} this role hands
+      out. A cgroup or rlimit ceiling above what the kernel can deliver puts the
+      clone() failures back: the limit is reported, the thread still fails.
+    quiet: true
+  when: not ansible_check_mode
   tags:
     - task_limits
 
@@ -79,6 +191,24 @@
     group: root
     mode: '0644'
   notify: Reload systemd
+  tags:
+    - task_limits
+
+# The one ceiling systemd cannot set. See the template's header: PID 1 applies
+# the unit's LimitNPROC and pam_limits then overwrites it from here, so without
+# this file herdr runs with the 1 GiB-derived kernel default of 3423 no matter
+# what `systemctl show` reports. Verified by measurement, not by reading docs.
+#
+# No handler: pam_limits reads this file when a session starts, so the value
+# reaches the user manager at the next reboot. Nothing here restarts
+# user@<uid>.service, which would kill every agent pane.
+- name: Raise RLIMIT_NPROC for the agent user, where pam_limits will read it
+  ansible.builtin.template:
+    src: nproc-limits.conf.j2
+    dest: /etc/security/limits.d/50-agent-nproc.conf
+    owner: root
+    group: root
+    mode: '0644'
   tags:
     - task_limits
 
