@@ -33,3 +33,10 @@ pbs_backup_exclude_vmids: [9000]
 # hourly prune job (roles/pbs: keep 24/7/4/3), so setting it here too would
 # mean two policies pruning the same datastore, and would additionally require
 # granting Datastore.Prune to the PVE token. One enforcing side is correct.
+
+# pvesm cannot read a storage's password back, so drift in the SECRET is not
+# detectable. The readable fields (server, username, fingerprint, content) are
+# reconciled every run. Set this true for one run to push the credential again,
+# which is what a PBS rebuild or token rotation needs: the fingerprint changes
+# with the certificate and every backup then fails on TLS.
+pbs_storage_refresh_credentials: false

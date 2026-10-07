@@ -52,12 +52,104 @@
   run_once: true
   register: pbs_storage_added
 
+# An ID that exists is not a storage that is CORRECT. Adding it only when the
+# ID is absent means a changed server, token, datastore or fingerprint leaves
+# PVE talking to the old endpoint, and the job assertions below still pass
+# because they only inspect the job. The documented PBS rebuild case makes this
+# concrete: the certificate fingerprint changes and every backup fails on TLS
+# while this role reports success.
+- name: Read the live PBS storage config
+  ansible.builtin.command: pvesh get /storage/{{ pbs_storage_id }} --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_storage_live_raw
+
+- name: Record the live PBS storage config
+  ansible.builtin.set_fact:
+    pbs_storage_live: "{{ pbs_storage_live_raw.stdout | from_json }}"
+  run_once: true
+
+# `datastore` is create-only on a pbs storage, so a mismatch cannot be fixed by
+# `pvesm set`. Fail rather than silently back up to the wrong datastore.
+- name: Assert the existing storage points at the intended datastore
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - pbs_storage_live.datastore == pbs_storage_datastore
+      - pbs_storage_live.server == pbs_storage_server
+    fail_msg: >-
+      Storage '{{ pbs_storage_id }}' targets
+      {{ pbs_storage_live.server }}/{{ pbs_storage_live.datastore }}, not
+      {{ pbs_storage_server }}/{{ pbs_storage_datastore }}. PVE treats both
+      `server` and `datastore` as fixed parameters on a pbs storage, so neither
+      can be changed in place; remove and re-add it deliberately.
+    quiet: true
+
+- name: Reconcile the PBS storage endpoint and credentials
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - set
+      - "{{ pbs_storage_id }}"
+      # --server is NOT passed. PVE treats it as a fixed parameter on a pbs
+      # storage and rejects it even when the value is unchanged:
+      #   update storage failed: can't change value of fixed parameter 'server'
+      # It appears in the PUT schema from `pvesh usage`, which is misleading.
+      # A server change needs a deliberate remove and re-add, so it is asserted
+      # as immutable below rather than reconciled.
+      - --username
+      - "{{ pbs_storage_tokenid }}"
+      - --password
+      - "{{ lookup('env', pbs_storage_token_env) }}"
+      - --fingerprint
+      - "{{ pbs_storage_fingerprint | trim }}"
+      - --content
+      - backup
+  no_log: true
+  run_once: true
+  when: >-
+    pbs_storage_refresh_credentials | bool
+    or pbs_storage_live.username | default('') != pbs_storage_tokenid
+    or pbs_storage_live.fingerprint | default('') != (pbs_storage_fingerprint | trim)
+    or pbs_storage_live.content | default('') != 'backup'
+
+- name: Re-read the storage config after reconciliation
+  ansible.builtin.command: pvesh get /storage/{{ pbs_storage_id }} --output-format json
+  changed_when: false
+  check_mode: false
+  run_once: true
+  register: pbs_storage_after
+
+# Asserting the end state for the same reason the PBS role does: pvesm set
+# returns 0 whether or not the values landed as intended.
+- name: Assert the storage endpoint now matches the intent
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - (pbs_storage_after.stdout | from_json).server == pbs_storage_server
+      - (pbs_storage_after.stdout | from_json).username == pbs_storage_tokenid
+      - (pbs_storage_after.stdout | from_json).fingerprint == (pbs_storage_fingerprint | trim)
+      - (pbs_storage_after.stdout | from_json).datastore == pbs_storage_datastore
+    fail_msg: >-
+      Storage '{{ pbs_storage_id }}' does not match intent after
+      reconciliation: {{ pbs_storage_after.stdout }}
+    quiet: true
+
 - name: Read the current cluster backup jobs
   ansible.builtin.command: pvesh get /cluster/backup --output-format json
   changed_when: false
   check_mode: false
   run_once: true
   register: pbs_jobs
+
+- name: Record the live backup job
+  ansible.builtin.set_fact:
+    pbs_job_live: >-
+      {{ (pbs_jobs.stdout | from_json)
+         | selectattr('id', 'equalto', pbs_backup_job_id)
+         | list | first | default({}) }}
+  run_once: true
 
 - name: Point the existing backup job at PBS and enable it
   ansible.builtin.command:
@@ -89,10 +181,20 @@
       - --delete
       - prune-backups
   run_once: true
-  when: pbs_backup_job_id in
-        ((pbs_jobs.stdout | from_json) | map(attribute='id') | list)
+  # Only when something actually differs. This previously carried
+  # `changed_when: true`, so it reported a change on every single run and the
+  # role could never honestly claim convergence. `prune-backups` being present
+  # at all counts as drift, since PBS owns retention.
+  when:
+    - pbs_job_live | length > 0
+    - >-
+      pbs_job_live.storage | default('') != pbs_storage_id
+      or (pbs_job_live.enabled | default(0) | int) != 1
+      or pbs_job_live.schedule | default('') != pbs_backup_schedule
+      or pbs_job_live.mode | default('') != pbs_backup_mode
+      or (pbs_job_live.exclude | default('')) != (pbs_backup_exclude_vmids | join(','))
+      or ('prune-backups' in pbs_job_live)
   register: pbs_job_updated
-  changed_when: true
 
 - name: Re-read the backup job to confirm it points at PBS and is enabled
   ansible.builtin.command: pvesh get /cluster/backup/{{ pbs_backup_job_id }} --output-format json

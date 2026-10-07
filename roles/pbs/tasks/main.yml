@@ -217,13 +217,15 @@
     # Never resize or force. If the disk grows, that is a deliberate decision.
     resizefs: false
 
+# Ownership and mode are deliberately NOT set here. Before the mount this
+# directory is a placeholder whose ownership is masked anyway, and AFTER the
+# mount this path resolves to the mounted filesystem's root, so setting
+# root:root here un-did the backup:backup ownership set below on every single
+# run. The two tasks flip-flopped the same inode and the role never converged.
 - name: Create the datastore mount point
   ansible.builtin.file:
     path: "{{ pbs_datastore_mount }}"
     state: directory
-    owner: root
-    group: root
-    mode: '0755'
 
 # Mount by UUID, not by kernel name, for the same reason the disk is resolved by
 # LUN slot: /dev/sdX is not stable across these two guests.
@@ -328,6 +330,112 @@
       - "Managed by ansible role pbs"
   when: pbs_datastore_name not in pbs_existing_datastores
   notify: Restart proxmox-backup-proxy
+
+# A datastore whose NAME exists is not a datastore that is CONFIGURED. Creating
+# it only when the name is absent means a drifted or hand-made datastore keeps
+# the wrong path, verify-new disabled, or stale GC and retention, while this
+# role reports success. The dangerous case is a wrong path: backups then fill a
+# directory on the 32G root filesystem even though the mount check above proved
+# the real mount is live.
+#
+# Same class of defect as the PVE job that kept `prune-backups` because the role
+# merely stopped setting it. Converge, do not assume.
+- name: Re-read the datastore config for reconciliation
+  ansible.builtin.command: >-
+    proxmox-backup-manager datastore show {{ pbs_datastore_name }}
+    --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_datastore_show
+
+- name: Record the live datastore config
+  ansible.builtin.set_fact:
+    pbs_datastore_live: "{{ pbs_datastore_show.stdout | from_json }}"
+
+# `path` cannot be changed by `datastore update`, so a mismatch is not something
+# this role can fix. Fail loudly rather than carry on against the wrong
+# directory.
+- name: Assert the existing datastore points at the intended path
+  ansible.builtin.assert:
+    that:
+      - pbs_datastore_live.path == pbs_datastore_mount
+    fail_msg: >-
+      Datastore '{{ pbs_datastore_name }}' points at
+      '{{ pbs_datastore_live.path }}', not '{{ pbs_datastore_mount }}'.
+      PBS cannot move a datastore's path in place, so this needs a human:
+      backups written here would land outside the mounted datastore disk.
+    quiet: true
+
+- name: Converge the mutable datastore properties
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - datastore
+      - update
+      - "{{ pbs_datastore_name }}"
+      - --gc-schedule
+      - "{{ pbs_gc_schedule }}"
+      - --verify-new
+      - "true"
+      - --notification-mode
+      - notification-system
+  when: >-
+    pbs_datastore_live['gc-schedule'] | default('') != pbs_gc_schedule
+    or not (pbs_datastore_live['verify-new'] | default(false) | bool)
+    or pbs_datastore_live['notification-mode'] | default('') != 'notification-system'
+
+# Retention does not live on the datastore. `datastore create` accepts the
+# keep-* flags and then migrates them into a separate prune job, which is why
+# `datastore show` lists neither prune-schedule nor keep-*. Reconcile the job.
+- name: Read the prune jobs
+  ansible.builtin.command: proxmox-backup-manager prune-job list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_prune_jobs
+
+- name: Identify the prune job for this datastore
+  ansible.builtin.set_fact:
+    pbs_prune_job: >-
+      {{ (pbs_prune_jobs.stdout | from_json)
+         | selectattr('store', 'equalto', pbs_datastore_name)
+         | list | first | default({}) }}
+
+- name: Assert exactly one prune job owns this datastore
+  ansible.builtin.assert:
+    that:
+      - ((pbs_prune_jobs.stdout | from_json)
+         | selectattr('store', 'equalto', pbs_datastore_name) | list | length) == 1
+    fail_msg: >-
+      Expected exactly one prune job for datastore
+      '{{ pbs_datastore_name }}', found
+      {{ ((pbs_prune_jobs.stdout | from_json)
+          | selectattr('store', 'equalto', pbs_datastore_name) | list | length) }}.
+      Two prune policies on one datastore fight each other; resolve by hand.
+    quiet: true
+
+- name: Converge the prune job retention and schedule
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - prune-job
+      - update
+      - "{{ pbs_prune_job.id }}"
+      - --schedule
+      - "{{ pbs_prune_schedule }}"
+      - --keep-hourly
+      - "{{ pbs_prune_keep_hourly }}"
+      - --keep-daily
+      - "{{ pbs_prune_keep_daily }}"
+      - --keep-weekly
+      - "{{ pbs_prune_keep_weekly }}"
+      - --keep-monthly
+      - "{{ pbs_prune_keep_monthly }}"
+  when: >-
+    pbs_prune_job.schedule | default('') != pbs_prune_schedule
+    or (pbs_prune_job['keep-hourly'] | default(0) | int) != (pbs_prune_keep_hourly | int)
+    or (pbs_prune_job['keep-daily'] | default(0) | int) != (pbs_prune_keep_daily | int)
+    or (pbs_prune_job['keep-weekly'] | default(0) | int) != (pbs_prune_keep_weekly | int)
+    or (pbs_prune_job['keep-monthly'] | default(0) | int) != (pbs_prune_keep_monthly | int)
 
 - name: Read existing verification jobs
   ansible.builtin.command: proxmox-backup-manager verify-job list --output-format json

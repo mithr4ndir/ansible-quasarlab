@@ -555,3 +555,104 @@ class PveBackupJobPrune(unittest.TestCase):
             "setting and deleting prune-backups in the same call is "
             "contradictory; PBS owns retention",
         )
+
+
+class PbsNoConflictingOwnership(unittest.TestCase):
+    """Two file tasks must not set different ownership on the same path.
+
+    "Create the datastore mount point" set root:root and "Give the mounted
+    datastore root to the backup user" set backup:backup, both on
+    {{ pbs_datastore_mount }}. After the first run the mount is active, so the
+    first task resolves to the MOUNTED filesystem root and un-did the second
+    task's ownership every run. The role reported changed=2 forever and the
+    datastore root was briefly root-owned mid-run, which is the state that
+    breaks every backup with os error 13.
+    """
+
+    def setUp(self) -> None:
+        self.tasks = _tasks()
+
+    def test_only_one_task_sets_ownership_of_the_mount(self) -> None:
+        owners = []
+        for t in self.tasks:
+            f = t.get("ansible.builtin.file")
+            if not isinstance(f, dict):
+                continue
+            if f.get("path") != "{{ pbs_datastore_mount }}":
+                continue
+            if "owner" in f or "group" in f:
+                owners.append((t.get("name"), f.get("owner")))
+        self.assertEqual(
+            len(owners), 1,
+            f"{len(owners)} tasks set ownership on the datastore mount "
+            f"({owners}); more than one makes the role flip-flop and leaves the "
+            "datastore root momentarily root-owned",
+        )
+        self.assertEqual(
+            owners[0][1], "backup",
+            "the single owner-setting task must set owner=backup",
+        )
+
+
+class PveStorageFixedParameters(unittest.TestCase):
+    """`server` and `datastore` are create-only on a PVE pbs storage.
+
+    `pvesh usage` lists --server in the PUT schema, but PVE rejects it even when
+    unchanged:
+        update storage failed: can't change value of fixed parameter 'server'
+    Passing it made the whole reconciliation task fail, which meant a corrupted
+    fingerprint could not be repaired by the role at all.
+    """
+
+    PVE_TASKS = (REPO / "roles" / "pve" / "pbs_storage" / "tasks" / "main.yml")
+
+    def setUp(self) -> None:
+        self.tasks = yaml.safe_load(self.PVE_TASKS.read_text())
+
+    def _pvesm_set_argv(self) -> list[str]:
+        for t in self.tasks:
+            cmd = t.get("ansible.builtin.command")
+            if not isinstance(cmd, dict):
+                continue
+            argv = [str(a) for a in cmd.get("argv", [])]
+            if argv[:2] == ["pvesm", "set"]:
+                return argv
+        self.fail("no `pvesm set` reconciliation task")
+
+    def test_server_is_not_passed_to_pvesm_set(self) -> None:
+        self.assertNotIn(
+            "--server", self._pvesm_set_argv(),
+            "PVE rejects --server on an existing pbs storage as a fixed "
+            "parameter, failing the entire reconcile task",
+        )
+
+    def test_fixed_parameters_are_asserted_immutable(self) -> None:
+        guard = next(
+            (t for t in self.tasks
+             if "ansible.builtin.assert" in t
+             and "pbs_storage_live.datastore" in yaml.safe_dump(
+                 t["ansible.builtin.assert"])),
+            None,
+        )
+        self.assertIsNotNone(guard, "no immutability assertion for datastore")
+        dumped = yaml.safe_dump(guard["ansible.builtin.assert"])
+        self.assertIn(
+            "pbs_storage_live.server", dumped,
+            "server is fixed too, so it must be asserted rather than reconciled",
+        )
+
+    def test_job_update_is_conditional_not_always_changed(self) -> None:
+        job = next(
+            (t for t in self.tasks
+             if isinstance(t.get("ansible.builtin.command"), dict)
+             and [str(a) for a in t["ansible.builtin.command"].get("argv", [])][:2]
+             == ["pvesh", "set"]),
+            None,
+        )
+        self.assertIsNotNone(job, "no pvesh set task for the backup job")
+        self.assertNotEqual(
+            job.get("changed_when"), True,
+            "changed_when: true makes the role report a change on every run, so "
+            "it can never honestly claim convergence",
+        )
+        self.assertIn("when", job, "the job update must be conditional on drift")
