@@ -169,24 +169,45 @@
       unexpected disk.
     quiet: true
 
-- name: Read any existing filesystem signature on the datastore disk
-  ansible.builtin.command: "blkid -p -o value -s TYPE {{ pbs_datastore_device }}"
+# Probe EVERY signature, not just TYPE. `blkid -s TYPE` prints only the TYPE
+# tag, so a disk carrying a partition table but no whole-disk filesystem comes
+# back empty and reads as blank. Verified on command-center1:
+#
+#   blkid -p -o value -s TYPE /dev/sda  ->  ''          (and rc 0)
+#   blkid -p -o export       /dev/sda  ->  PTTYPE=gpt
+#
+# The old guard equated that empty TYPE with an unused disk and would have
+# formatted a partitioned one. `failed_when: false` made it worse: a probe that
+# failed outright also produced empty stdout and also read as blank.
+#
+# blkid exit codes: 0 signature found, 2 nothing found (a genuinely blank
+# device), anything else a real failure. Only 0 and 2 are acceptable, so a
+# broken probe can no longer be mistaken for an empty disk.
+- name: Probe every signature on the datastore disk
+  ansible.builtin.command: "blkid -p -o export {{ pbs_datastore_device }}"
   changed_when: false
-  failed_when: false
   check_mode: false
+  failed_when: pbs_existing_fs.rc not in [0, 2]
   register: pbs_existing_fs
 
-# A disk that already carries our filesystem is the normal re-run case. A disk
-# carrying something else is a surprise, and surprises do not get formatted.
+# A disk already carrying our filesystem is the normal re-run case. Anything
+# else, including a bare partition table or a RAID member signature, is a
+# surprise, and surprises do not get formatted.
 - name: Assert the datastore disk is blank or already ours
   ansible.builtin.assert:
     that:
-      - pbs_existing_fs.stdout | trim | length == 0
-        or pbs_existing_fs.stdout | trim == pbs_datastore_fstype
+      - (pbs_existing_fs.stdout | trim | length == 0)
+        or (
+          ('TYPE=' ~ pbs_datastore_fstype) in pbs_existing_fs.stdout_lines
+          and (pbs_existing_fs.stdout is not search('(?m)^PTTYPE='))
+        )
     fail_msg: >-
-      {{ pbs_datastore_device }} already carries a
-      '{{ pbs_existing_fs.stdout | trim }}' filesystem, which this role did not
-      create. Inspect it by hand; refusing to overwrite unrecognised data.
+      {{ pbs_datastore_device }} already carries signatures this role did not
+      create:
+      {{ pbs_existing_fs.stdout_lines
+         | select('match', '^(TYPE|PTTYPE|USAGE)=')
+         | join(', ') | default('none reported', true) }}.
+      Inspect it by hand; refusing to overwrite unrecognised data.
     quiet: true
 
 - name: Create the datastore filesystem

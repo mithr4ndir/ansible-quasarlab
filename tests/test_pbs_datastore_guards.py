@@ -241,6 +241,61 @@ class PbsDatastoreGuards(unittest.TestCase):
                     "after the mkfs protects nothing",
                 )
 
+    def test_signature_probe_is_not_restricted_to_the_type_tag(self) -> None:
+        """The probe must read every signature, not only TYPE.
+
+        `blkid -s TYPE` prints just the TYPE tag, so a disk carrying a
+        partition table and no whole-disk filesystem returns empty and reads as
+        blank. Measured on command-center1:
+
+            blkid -p -o value -s TYPE /dev/sda  ->  ''  (rc 0)
+            blkid -p -o export        /dev/sda  ->  PTTYPE=gpt
+
+        The guard then formatted a partitioned disk.
+        """
+        # Only the probe the guard consumes. A later task legitimately runs
+        # `blkid -o value -s UUID` to build the fstab entry, after the mkfs.
+        probe = [t for t in self.tasks if t.get("register") == "pbs_existing_fs"]
+        self.assertTrue(probe, "no signature probe registering pbs_existing_fs")
+        for task in probe:
+            cmd = str(task["ansible.builtin.command"])
+            self.assertNotIn(
+                "-s TYPE", cmd,
+                "probe restricted to the TYPE tag: a partition-table-only disk "
+                "reports empty and would be treated as blank",
+            )
+            self.assertIn("-o export", cmd, "probe should emit every tag")
+
+    def test_probe_failure_is_not_read_as_a_blank_disk(self) -> None:
+        """`failed_when: false` made a broken probe indistinguishable from blank.
+
+        blkid exits 0 when it finds a signature and 2 when it finds none. Any
+        other code is a real failure and must not reach the mkfs as an empty
+        stdout.
+        """
+        probe = [t for t in self.tasks if t.get("register") == "pbs_existing_fs"]
+        self.assertTrue(probe, "no signature probe registering pbs_existing_fs")
+        for task in probe:
+            fw = task.get("failed_when")
+            self.assertNotEqual(
+                fw, False,
+                "failed_when: false hides a probe failure, which then looks "
+                "like a blank disk to the guard below",
+            )
+            self.assertIsNotNone(fw, "probe needs an explicit failed_when")
+            self.assertIn("rc", str(fw), "failed_when should branch on the blkid rc")
+
+    def test_guard_rejects_a_partition_table(self) -> None:
+        """The assertion must reject PTTYPE, not just a foreign TYPE."""
+        guard = [t for t in _assert_tasks(self.tasks)
+                 if "blank or already ours" in str(t[1].get("name", ""))]
+        self.assertTrue(guard, "datastore blank/ours assertion not found")
+        conditions = " ".join(str(c) for c in guard[0][1]["ansible.builtin.assert"]["that"])
+        self.assertIn("PTTYPE", conditions,
+                      "guard ignores partition-table signatures")
+        self.assertIn("stdout_lines", conditions,
+                      "guard should match whole tag lines, not a substring")
+
     def test_mount_is_verified_before_datastore_creation(self) -> None:
         """A datastore over an unmounted dir fills the 32G root disk instead.
 
