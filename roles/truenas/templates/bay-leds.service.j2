@@ -1,0 +1,20 @@
+[Unit]
+Description=Drive the front-panel bay LEDs from disk activity and ZFS state
+After=zfs-smart-textfile.timer
+
+[Service]
+Type=simple
+Environment=LED_CLI={{ truenas_exporter_dir }}/ugreen_leds_cli
+Environment=TEXTFILE_DIR={{ truenas_textfile_dir }}
+# The CLI talks to the LED controller through /dev/i2c-*, which only exists
+# once i2c-dev is loaded. Not persisted anywhere else on the appliance.
+ExecStartPre=/sbin/modprobe i2c-dev
+ExecStart={{ truenas_exporter_dir }}/bay-leds.sh
+# Runs however the service ended, including a crash or SIGKILL that skipped
+# the script's own trap, so a dead service never leaves a healthy-looking panel.
+ExecStopPost={{ truenas_exporter_dir }}/bay-leds.sh --stopped
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

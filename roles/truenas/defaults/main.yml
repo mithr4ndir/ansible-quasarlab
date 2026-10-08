@@ -22,3 +22,11 @@ truenas_syslog_level: "F_NOTICE"
 # shipped with it OFF, which made smartd and the TrueNAS alert page
 # truthful and meaningless at the same time.
 truenas_enable_smart: true
+
+# Front-panel bay LEDs driven from disk activity and ZFS state (bay-leds.sh).
+# Fault state comes from the zfs-smart-textfile output, so it needs that
+# exporter. The CLI is the miskcoo/ugreen_leds_controller release binary,
+# pinned by hash; it talks to the LED controller over I2C.
+truenas_bay_leds_enabled: true
+truenas_ugreen_leds_cli_url: "https://github.com/miskcoo/ugreen_leds_controller/releases/download/v0.3/ugreen_leds_cli"
+truenas_ugreen_leds_cli_sha256: "d0a8cbaa2ba7a6b5433d83fec44655799e7d1063307a719c29e0d9dd3afc1c0c"

@@ -17,6 +17,7 @@ appliance leaves open.
 |---|---|---|
 | Pool, per-disk ZFS + SMART metrics | script + systemd timer writing into node_exporter's textfile dir | boot environment only, see below |
 | SMART enable | `smartctl -s on` per disk, checked first | drive firmware, persists |
+| Bay LEDs | `bay-leds.service` driving the pinned `ugreen_leds_cli` over I2C | boot environment only |
 | Remote syslog | `midclt call system.advanced.update` | TrueNAS config DB, survives upgrades |
 
 ### Metrics
@@ -59,6 +60,37 @@ tell anyone which tray to pull.
   known bay and serial per vdev guid are kept in
   `<textfile dir>/.zfs_vdev_labels` (not `*.prom`, so `node_exporter` ignores
   it) and used as a fallback.
+
+### Bay LEDs
+
+`bay-leds.sh` drives each front-panel bay LED (bay N = kernel `ataN` = Nth tray
+from the left):
+
+| LED | Meaning |
+|---|---|
+| dim white | disk present, idle |
+| white blink | disk reading or writing (held 1s after the last I/O, so ZFS flush bursts do not flap) |
+| amber blink | ZFS counted read/write/checksum errors on it (until `zpool clear`), or SMART cannot be read |
+| red | its vdev is not ONLINE, including a disk that has dropped off the bus: the tray to pull |
+| off | empty bay |
+| purple slow pulse | the service is stopped, or the exporter's data is over 5 minutes old: do not trust the panel |
+
+Fault state is read from `zfs_smart.prom`, so red appears within about a minute
+and the service never runs `zpool` or touches a drive. Activity comes from
+`/sys/class/block/<dev>/stat`. An LED is written only when its state changes,
+because the controller shares the I2C bus with board sensors. The built-in
+sweep animation does not run while this service owns the LEDs.
+
+To light a tray by hand during a drive swap, pause the service first:
+
+```
+sudo touch /run/bay-leds.hold                      # service stops writing
+sudo /var/lib/node_exporter/ugreen_leds_cli disk3 -color 0 0 255 -blink 400 400
+sudo rm /run/bay-leds.hold                         # service repaints every bay
+```
+
+It writes `bay_leds_last_loop_timestamp_seconds` to the textfile directory so
+a dead service alerts in Alertmanager rather than freezing the panel unnoticed.
 
 ### SMART
 
