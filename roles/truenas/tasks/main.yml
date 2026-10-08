@@ -45,6 +45,60 @@
   become: true
 
 # ---------------------------------------------------------------------------
+# Bay LEDs
+#
+# Each front-panel bay LED shows that disk's activity, amber when ZFS has
+# counted errors on it or SMART cannot be read, and red when its vdev is not
+# ONLINE, so the tray to pull is lit without anyone running the CLI by hand.
+# Reads the exporter's textfile, so it never runs zpool or touches a drive.
+# ---------------------------------------------------------------------------
+
+- name: Install the UGREEN LED controller CLI
+  ansible.builtin.get_url:
+    url: "{{ truenas_ugreen_leds_cli_url }}"
+    dest: "{{ truenas_exporter_dir }}/ugreen_leds_cli"
+    checksum: "sha256:{{ truenas_ugreen_leds_cli_sha256 }}"
+    mode: "0700"
+    owner: root
+    group: root
+  become: true
+  when: truenas_bay_leds_enabled | bool
+  notify: Restart the bay LED service
+
+- name: Deploy the bay LED script
+  ansible.builtin.copy:
+    src: bay-leds.sh
+    dest: "{{ truenas_exporter_dir }}/bay-leds.sh"
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  when: truenas_bay_leds_enabled | bool
+  notify: Restart the bay LED service
+
+- name: Deploy the bay LED systemd unit
+  ansible.builtin.template:
+    src: bay-leds.service.j2
+    dest: /etc/systemd/system/bay-leds.service
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  when: truenas_bay_leds_enabled | bool
+  notify:
+    - Reload systemd on truenas
+    - Restart the bay LED service
+
+- name: Enable and start the bay LED service
+  ansible.builtin.systemd:
+    name: bay-leds.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  when: truenas_bay_leds_enabled | bool
+
+# ---------------------------------------------------------------------------
 # SMART
 #
 # Five of eight tank drives (every Inland) had SMART disabled at the

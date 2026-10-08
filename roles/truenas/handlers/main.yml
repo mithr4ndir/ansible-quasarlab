@@ -9,3 +9,11 @@
     name: zfs-smart-textfile.service
     state: started
   become: true
+
+- name: Restart the bay LED service
+  ansible.builtin.systemd:
+    name: bay-leds.service
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: truenas_bay_leds_enabled | bool
