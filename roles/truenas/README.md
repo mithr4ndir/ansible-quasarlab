@@ -15,7 +15,7 @@ appliance leaves open.
 
 | Area | Mechanism | Durability |
 |---|---|---|
-| Pool + SMART metrics | script + systemd timer writing into node_exporter's textfile dir | boot environment only, see below |
+| Pool, per-disk ZFS + SMART metrics | script + systemd timer writing into node_exporter's textfile dir | boot environment only, see below |
 | SMART enable | `smartctl -s on` per disk, checked first | drive firmware, persists |
 | Remote syslog | `midclt call system.advanced.update` | TrueNAS config DB, survives upgrades |
 
@@ -30,6 +30,35 @@ scrape and a partial file surfaces as a parse error.
 
 Consumed by the `NAS: TrueNAS storage and drive health` Grafana dashboard in
 k8s-argocd.
+
+#### Per-disk ZFS state and bay labels
+
+`zfs_pool_health` is not enough on its own. On 2026-10-08 a `tank` mirror member
+was FAULTED for half an hour while `zpool list` kept reporting the pool ONLINE,
+so the pool-level alert never fired. The script therefore also parses
+`zpool status -j -p` and writes, per leaf vdev:
+
+| Series | Meaning |
+|---|---|
+| `zfs_vdev_state` | 0=ONLINE 1=DEGRADED 2=FAULTED 3=OFFLINE 4=UNAVAIL 5=REMOVED 6=UNKNOWN (spare AVAIL/INUSE count as 0) |
+| `zfs_vdev_read_errors`, `_write_errors`, `_checksum_errors` | ZFS error counters, reset by `zpool clear` |
+| `zfs_vdev_scrape_ok` | 0 when `zpool status -j` could not be read, so silence is not mistaken for health |
+
+Every `smart_*` and `zfs_vdev_*` series carries `bay` and `serial`, because the
+`sdX` letter changes between boots and an alert that only says `sdd` does not
+tell anyone which tray to pull.
+
+- `bay` is N for kernel port `ataN`, which on the DXP8800 Plus is the Nth tray
+  from the left (verified by LED and a live reseat, see
+  quasarlab-disaster-recovery `architecture/storage.md`). NVMe devices are `m2`.
+- `serial` comes from the VPD page the kernel cached when the disk attached
+  (`/sys/class/block/<dev>/device/vpd_pg80`, NVMe: `device/serial`). Reading it
+  sends no I/O to the drive, so it still works when the drive has stopped
+  answering, which is when `smartctl` cannot report a serial.
+- When a disk detaches, its by-partuuid link and sysfs node disappear. The last
+  known bay and serial per vdev guid are kept in
+  `<textfile dir>/.zfs_vdev_labels` (not `*.prom`, so `node_exporter` ignores
+  it) and used as a fallback.
 
 ### SMART
 
