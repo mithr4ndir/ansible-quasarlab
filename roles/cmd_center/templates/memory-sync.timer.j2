@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic agent memory write-back to claude-config
+
+[Timer]
+OnCalendar={{ cmd_center_memory_sync_schedule }}
+RandomizedDelaySec=10min
+# Catch up after the host was off at a scheduled time.
+Persistent=true
+Unit=memory-sync.service
+
+[Install]
+WantedBy=timers.target

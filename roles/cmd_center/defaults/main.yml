@@ -194,3 +194,11 @@ cmd_center_cmd_audit_timeout_start_sec: 120
 # the canary proves Discord accepted a record that went through the real path.
 cmd_center_cmd_audit_canary_interval: 1h
 cmd_center_cmd_audit_prom_file: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/agent_cmd_audit.prom"
+
+# Memory write-back: commits ~/code/claude-config/memory (where agent memory
+# lands via symlink) through a scanned, squash-merged PR. See
+# files/memory-sync.sh.
+cmd_center_memory_sync_enabled: true
+cmd_center_memory_sync_repo: "/home/{{ ansible_user }}/code/claude-config"
+cmd_center_memory_sync_schedule: "*-*-* 00/6:17:00"
+cmd_center_memory_sync_prom_file: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}/memory_sync.prom"
