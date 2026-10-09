@@ -1,0 +1,11 @@
+[Unit]
+Description=Commit agent memory in claude-config through a scanned PR
+
+[Service]
+Type=oneshot
+Environment=MEMORY_SYNC_REPO={{ cmd_center_memory_sync_repo }}
+Environment=MEMORY_SYNC_PROM={{ cmd_center_memory_sync_prom_file }}
+ExecStart=/usr/local/bin/memory-sync.sh
+# A timer-driven oneshot left `activating` blocks every future run.
+TimeoutStartSec=900
+Nice=10

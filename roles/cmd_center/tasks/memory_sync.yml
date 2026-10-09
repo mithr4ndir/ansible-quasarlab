@@ -1,0 +1,56 @@
+---
+# Agent memory lands in ~/code/claude-config/memory through symlinks, and its
+# write-back used to be manual: the last memory commit before this existed was
+# 2026-05-16, with 68 changes left on one disk. A user timer now commits it
+# through a gitleaks-scanned PR. Runs as the SSH user because the job needs
+# that user's git SSH key and gh login.
+
+- name: Ensure the systemd user unit directory exists for memory sync
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  when: cmd_center_memory_sync_enabled | bool
+  tags:
+    - memory_sync
+
+- name: Install the memory sync script
+  ansible.builtin.copy:
+    src: memory-sync.sh
+    dest: /usr/local/bin/memory-sync.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: cmd_center_memory_sync_enabled | bool
+  tags:
+    - memory_sync
+
+- name: Deploy the memory sync user units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+  loop:
+    - memory-sync.service
+    - memory-sync.timer
+  register: cmd_center_memory_sync_units
+  when: cmd_center_memory_sync_enabled | bool
+  tags:
+    - memory_sync
+
+# Without become: two-hop sudo strips the user dbus session env (see herdr.yml).
+- name: Enable and start the memory sync timer
+  ansible.builtin.systemd:
+    name: memory-sync.timer
+    scope: user
+    enabled: true
+    state: "{{ 'restarted' if cmd_center_memory_sync_units is changed else 'started' }}"
+    daemon_reload: true
+  become: false
+  when: cmd_center_memory_sync_enabled | bool
+  tags:
+    - memory_sync

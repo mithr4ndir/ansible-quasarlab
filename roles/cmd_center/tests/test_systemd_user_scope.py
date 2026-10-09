@@ -52,6 +52,7 @@ EXPECTED_USER_SCOPE_TASKS = {
     ("tasks/ce_review_viewer.yml", "Enable and start ce-review-viewer"),
     ("tasks/herdr.yml", "Enable herdr user service"),
     ("tasks/herdr.yml", "Enable and start herdr health collector timer"),
+    ("tasks/memory_sync.yml", "Enable and start the memory sync timer"),
 }
 
 
