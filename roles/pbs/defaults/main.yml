@@ -149,7 +149,22 @@ pbs_sync_jobs: []
 #     remote_store: lab
 #     store: lab
 
-pbs_sync_schedule: "*-*-* 04:00:00"
+# Hourly at :30 rather than a once-a-day time, and this is the safe default
+# precisely because it does not depend on knowing when backups run.
+#
+# A daily sync has to be placed AFTER the backup window, so it silently
+# becomes wrong the moment that window moves. When the vzdump job goes from
+# hourly to daily at 10:00 UTC (ansible-quasarlab#241), a 04:00 sync lands 18
+# hours BEFORE the backups it is supposed to copy, and the replica's newest
+# snapshot peaks at 42 hours old. Even placed correctly at 12:00 it peaks at
+# 26 hours.
+#
+# Syncing hourly bounds the replica at about one hour behind the primary no
+# matter when backups run, and the runs that find nothing new are close to
+# free: PBS compares snapshot lists and transfers only missing chunks, under
+# the pbs_sync_rate_in ceiling. The :30 offset keeps it off the top of the
+# hour, where scheduled jobs cluster.
+pbs_sync_schedule: "*-*-* *:30:00"
 
 # FALSE, and this is the whole point of the replica.
 #

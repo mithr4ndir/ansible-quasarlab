@@ -32,9 +32,15 @@ pbs_sync_remotes:
     fingerprint: "c5:91:53:91:3f:fc:06:10:af:b8:a7:12:f1:0a:41:a1:a7:7c:b6:75:1b:4e:99:4b:46:33:d7:3d:4f:d6:8e:0a"
     token_env: PBS_SYNC_TOKEN_SECRET
 
-# vzdump runs `hourly`, which systemd expands to *-*-* *:00:00, so the sync
-# runs at :30 to pull a backup set that has finished rather than one in
-# progress. Worst-case RPO for the replica is therefore about one hour.
+# Hourly at :30, which is also the role default, so this is here to be
+# explicit rather than to override anything.
+#
+# Deliberately NOT tied to the backup window. vzdump is moving from `hourly`
+# to once a day at 10:00 UTC (ansible-quasarlab#241), and a sync pinned to a
+# time after that window would have to be moved again the next time it
+# changes. Hourly keeps the replica about an hour behind the primary whatever
+# the backup schedule is, and a run that finds nothing new costs almost
+# nothing. The :30 offset keeps it clear of the top of the hour.
 pbs_sync_jobs:
   - id: sync-from-pbs1
     remote: pbs1
