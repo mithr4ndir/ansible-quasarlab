@@ -33,6 +33,18 @@ sync_repo_to_remote_ref() {
 
     [[ -d "${dir}/.git" ]] || { echo "sync-repo: ${dir} is not a git checkout" >&2; return 1; }
 
+    # Strip trailing slashes before deriving the sibling lock path. With
+    # ANSIBLE_AUTOMATION_REPO_DIR set as ".../repo/", "${dir}.sync.lock" becomes
+    # ".../repo/.sync.lock", which is INSIDE the checkout. The `git clean -qfd`
+    # below then unlinks it while this process still holds the descriptor, so a
+    # second caller creates a fresh inode, locks that instead, and walks into
+    # the sync concurrently. The lock would silently stop serialising, which is
+    # the same shape as the bug it was added to fix.
+    #
+    # Only trailing slashes are stripped, deliberately. Resolving symlinks with
+    # realpath would move the lock for any existing deployment reaching the
+    # checkout through one, which is a surprise nobody asked for.
+    while [[ "$dir" == */ && "$dir" != "/" ]]; do dir="${dir%/}"; done
     local lock="${dir}.sync.lock"
     exec {_sync_lock_fd}>"$lock" || {
         echo "sync-repo: cannot open lock ${lock}" >&2; return 1; }

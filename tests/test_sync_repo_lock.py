@@ -93,8 +93,9 @@ class Fixture:
 
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}"}
 
-    def sync(self, extra_env: dict | None = None):
-        script = f'source "{LIB}"; sync_repo_to_remote_ref "{self.checkout}" main'
+    def sync(self, extra_env: dict | None = None, trailing_slash: bool = False):
+        target = f"{self.checkout}/" if trailing_slash else str(self.checkout)
+        script = f'source "{LIB}"; sync_repo_to_remote_ref "{target}" main'
         return subprocess.Popen(
             ["bash", "-c", script],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -162,3 +163,59 @@ class LockTimeoutTests(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0, "should not claim success")
         self.assertIn("timed out waiting for another run", err)
         self.assertNotIn("pinned to origin/main", out)
+
+
+class TrailingSlashTests(unittest.TestCase):
+    """ANSIBLE_AUTOMATION_REPO_DIR with a trailing slash must not defeat the lock.
+
+    Reported by Codex on #219 after it merged. With ".../repo/" the sibling path
+    "${dir}.sync.lock" becomes ".../repo/.sync.lock", inside the checkout. The
+    `git clean -qfd` in this same function then unlinks it while the first
+    caller still holds the descriptor, so a second caller creates a new inode,
+    locks that, and enters the sync concurrently. The lock silently stops
+    serialising, which is the same shape as the bug it was added to fix.
+    """
+
+    def test_the_lock_stays_outside_the_checkout(self):
+        with TemporaryDirectory() as tmp:
+            f = Fixture(tmp)
+            p = f.sync(trailing_slash=True)
+            out, err = p.communicate(timeout=120)
+            self.assertEqual(p.returncode, 0, f"sync failed: {err}")
+            inside = list(f.checkout.rglob(".sync.lock")) + list(f.checkout.rglob("*.sync.lock"))
+            self.assertFalse(
+                inside,
+                f"lock landed inside the checkout, where `git clean -qfd` deletes it: {inside}",
+            )
+            self.assertTrue(
+                (f.checkout.parent / "repo.sync.lock").exists(),
+                "expected the same sibling lock as the no-slash form",
+            )
+
+    def test_a_trailing_slash_contends_on_the_same_lock(self):
+        """The decisive one, and deterministic.
+
+        Hold the sibling lock, then call with a trailing slash. If both path
+        forms resolve to one lock the call must block and give up; on main it
+        opens .../repo/.sync.lock instead, contends with nothing, and sails
+        through. Globbing for the file afterwards cannot show this, because the
+        `git clean -qfd` in the same function deletes the misplaced lock before
+        the test could see it, which made an earlier version of this test pass
+        against the bug.
+        """
+        with TemporaryDirectory() as tmp:
+            f = Fixture(tmp)
+            sibling = f.checkout.parent / "repo.sync.lock"
+            sibling.touch()
+            holder = subprocess.Popen(["flock", "-x", str(sibling), "sleep", "10"])
+            try:
+                p = f.sync(extra_env={"SYNC_REPO_LOCK_TIMEOUT": "1"}, trailing_slash=True)
+                out, err = p.communicate(timeout=60)
+            finally:
+                holder.kill(); holder.wait()
+        self.assertNotEqual(
+            p.returncode, 0,
+            "a trailing-slash caller ignored the held lock, so the two path "
+            "forms are not serialising against each other",
+        )
+        self.assertIn("timed out waiting for another run", err)
