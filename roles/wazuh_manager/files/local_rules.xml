@@ -86,6 +86,43 @@
     <group>vulnerability-detector,</group>
   </rule>
 
+  <!-- Rule 1002 false positives (issues #226, #223).
+       1002 matches $BAD_WORDS anywhere in the message, so these fire on words
+       that are arguments or known-benign noise, not reports of a problem.
+       Each child below is anchored to the full shape of one benign message so
+       that any other line from the same program still raises 1002. -->
+
+  <!-- Ansible module argument dump, syslog ident python3:
+       "ansible-ansible.posix.sysctl Invoked with ... ignoreerrors=False ..."
+       This line is written before the module runs and only lists its
+       arguments; it never reports a result. A failing task does not log here. -->
+  <rule id="100100" level="0">
+    <if_sid>1002</if_sid>
+    <program_name type="pcre2">^python3(\.\d+)?$</program_name>
+    <regex type="pcre2">^ansible-[\w.]+ Invoked with </regex>
+    <description>Ansible module invocation argument dump (not an error)</description>
+  </rule>
+
+  <!-- Same message where the ident is the module itself:
+       "ansible-basic.py: Invoked with path=..." -->
+  <rule id="100101" level="0">
+    <if_sid>1002</if_sid>
+    <program_name type="pcre2">^ansible-[\w.]+$</program_name>
+    <regex type="pcre2">^Invoked with </regex>
+    <description>Ansible module invocation argument dump (not an error)</description>
+  </rule>
+
+  <!-- QEMU libiscsi block-status probe rejected by the TrueNAS target (#223):
+       "kvm: iSCSI GET_LBA_STATUS failed at lba N: SENSE KEY:ILLEGAL_REQUEST(5)
+       ASCQ:INVALID_FIELD_IN_CDB(0x2400)". ~100k/h during vzdump. Only this exact
+       sense key and ASCQ is silenced; any other iSCSI failure still alerts. -->
+  <rule id="100102" level="0">
+    <if_sid>1002</if_sid>
+    <program_name>^QEMU$</program_name>
+    <regex type="pcre2">^kvm: iSCSI GET_LBA_STATUS failed at lba \d+: SENSE KEY:ILLEGAL_REQUEST\(5\) ASCQ:INVALID_FIELD_IN_CDB\(0x2400\)$</regex>
+    <description>QEMU iSCSI GET_LBA_STATUS unsupported by target (known, #223)</description>
+  </rule>
+
   <!-- Multiple authentication failures from same agent (possible lateral movement) -->
   <rule id="100060" level="12" frequency="10" timeframe="300">
     <if_matched_sid>5710</if_matched_sid>

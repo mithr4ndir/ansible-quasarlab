@@ -47,9 +47,13 @@ pytest roles/uptime_kuma/tests
 Or all of them at once, which is what to run before merging anything:
 
 ```
-uv run --with pytest --with pyyaml --with jinja2 --with "ansible-core==2.16.3" \
-  pytest roles/ tests/
+uv run --with pytest --with pyyaml --with jinja2 --with requests \
+  --with "ansible-core==2.16.3" pytest -rs roles/ tests/
 ```
+
+`requests` is there for `tests/test_proxmox_inventory_agent.py`, which drives the
+real community.proxmox inventory plugin against a stub API; without it that file
+skips, and `-rs` is what makes the skip visible.
 
 A `tests/` directory nested deeper than `roles/<role>/tests` is easy to miss:
 `roles/common/apps/kubectl/tests` is four levels down and was omitted from an earlier

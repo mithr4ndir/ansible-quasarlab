@@ -1,5 +1,8 @@
 ---
-plugin: community.proxmox.proxmox
+# community.proxmox.proxmox with one change: no guest agent call to a VM that is
+# not running, which Proxmox answers with a 500 that Wazuh alerts on (#226).
+# See inventory_plugins/quasarlab_proxmox.py.
+plugin: quasarlab_proxmox
 url: https://192.168.1.11:8006
 user: ansible@pve
 token_id: inventory

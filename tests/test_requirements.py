@@ -29,6 +29,9 @@ Why this exists. Three kinds of drift had all already happened here:
    first, so without the collection a control node has no dynamically
    discovered groups: no k8s, no cmd_center, no security. A scan that only
    reads tasks passes happily while the whole inventory is unloadable.
+   Since #226 the inventory names a repo-local plugin, inventory_plugins/
+   quasarlab_proxmox.py, which subclasses that collection's plugin, so the
+   dependency is now a Python import and the scan reads those too.
 """
 
 from __future__ import annotations
@@ -82,6 +85,12 @@ CORE_NAMESPACES = {"ansible.builtin", "ansible.legacy"}
 # line decides which files are loaded.
 INVENTORY_GLOBS = ("inventory*.yml", "inventory*.yaml")
 PLUGIN_KEY = re.compile(r"^\s*plugin:\s*['\"]?([a-z0-9_]+\.[a-z0-9_]+)\.([a-z0-9_]+)['\"]?\s*$")
+
+# Repo-local plugins that build on a collection import it from ansible_collections.
+LOCAL_PLUGIN_GLOBS = ("inventory_plugins/*.py", "callback_plugins/*.py")
+COLLECTION_IMPORT = re.compile(
+    r"^\s*(?:from|import)\s+ansible_collections\.([a-z0-9_]+\.[a-z0-9_]+)\.([a-z0-9_.]+)"
+)
 
 
 def _core_module_redirects() -> dict:
@@ -160,6 +169,13 @@ def _used(redirects: dict) -> dict:
             found.setdefault(namespace, set()).add(
                 f"{path.relative_to(REPO)}: {namespace}.{plugin} (inventory plugin)"
             )
+    for path in sorted(p for glob in LOCAL_PLUGIN_GLOBS for p in REPO.glob(glob)):
+        for line in path.read_text().splitlines():
+            match = COLLECTION_IMPORT.match(line)
+            if match:
+                found.setdefault(match.group(1), set()).add(
+                    f"{path.relative_to(REPO)}: {match.group(1)}.{match.group(2)} (local plugin import)"
+                )
     return {k: sorted(v) for k, v in found.items()}
 
 
@@ -210,7 +226,10 @@ class RequirementsTest(unittest.TestCase):
         # community.proxmox stay undeclared while every play still ran here.
         self.assertIn("community.proxmox", self.used)
         self.assertTrue(
-            any("inventory plugin" in s for s in self.used["community.proxmox"]),
+            any(
+                "inventory plugin" in s or "local plugin import" in s
+                for s in self.used["community.proxmox"]
+            ),
             self.used["community.proxmox"],
         )
 

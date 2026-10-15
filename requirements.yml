@@ -28,8 +28,10 @@ collections:
   # dependencies. Same story again.
   - name: kubernetes.core
     version: ">=2.4.0"
-  # community.proxmox.proxmox is the dynamic inventory plugin named in
-  # inventory.proxmox.yml, which ansible.cfg lists first, so without this
+  # community.proxmox.proxmox is the dynamic inventory plugin behind
+  # inventory.proxmox.yml (through inventory_plugins/quasarlab_proxmox.py,
+  # a subclass that skips agent calls to stopped VMs), which ansible.cfg
+  # lists first, so without this
   # collection a control node has no k8s, cmd_center or security groups at all.
   # It was the largest gap of the lot and the easiest to miss, because an
   # inventory plugin is not a task.
