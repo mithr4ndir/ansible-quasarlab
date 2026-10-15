@@ -37,6 +37,45 @@
     - item.user not in
       ((pbs_sync_user_list.stdout | from_json) | map(attribute='userid') | list)
 
+# PBS refuses `acl update --auth-id <token>` outright when the token does not
+# exist: `Error: no such API token`, rc 255, verified on pbs1 2026-10-15. So
+# the ACL task below dies on that terse message and the end-state assertion
+# further down, which is the one that names the command to fix it, never gets
+# the chance to run. Check it here instead, where the failure can explain
+# itself.
+- name: Read the API tokens of each reader user
+  ansible.builtin.command: >-
+    proxmox-backup-manager user list-tokens {{ item.user }} --output-format json
+  loop: "{{ pbs_sync_readers }}"
+  loop_control:
+    label: "{{ item.user }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_user_tokens
+  when: pbs_sync_readers | length > 0
+
+- name: Assert each reader token exists before granting it anything
+  ansible.builtin.assert:
+    that:
+      - item.item.token_authid in
+        ((item.stdout | from_json) | map(attribute='tokenid') | list)
+    fail_msg: >-
+      API token {{ item.item.token_authid }} does not exist on this host.
+      Creating it cannot be a task, because `user generate-token` reveals the
+      secret exactly once, so it is a deliberate operator step:
+      `proxmox-backup-manager user generate-token {{ item.item.user }}
+      {{ item.item.token_authid.split('!')[1] }}`
+      Store the secret in 1Password as
+      "PBS {{ item.item.token_authid }} token" (Infrastructure vault), then
+      re-run this play. See roles/pbs/README.md.
+    quiet: true
+  loop: "{{ pbs_sync_user_tokens.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.token_authid }}"
+  when:
+    - pbs_sync_readers | length > 0
+    - not (item.skipped | default(false))
+
 # Granted to the user AND its token. A PBS token's effective privileges are the
 # intersection of its own ACL and its owning user's, so granting only one of
 # the two yields an empty permission set that still authenticates with HTTP
