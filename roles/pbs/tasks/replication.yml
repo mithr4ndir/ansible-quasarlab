@@ -290,6 +290,13 @@
   register: pbs_sync_job_show
   when: pbs_sync_jobs | length > 0
 
+# `rate-in` comes back from PBS as the STRING "41943040 B", not a number, so
+# a bare `| int` on it yields 0 and the comparison is permanently unequal. That
+# made this task report changed on every single run, which is how a converge
+# task quietly becomes a no-op that nobody trusts. Verified against pbs2 on
+# 2026-10-15 by running the play twice and watching changed=1 both times.
+# Strip to digits before comparing.
+#
 # remove-vanished is the one that matters. If it ever flips to true the replica
 # silently stops being a second copy and becomes a mirror that propagates
 # deletions, which is the failure this whole file exists to prevent. PBS omits
@@ -324,7 +331,8 @@
       != (item.item.remove_vanished | default(pbs_sync_remove_vanished) | bool)
       or (pbs_sync_job_live['resync-corrupt'] | default(false) | bool)
       != (item.item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool)
-      or (pbs_sync_job_live['rate-in'] | default(0) | int)
+      or (pbs_sync_job_live['rate-in'] | default('') | string
+          | regex_replace('[^0-9]', '') | default('0', true) | int)
       != (item.item.rate_in | default(pbs_sync_rate_in) | int)
 
 # `sync-job update` cannot move a job between datastores or remotes, so a

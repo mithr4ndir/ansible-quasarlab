@@ -245,3 +245,47 @@ def test_sync_schedules_are_valid_systemd_calendar_events(schedule):
         capture_output=True, text=True,
     )
     assert res.returncode == 0, f"{schedule!r} rejected: {res.stderr.strip()}"
+
+
+# ----------------------------------------------------------- idempotence
+
+
+def _converge_when():
+    return _task("Converge the sync job settings")["when"]
+
+
+@pytest.mark.parametrize(
+    "live_rate,should_change",
+    [
+        ("41943040 B", False),   # what PBS actually returns: already correct
+        (41943040, False),       # plain integer, in case PBS ever changes
+        ("20971520 B", True),    # genuinely different, must reconcile
+        (None, True),            # unset, must be applied
+    ],
+)
+def test_rate_in_comparison_survives_the_units_pbs_actually_returns(
+    live_rate, should_change
+):
+    """PBS returns rate-in as the string "41943040 B", not a number.
+
+    A bare `| int` on that yields 0, so the comparison was permanently unequal
+    and this task reported changed on every run. Verified against pbs2 on
+    2026-10-15 by running the play twice and getting changed=1 both times. A
+    converge task that always fires is indistinguishable from one that never
+    works.
+    """
+    job = PBS2["pbs_sync_jobs"][0]
+    live = {
+        "schedule": job["schedule"],
+        "remove-vanished": False,
+        "resync-corrupt": True,
+    }
+    if live_rate is not None:
+        live["rate-in"] = live_rate
+
+    import json
+
+    variables = dict(DEFAULTS, **PBS2)
+    variables["item"] = {"item": job, "stdout": json.dumps(live), "skipped": False}
+    variables["pbs_sync_job_live"] = live
+    assert _when(_converge_when()[1:], variables) is should_change
