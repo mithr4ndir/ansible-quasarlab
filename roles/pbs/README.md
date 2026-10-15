@@ -67,12 +67,28 @@ accepted, then migrated by PBS into a separate prune job. So
 
 ```
 # proxmox-backup-manager prune-job list
-default-lab-f7b1615e...  store lab  schedule hourly
-  keep-hourly 24  keep-daily 7  keep-weekly 4  keep-monthly 3
+default-lab-f7b1615e...  store lab  schedule 12:00
+  keep-hourly 1  keep-daily 7  keep-weekly 4  keep-monthly 3
 ```
 
 Check `prune-job list` or `/etc/proxmox-backup/prune.cfg` before concluding that
 retention was dropped.
+
+## keep-* counts buckets with snapshots in them, not clock time
+
+This is the part that makes retention couple to backup cadence. PBS walks the
+group newest first and keeps the newest snapshot in each of the last N distinct
+buckets *that contain a snapshot*. `keep-hourly 24` therefore means "the last 24
+hours" only when backups are hourly. Under the daily schedule this lab now runs,
+each snapshot lands in its own hour bucket, so the same 24 would mean the last
+24 **days** and the daily tail would roughly triple.
+
+So changing the backup schedule without revisiting `keep-hourly` is a silent
+storage change, not a no-op. It is 1 here, which retains nothing that
+`keep-daily` does not already retain, because the newest snapshot of the newest
+hour bucket is the newest snapshot overall. It cannot be 0: the API range is
+`(1 - N)` and `prune-job update --keep-hourly 0` is rejected, so removing the
+rule outright needs `--delete keep-hourly`, which this role does not model.
 
 ## Schedules are systemd calendar events
 
@@ -82,6 +98,15 @@ bad value from inside `datastore create` as `unable to parse calendar event at
 
 `daily 03:30` is **not** valid: `hourly`, `daily` and `weekly` are complete
 expressions and cannot take a time. Use a bare `03:30` for "every day at".
+
+A bare time here is **UTC**, because both PBS guests run UTC while the PVE nodes
+do not (pve is `America/Los_Angeles`, pve2 is `America/New_York`, measured
+2026-10-15). The same literal means a different instant depending on which host
+evaluates it, so GC at `03:30` is 20:30 Pacific and does not collide with the
+10:00 UTC backup window even though the numbers look adjacent. The PVE side of
+this is worse, and is documented in `roles/pve/pbs_storage/defaults/main.yml`:
+a cluster backup job is evaluated per node in that node's local time, so a bare
+`03:00` splits one job into two runs three hours apart.
 
 ## Version pairing
 
@@ -140,7 +165,7 @@ returned 0, because it returns 0 either way.
 
 ## Retention has exactly one owner
 
-PBS owns it, via its own hourly prune job. The PVE backup job deliberately sets
+PBS owns it, via its own daily prune job. The PVE backup job deliberately sets
 no `prune-backups`, so there is one policy rather than two pruning the same
 datastore, and the PVE token does not need `Datastore.Prune`.
 
