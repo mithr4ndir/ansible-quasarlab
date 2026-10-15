@@ -36,16 +36,39 @@ pbs_datastore_fstype: ext4
 
 # Retention. Deliberately expressed here rather than only in the PVE job so the
 # datastore enforces its own floor even if a job is misconfigured.
-pbs_prune_keep_hourly: 24
+#
+# keep-hourly is 1 because the backup job runs once a day (roles/pve/pbs_storage:
+# 10:00 UTC), and PBS keep-* options count BUCKETS THAT CONTAIN SNAPSHOTS, not
+# wall-clock hours: it walks snapshots newest first and keeps the newest one in
+# each of the last N distinct hour buckets. With hourly backups, keep-hourly 24
+# meant the last 24 hours. With daily backups the same 24 would mean the last 24
+# DAYS, tripling the daily tail on a datastore already at 56% of 590G. The value
+# cannot be 0 either: the API range is documented as (1 - N) and
+# `prune-job update --keep-hourly 0` is rejected, so clearing it needs
+# `--delete keep-hourly`, which this role does not model. 1 is exactly
+# equivalent to not having the rule at all, because the newest snapshot of the
+# newest hour bucket IS the newest snapshot overall, which keep-daily already
+# keeps. That makes this a no-op rule rather than an unmodelled deletion.
+pbs_prune_keep_hourly: 1
 pbs_prune_keep_daily: 7
 pbs_prune_keep_weekly: 4
 pbs_prune_keep_monthly: 3
 
-pbs_prune_schedule: "hourly"
+# Prune once a day, after the backup window rather than during it. Backups
+# start at 10:00 UTC and the slowest node took 17 minutes on hourly deltas, so
+# a daily run carrying 24h of dirty blocks has an hour of headroom before this
+# fires. Pruning hourly would be 23 no-op runs a day now that snapshots only
+# arrive once.
+pbs_prune_schedule: "12:00"
 # Schedules are systemd calendar events, validated against `systemd-analyze
 # calendar` before use. "daily 03:30" is NOT valid: the shorthands (hourly,
 # daily, weekly) are complete expressions and cannot take a time, which cost a
 # failed run to discover. Use a bare time for "every day at".
+#
+# These bare times are UTC, because both PBS guests are, unlike the PVE nodes
+# (`timedatectl` on pbs1 and pbs2, 2026-10-15). So GC at 03:30 is 20:30 Pacific
+# and nowhere near the 10:00 UTC backup window. Check that before assuming a
+# clash: the same literal means a different instant on a PVE node.
 pbs_gc_schedule: "03:30"
 pbs_verify_job_id: "verify-{{ pbs_datastore_name }}"
 pbs_verify_schedule: "weekly"

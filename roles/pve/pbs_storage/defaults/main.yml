@@ -22,7 +22,27 @@ pbs_storage_token_env: PBS_TOKEN_SECRET
 # second one, because the old job still points at the decommissioned
 # `nas-backup` and is disabled. Updating it in place avoids two jobs competing.
 pbs_backup_job_id: "99a51b34-59e4-4fde-aab1-912f7c309112"
-pbs_backup_schedule: "hourly"
+# Once a day. The "UTC" suffix is load-bearing, not decoration.
+#
+# A cluster backup job is evaluated by pvescheduler on EVERY node, and PVE
+# parses a bare clock time in that node's LOCAL time. The two nodes do not
+# agree on local time: pve is America/Los_Angeles and pve2 is
+# America/New_York. Measured with PVE's own parser on 2026-10-15:
+#
+#   schedule          pve resolves to     pve2 resolves to
+#   03:00             10:00 UTC           07:00 UTC
+#   10:00 UTC         10:00 UTC           10:00 UTC
+#
+# So a bare "03:00" would split one job into two runs three hours apart, and
+# pve2 would start at midnight Pacific. A named zone is rejected outright
+# ("invalid calendar event '03:00 America/Los_Angeles'"); UTC is the only
+# suffix PVE's parser accepts. Pinning UTC is what makes the cluster fire once.
+#
+# The cost of pinning UTC is that this does not follow DST: 10:00 UTC is 03:00
+# PDT now and 02:00 PST after 2026-11-01. Both are quiet hours. Making the
+# nodes agree on a timezone is the only way to get a DST-following 03:00, and
+# that is a change to pve2's clock, not to this job.
+pbs_backup_schedule: "10:00 UTC"
 pbs_backup_mode: snapshot
 # Exclusions. The job is `all 1`, so anything not excluded gets backed up.
 #
@@ -37,7 +57,7 @@ pbs_backup_mode: snapshot
 pbs_backup_exclude_pbs_vmids: [103, 120]
 
 # Templates are static and reproducible from scripts/build-cloud-template.sh,
-# so backing them up hourly is wasted read I/O on a pool that currently has a
+# so backing them up at all is wasted read I/O on a pool that currently has a
 # vdev running ~50x the latency of its siblings. Discovered from the live
 # cluster rather than hardcoded, so a new template is excluded automatically.
 pbs_backup_exclude_templates: true
@@ -48,7 +68,7 @@ pbs_backup_exclude_templates: true
 # See feedback_pve_disk_backup_flag_vacuous.
 pbs_backup_exclude_vmids: [9000]
 # Retention is deliberately NOT set on the PVE job. PBS owns it via its own
-# hourly prune job (roles/pbs: keep 24/7/4/3), so setting it here too would
+# prune job (roles/pbs: keep 1/7/4/3), so setting it here too would
 # mean two policies pruning the same datastore, and would additionally require
 # granting Datastore.Prune to the PVE token. One enforcing side is correct.
 
