@@ -289,3 +289,89 @@ def test_rate_in_comparison_survives_the_units_pbs_actually_returns(
     variables["item"] = {"item": job, "stdout": json.dumps(live), "skipped": False}
     variables["pbs_sync_job_live"] = live
     assert _when(_converge_when()[1:], variables) is should_change
+
+
+# ------------------------------------------- the gate covers the whole block
+
+# Anything naming one of these is part of the PVE client identity.
+# pbs_user_list is the read that feeds the block and is useless without it.
+# Derived from the variables tasks touch rather than from their names, so a
+# task added to this area later is covered without anyone editing this file.
+# The idea is ladino-12's, from a parallel session that hit the drift below.
+PVE_IDENTITY_VARS = (
+    "pbs_pve_user",
+    "pbs_pve_token_authid",
+    "pbs_pve_roles",
+    "pbs_user_list",
+    "pbs_token_privs",
+)
+
+
+def _mentions(value, needle):
+    if isinstance(value, str):
+        return needle in value
+    if isinstance(value, dict):
+        return any(_mentions(v, needle) for v in value.values())
+    if isinstance(value, list):
+        return any(_mentions(v, needle) for v in value)
+    return False
+
+
+def _walk(tasks, inherited=()):
+    """Yield (task, conditions_in_scope), descending into block/rescue/always.
+
+    Recursion matters: the identity tasks live inside a `block:`, and a
+    traversal that only walked the top level would find none of them and pass
+    for exactly the wrong reason. That is not hypothetical, it is what made
+    two guards in tests/test_pbs_datastore_guards.py silent passes when this
+    block was introduced.
+    """
+    for t in tasks or []:
+        if not isinstance(t, dict):
+            continue
+        own = t.get("when", [])
+        own = [own] if isinstance(own, str) else list(own)
+        scope = tuple(inherited) + tuple(str(c) for c in own)
+        nested = [k for k in ("block", "rescue", "always") if k in t]
+        if nested:
+            for key in nested:
+                yield from _walk(t[key], scope)
+        else:
+            yield t, scope
+
+
+def test_no_pve_identity_task_escapes_the_gate():
+    """Every task touching the PVE client identity must be behind the gate.
+
+    Earned on 2026-10-15. roles/pbs was run against pbs2 from a branch with no
+    gate at all, which created `pve@pbs` on the REPLICA with Datastore.Backup
+    and Datastore.Audit on /datastore/lab, then failed granting the token
+    because `pve@pbs!pve` exists only on the primary. The failure was the
+    harmless part: the user and its two ACLs were created and stayed. A user
+    with datastore write privileges and no credential cannot be authenticated
+    as today, and is a door the moment anyone sets a password on it.
+    """
+    found = [
+        (t.get("name"), scope)
+        for t, scope in _walk(MAIN)
+        if any(_mentions(t, v) for v in PVE_IDENTITY_VARS)
+    ]
+    assert found, (
+        "no PVE identity tasks found at all, so this test is vacuous; "
+        "the variable list probably drifted"
+    )
+    ungated = [
+        name for name, scope in found
+        if not any("pbs_configure_pve_client" in c for c in scope)
+    ]
+    assert ungated == [], (
+        f"these tasks touch the PVE client identity but are not behind "
+        f"pbs_configure_pve_client, so they would provision it on a replica: {ungated}"
+    )
+
+
+def test_the_gate_defaults_to_the_primary_behaviour():
+    """True, not false. A default of false would stop provisioning the
+    identity pbs1 needs and surface as a permission error at backup time
+    rather than here."""
+    assert DEFAULTS["pbs_configure_pve_client"] is True
