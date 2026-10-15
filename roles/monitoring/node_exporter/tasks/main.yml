@@ -11,19 +11,46 @@
     path: "{{ node_exporter_install_dir }}/node_exporter"
   register: node_exporter_bin
 
+# No module reports an installed binary's version. This only reads, so it runs
+# under --check as well and never reports a change. Without it the install
+# steps were guarded on the binary merely existing, so bumping
+# node_exporter_version upgraded nothing that already had a binary.
+- name: Read installed node_exporter version
+  ansible.builtin.command:
+    argv:
+      - "{{ node_exporter_install_dir }}/node_exporter"
+      - --version
+  register: node_exporter_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: node_exporter_bin.stat.exists
+
+# A binary that will not run or prints no version reads as '', so it is
+# reinstalled rather than trusted.
+- name: Decide whether node_exporter needs installing
+  ansible.builtin.set_fact:
+    node_exporter_needs_install: >-
+      {{ (node_exporter_installed.stdout | default('')
+          | regex_search('version ([^ ]+)', '\1') | default([''], true) | first)
+         != node_exporter_version }}
+
 - name: Download node_exporter
   ansible.builtin.get_url:
     url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
-    dest: /tmp/node_exporter.tar.gz
+    dest: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    checksum: "sha256:{{ node_exporter_tarball_sha256 }}"
     mode: '0644'
-  when: not node_exporter_bin.stat.exists
+  when: node_exporter_needs_install
 
+# Under --check the download above reports the pending upgrade but fetches
+# nothing, so these two would fail on a missing archive.
 - name: Extract node_exporter
   ansible.builtin.unarchive:
-    src: /tmp/node_exporter.tar.gz
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
     dest: /tmp
     remote_src: true
-  when: not node_exporter_bin.stat.exists
+  when: node_exporter_needs_install and not ansible_check_mode
 
 - name: Ensure install directory exists
   ansible.builtin.file:
@@ -39,7 +66,8 @@
     owner: root
     group: root
     remote_src: true
-  when: not node_exporter_bin.stat.exists
+  when: node_exporter_needs_install and not ansible_check_mode
+  notify: Restart node_exporter
 
 - name: Create textfile collector directory
   ansible.builtin.file:

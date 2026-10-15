@@ -1,5 +1,15 @@
 ---
-node_exporter_version: "1.7.0"
+# Bumping this is enough to upgrade the fleet: the role compares it with the
+# installed binary's --version and reinstalls and restarts on a mismatch. The
+# checksum must change with it. Take it from the release's sha256sums.txt and
+# cross-check it against the asset digest:
+#   gh api repos/prometheus/node_exporter/releases/tags/v<version> \
+#     --jq '.assets[] | select(.name|endswith("linux-amd64.tar.gz")) | .digest'
+# 1.12.1 replaces 1.7.0, whose netlink arp collector failed every scrape on the
+# Calico k8s nodes (rtnetlink NeighMessage has a wrong attribute data length,
+# #225).
+node_exporter_version: "1.12.1"
+node_exporter_tarball_sha256: "b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63"
 node_exporter_port: 9100
 node_exporter_install_dir: /usr/local/bin
 node_exporter_textfile_dir: /var/lib/node_exporter/textfiles
