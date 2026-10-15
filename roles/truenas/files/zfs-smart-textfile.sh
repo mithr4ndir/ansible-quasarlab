@@ -68,6 +68,74 @@ disk_of_path() {
     basename "$(dirname "$(readlink -f "$SYS_CLASS_BLOCK/$part")")"
 }
 
+# Per-vdev latency, as a real Prometheus histogram.
+#
+# WHY THIS EXISTS. On 2026-10-06 tank's mirror-2 was running roughly 50x the
+# I/O latency of its three sibling vdevs (58ms read against 1ms) and every
+# existing signal was green: the pool ONLINE, smart_device_health 1 on both
+# members, zero reallocated, pending, uncorrectable and CRC, zero ata link
+# resets. A vdev can be fifty times slower than its peers with nothing to
+# show for it, so the slow one was found by hand with `zpool iostat` and
+# could not be alerted on, trended, or even confirmed later. See #218.
+#
+# WHY A HISTOGRAM AND NOT A GAUGE. `zpool iostat -l` reports an AVERAGE over
+# an interval, which means either blocking the collector for a sample window
+# every run, or reporting a since-boot average that can never recover from a
+# past event and hides every transient. `zpool iostat -w` instead gives
+# cumulative bucket COUNTS since boot, which is exactly a Prometheus
+# histogram: rate() over the buckets gives the latency distribution during
+# any window, and histogram_quantile() turns that into a p99 that can be
+# compared between sibling vdevs. It also costs nothing to read.
+#
+# The native buckets are powers of two from 1ns to ~137s, 37 of them, and
+# almost all are empty. They are folded into the coarse boundaries below so
+# the series count stays bounded: 14 vdevs x 4 metrics x 11 buckets.
+emit_vdev_latency() {
+    local pool="$1"
+    zpool iostat -Hp -w -v "$pool" 2>/dev/null | awk -v pool="$pool" '
+    BEGIN {
+        n = split("100000 500000 1000000 5000000 10000000 50000000 100000000 500000000 1000000000 5000000000", edge, " ")
+        split("0.0001 0.0005 0.001 0.005 0.01 0.05 0.1 0.5 1 5", le, " ")
+        mname[1] = "total_wait_read";  mcol[1] = 2
+        mname[2] = "total_wait_write"; mcol[2] = 3
+        mname[3] = "disk_wait_read";   mcol[3] = 4
+        mname[4] = "disk_wait_write";  mcol[4] = 5
+        section = ""
+    }
+    function flush(   m, i, cum) {
+        if (section == "") return
+        for (m = 1; m <= 4; m++) {
+            cum = 0
+            for (i = 1; i <= n; i++) {
+                cum += bin[m, i]
+                printf "zfs_vdev_%s_seconds_bucket{pool=\"%s\",vdev=\"%s\",le=\"%s\"} %d\n", mname[m], pool, section, le[i], cum
+            }
+            cum += bin[m, n + 1]
+            printf "zfs_vdev_%s_seconds_bucket{pool=\"%s\",vdev=\"%s\",le=\"+Inf\"} %d\n", mname[m], pool, section, cum
+            printf "zfs_vdev_%s_seconds_count{pool=\"%s\",vdev=\"%s\"} %d\n", mname[m], pool, section, cum
+        }
+    }
+    # A section header is a lone name: the pool, a top-level vdev, or a leaf.
+    NF == 1 && $1 !~ /^[0-9]+$/ {
+        flush()
+        section = $1
+        for (m = 1; m <= 4; m++) for (i = 1; i <= n + 1; i++) bin[m, i] = 0
+        next
+    }
+    # Data row: bucket upper bound in ns, then 11 columns.
+    NF >= 12 && $1 ~ /^[0-9]+$/ {
+        b = $1 + 0
+        slot = n + 1
+        for (i = 1; i <= n; i++) if (b <= edge[i]) { slot = i; break }
+        for (m = 1; m <= 4; m++) {
+            v = $(mcol[m])
+            if (v ~ /^[0-9]+$/) bin[m, slot] += v
+        }
+    }
+    END { flush() }
+    '
+}
+
 {
     echo "# HELP zfs_pool_size_bytes Total pool size."
     echo "# TYPE zfs_pool_size_bytes gauge"
@@ -91,6 +159,19 @@ disk_of_path() {
         echo "zfs_pool_fragmentation_ratio{pool=\"$name\"} $(awk -v v="${frag:-0}" 'BEGIN{printf "%.4f", v/100}')"
         echo "zfs_pool_capacity_ratio{pool=\"$name\"} $(awk -v v="${cap:-0}" 'BEGIN{printf "%.4f", v/100}')"
     done < <(zpool list -Hp -o name,size,alloc,free,health,fragmentation,capacity 2>/dev/null)
+
+    echo "# HELP zfs_vdev_total_wait_read_seconds Read latency including queueing, per vdev."
+    echo "# TYPE zfs_vdev_total_wait_read_seconds histogram"
+    echo "# HELP zfs_vdev_total_wait_write_seconds Write latency including queueing, per vdev."
+    echo "# TYPE zfs_vdev_total_wait_write_seconds histogram"
+    echo "# HELP zfs_vdev_disk_wait_read_seconds Read latency at the disk, excluding ZFS queueing."
+    echo "# TYPE zfs_vdev_disk_wait_read_seconds histogram"
+    echo "# HELP zfs_vdev_disk_wait_write_seconds Write latency at the disk, excluding ZFS queueing."
+    echo "# TYPE zfs_vdev_disk_wait_write_seconds histogram"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        emit_vdev_latency "$p"
+    done < <(zpool list -Hp -o name 2>/dev/null)
 
     echo "# HELP smart_device_health smartctl overall-health: 1=PASSED 0=FAILED."
     echo "# TYPE smart_device_health gauge"
