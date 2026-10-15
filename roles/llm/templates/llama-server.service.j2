@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+[Unit]
+Description=llama.cpp server ({{ llm_server_model }})
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+RequiresMountsFor={{ llm_models_dir }}
+
+[Service]
+Type=simple
+User={{ llm_user }}
+Group={{ llm_user }}
+# The '+' runs this one step as root. CUDA creates /dev/nvidia-uvm on first use
+# through the setuid nvidia-modprobe, which NoNewPrivileges below would block.
+ExecStartPre=+/usr/bin/nvidia-modprobe -u -c=0
+ExecStart={{ llm_llamacpp_prefix }}/bin/llama-server \
+    --model {{ llm_models_dir }}/{{ llm_server_model }} \
+    --host 0.0.0.0 \
+    --port {{ llm_server_port }} \
+    --ctx-size {{ llm_server_ctx }} \
+    --n-gpu-layers {{ llm_server_gpu_layers }} \
+    --metrics
+Restart=on-failure
+RestartSec=10
+# Loading weights into VRAM takes a while; never wait forever.
+TimeoutStartSec=300
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths={{ llm_models_dir }}
+StateDirectory={{ llm_user }}
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

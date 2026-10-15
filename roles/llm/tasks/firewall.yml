@@ -1,0 +1,39 @@
+---
+# Rules go in before the policy flips to deny, so the SSH session running this
+# play is never cut off. Recovery if it ever is: qm guest exec 121 -- ufw disable
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Allow SSH from the LAN
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "22"
+    src: "{{ llm_lan_cidr }}"
+    comment: ssh
+
+# Prometheus scrapes from pods on the k8s nodes, which leave SNATed to a node IP.
+- name: Allow node_exporter from the LAN
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "9100"
+    src: "{{ llm_lan_cidr }}"
+    comment: node_exporter
+
+- name: Allow the llama-server API from approved hosts only
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "{{ llm_server_port | string }}"
+    src: "{{ item }}"
+    comment: llama-server
+  loop: "{{ llm_api_allowed_sources }}"
+
+- name: Deny inbound by default and enable
+  community.general.ufw:
+    state: enabled
+    direction: incoming
+    policy: deny

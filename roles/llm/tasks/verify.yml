@@ -1,0 +1,33 @@
+---
+# A green recap is not the outcome. The outcome is the GPU answering and the
+# server answering, so check both.
+- name: Query the GPU
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "20"
+      - nvidia-smi
+      - --query-gpu=name,memory.total,driver_version
+      - --format=csv,noheader
+  register: llm_gpu
+  changed_when: false
+  check_mode: false
+
+- name: Assert the 2080 Ti is visible to the driver
+  ansible.builtin.assert:
+    that: "'2080 Ti' in llm_gpu.stdout"
+    fail_msg: "nvidia-smi did not report the RTX 2080 Ti: {{ llm_gpu.stdout | default('') }} {{ llm_gpu.stderr | default('') }}"
+
+- name: Wait for llama-server to finish loading the model
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_server_port }}/health"
+    status_code: 200
+  register: llm_health
+  retries: 30
+  delay: 10
+  until: llm_health.status == 200
+  check_mode: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ llm_gpu.stdout }} | llama-server healthy on :{{ llm_server_port }} with {{ llm_server_model }}"

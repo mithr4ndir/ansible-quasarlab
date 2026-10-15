@@ -1,0 +1,59 @@
+---
+# Local LLM host: llm1, RTX 2080 Ti (TU102, sm_75, 11 GB) passed through from
+# pve2. VM defined in terraform-quasarlab proxmox/llm.
+
+# NVIDIA driver from the Ubuntu archive, not NVIDIA's apt repo. The no-dkms
+# headless metapackage plus linux-modules-nvidia-*-generic gives prebuilt,
+# signed modules that track the generic kernel, so an unattended kernel upgrade
+# never waits on a DKMS rebuild. The plain nvidia-headless-<ver>-server pulls
+# nvidia-dkms in, which is exactly what this avoids.
+llm_nvidia_driver_branch: "580"
+
+# GSP firmware off, carried over from the jellyfin era on this same card under
+# VFIO (roles/jellyfin history, 2026-03). Only honoured by the proprietary
+# modules, which is what the non-"open" packages above install.
+llm_nvidia_disable_gsp: true
+
+# Model weights live on the second disk (scsi1). Addressed by the PVE slot id,
+# never by sd letter: LUN order is not sd order.
+llm_models_device: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+llm_models_dir: /srv/models
+
+# llama.cpp, built from source against Ubuntu's nvidia-cuda-toolkit (12.0). That
+# toolkit only accepts gcc <= 12, hence the explicit host compiler.
+llm_llamacpp_repo: https://github.com/ggml-org/llama.cpp.git
+llm_llamacpp_tag: b11306 # 2026-09-30
+llm_llamacpp_commit: 4f31296a907d73f3409f720429bcf31111615d77
+llm_llamacpp_src: /usr/local/src/llama.cpp
+llm_llamacpp_prefix: /opt/llama.cpp
+llm_cuda_architectures: "75"
+llm_build_timeout_secs: 5400
+
+llm_user: llama
+
+# Pinned to a repo revision and checked by sha256, so a re-uploaded file on the
+# Hub cannot silently change what is served. Qwen3-8B is Apache-2.0, ungated.
+llm_hf_base: https://huggingface.co
+llm_models:
+  - repo: Qwen/Qwen3-8B-GGUF
+    revision: 7c41481f57cb95916b40956ab2f0b139b296d974
+    file: Qwen3-8B-Q4_K_M.gguf
+    sha256: d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785
+  - repo: Qwen/Qwen3-8B-GGUF
+    revision: 7c41481f57cb95916b40956ab2f0b139b296d974
+    file: Qwen3-8B-Q8_0.gguf
+    sha256: 408b955510e196121c1c375201744783b5c9a43c7956d73fc78df54c66e883d6
+
+# What llama-server loads. Must be one of llm_models.
+llm_server_model: Qwen3-8B-Q4_K_M.gguf
+llm_server_port: 8080
+llm_server_ctx: 8192
+# Every layer on the GPU. Anything that does not fit fails loudly at start
+# instead of quietly spilling to the CPU.
+llm_server_gpu_layers: 999
+
+# Host firewall. Default deny inbound. The API has no authentication, so it is
+# reachable only from command-center1, where the agent work runs.
+llm_lan_cidr: 192.168.1.0/24
+llm_api_allowed_sources:
+  - 192.168.1.88 # command-center1

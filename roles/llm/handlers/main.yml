@@ -1,0 +1,14 @@
+---
+- name: Reboot for NVIDIA driver
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+    msg: "Rebooting to load the NVIDIA driver"
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart llama-server
+  ansible.builtin.systemd_service:
+    name: llama-server
+    state: restarted
