@@ -528,3 +528,65 @@
     name: proxmox-backup-proxy.service
     enabled: true
     state: started
+
+# Backup freshness metrics. See defaults/main.yml for why this reads the
+# datastore directly instead of the PBS API.
+- name: Install the PBS backup metrics collector
+  ansible.builtin.copy:
+    src: pbs-backup-collector.sh
+    dest: /usr/local/bin/pbs-backup-collector.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: pbs_metrics_enabled | bool
+  tags:
+    - pbs-metrics
+
+- name: Install the PBS backup metrics units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - pbs-backup-collector.service
+    - pbs-backup-collector.timer
+  register: pbs_metrics_units
+  when: pbs_metrics_enabled | bool
+  tags:
+    - pbs-metrics
+
+# The collector writes into node_exporter's textfile directory, which the
+# monitoring role owns. Create it only if that role has not run yet, so a
+# fresh guest does not have a timer failing against a missing path.
+- name: Ensure the node_exporter textfile directory exists
+  ansible.builtin.file:
+    path: "{{ pbs_metrics_textfile_dir }}"
+    state: directory
+    mode: '01777'
+  when: pbs_metrics_enabled | bool
+  tags:
+    - pbs-metrics
+
+- name: Enable the PBS backup metrics timer
+  ansible.builtin.systemd:
+    name: pbs-backup-collector.timer
+    enabled: true
+    state: "{{ 'restarted' if pbs_metrics_units is changed else 'started' }}"
+    daemon_reload: true
+  when: pbs_metrics_enabled | bool
+  tags:
+    - pbs-metrics
+
+# Populate the .prom immediately rather than leaving Prometheus without the
+# series until the timer first fires, which would make an absent() alert fire
+# on every fresh deploy.
+- name: Run the collector once so the metrics exist straight away
+  ansible.builtin.systemd:
+    name: pbs-backup-collector.service
+    state: started
+  when: pbs_metrics_enabled | bool
+  changed_when: false
+  tags:
+    - pbs-metrics
