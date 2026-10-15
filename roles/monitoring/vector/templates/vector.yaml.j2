@@ -28,13 +28,65 @@ sources:
     ignore_older_secs: 86400
 {% endif %}
 
+{#
+  QEMU's libiscsi client asks the TrueNAS target for GET LBA STATUS on nearly
+  every block read and the target rejects the CDB. ~105k lines/h across the PVE
+  hosts, mostly from vzdump starting stopped VMs (issue #223). Anchored on the
+  exact sense key, so a different iSCSI failure (a medium error, a lost
+  connection) still reaches Loki.
+#}
+{% set vector_iscsi_lba_status_re = "^kvm: iSCSI GET_LBA_STATUS failed at lba \\d+: SENSE KEY:ILLEGAL_REQUEST\\(5\\) ASCQ:INVALID_FIELD_IN_CDB\\(0x2400\\)$" %}
 transforms:
+  # Known-benign lines that would otherwise dominate every "error" search in
+  # Loki. Each entry matches one exact message shape, never a generic word like
+  # "error", so a new failure from the same program is still shipped.
+  #   - NVRM: nvidia module loaded on a host with no GPU.
+  #   - GET_LBA_STATUS: see above; still counted by iscsi_lba_status_metric.
+  #   - syslogin_perform_logout: Debian 13 ships no utmp, so sshd's legacy
+  #     logout() call fails on every session close. Login accounting lives in
+  #     wtmpdb/lastlog2 and is unaffected (#227).
+  #   - networkd-dispatcher cali*: Calico veth already gone when the dispatcher
+  #     inspects it (#228).
+  #   - containerd ContainerStatus NotFound: kubelet asking about a container
+  #     that was already removed (#228).
+  # `string(...) ?? ""` rather than `string!`, so an entry without a message
+  # passes cleanly instead of raising a VRL error for every such event.
   noise_filter:
     type: filter
     inputs:
       - journald
       - var_log
-    condition: '!contains(string!(.message), "NVRM: No NVIDIA GPU found")'
+    condition: |
+      msg = string(.message) ?? ""
+      noise = contains(msg, "NVRM: No NVIDIA GPU found")
+      noise = noise || match(msg, r'{{ vector_iscsi_lba_status_re }}')
+      noise = noise || msg == "syslogin_perform_logout: logout() returned an error"
+      noise = noise || match(msg, r'^ERROR:Failed to get interface "cali[0-9a-f]+" status: Command ')
+      noise = noise || match(msg, r'level=error msg="ContainerStatus for \\"[0-9a-f]{64}\\" failed" error="rpc error: code = NotFound desc = ')
+      !noise
+
+{% if 'proxmox' in group_names %}
+  # The GET_LBA_STATUS lines are dropped above but the condition is a real
+  # storage behaviour (block-status never works, so backups may read sparse
+  # regions in full), so it stays visible as a Prometheus counter instead.
+  iscsi_lba_status:
+    type: filter
+    inputs:
+      - journald
+    condition: |
+      match(string(.message) ?? "", r'{{ vector_iscsi_lba_status_re }}')
+
+  iscsi_lba_status_metric:
+    type: log_to_metric
+    inputs:
+      - iscsi_lba_status
+    metrics:
+      - type: counter
+        field: message
+        name: qemu_iscsi_get_lba_status_failed_total
+        tags:
+          host: "{{ inventory_hostname }}"
+{% endif %}
 
   remap:
     type: remap
@@ -128,3 +180,18 @@ sinks:
       app: "{% raw %}{{ app }}{% endraw %}"
     remove_label_fields: true
     out_of_order_action: accept
+{% if 'proxmox' in group_names %}
+
+  # Listens on all interfaces like node_exporter does on these hosts.
+  # suppress_timestamp: otherwise each sample carries the time of the last
+  # matching log line, and between bursts Prometheus would reject it as too old.
+  # flush_period_secs: a series unseen for one flush period is dropped and
+  # restarts from zero; pve2 can go minutes without a match.
+  metrics:
+    type: prometheus_exporter
+    inputs:
+      - iscsi_lba_status_metric
+    address: "0.0.0.0:{{ vector_metrics_port }}"
+    suppress_timestamp: true
+    flush_period_secs: 86400
+{% endif %}

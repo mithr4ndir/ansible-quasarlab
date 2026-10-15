@@ -20,3 +20,8 @@ loki_endpoint: "http://192.168.1.231:3100"
 # because it changes label values in Loki and would break existing queries and
 # dashboards if done carelessly.
 vector_version: "0.56.0-1"
+
+# Prometheus exporter for counters derived from dropped log lines. Only
+# rendered on Proxmox hosts, where it counts the QEMU iSCSI GET_LBA_STATUS
+# lines that the noise filter keeps out of Loki (issue #223).
+vector_metrics_port: 9598
