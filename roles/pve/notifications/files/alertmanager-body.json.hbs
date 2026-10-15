@@ -1,0 +1,17 @@
+[
+  {
+    "labels": {
+      "alertname": "PveNotification",
+      "source": "proxmox",
+      "severity": "{{#if (eq severity "error")}}critical{{else}}warning{{/if}}",
+      "pve_severity": "{{ severity }}",
+      "pve_type": "{{ fields.type }}",
+      "instance": "{{ fields.hostname }}",
+      "job_id": "{{ fields.[job-id] }}"
+    },
+    "annotations": {
+      "summary": "{{ escape title }}",
+      "description": "{{ escape title }}\n\n{{ escape message }}"
+    }
+  }
+]

@@ -1,0 +1,43 @@
+---
+# PVE notification routing (ansible-quasarlab #224): warnings and errors go to
+# Alertmanager, which routes them to Discord. Nothing is mailed: the nodes
+# have no relayhost and outbound port 25 is blocked.
+#
+# The template carries no comments and no ansible_managed header because PVE's
+# section-config parser rejects `#` lines ("line 1 - syntax error (expected
+# header)"), which would break every notification on the cluster. The
+# built-in default-matcher and mail-to-root are written out and disabled:
+# leaving them out of the file brings back PVE's built-in defaults, which
+# match everything and mail root@pam.
+#
+# /etc/pve is the cluster filesystem, so this file is shared by every node:
+# write it once per run. pmxcfs only accepts root:www-data and 0640 for files
+# outside priv/, so state exactly that rather than let chmod/chown fail.
+#
+# No community.proxmox module manages notification targets (checked against
+# community.proxmox 1.6.0), and the API takes the same base64 bodies this file
+# holds, so templating the file is the simplest idempotent option.
+
+# Every webhook target needs a section in the private file even when it has no
+# secrets. Without it PVE logs "Could not instantiate endpoint 'alertmanager':
+# private config does not exist" and the target silently delivers nothing.
+# Alertmanager needs no credentials, so the section is empty. Written first so
+# the public file never references a target that cannot be instantiated.
+# This owns the whole private file: add any future secrets here, not in the GUI.
+- name: Declare the Alertmanager webhook in the private notification config
+  ansible.builtin.copy:
+    content: "webhook: alertmanager\n"
+    dest: /etc/pve/priv/notifications.cfg
+    owner: root
+    group: www-data
+    mode: '0600'
+  run_once: true
+
+- name: Route PVE notifications to Alertmanager
+  ansible.builtin.template:
+    src: notifications.cfg.j2
+    dest: /etc/pve/notifications.cfg
+    owner: root
+    group: www-data
+    mode: '0640'
+  run_once: true

@@ -6,6 +6,7 @@
     - pve/common
     - pve/freenas_iscsi
     - pve/networking
+    - pve/notifications
 
 - name: Configure GPU passthrough on pve2
   hosts: pve2

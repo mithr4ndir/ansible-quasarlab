@@ -1,0 +1,17 @@
+---
+# Alertmanager v2 alerts endpoint, reachable from the PVE hosts. This is the
+# MetalLB address of the monitoring/alertmanager-external Service (the same
+# one uptime_kuma probes). Alertmanager has no auth, so the webhook needs no
+# secret and /etc/pve/priv/notifications.cfg stays untouched.
+pve_notifications_alertmanager_url: "http://192.168.1.233:9093/api/v2/alerts"
+
+# PVE severities forwarded to Alertmanager. Successful backups are `info`
+# (hourly, 24 a day), so they never leave the node.
+pve_notifications_severities:
+  - warning
+  - error
+
+# Also forward root's local mail (smartd, zed, cron), which PVE turns into
+# `system-mail` notifications with severity `unknown`. Without this, disabling
+# the sendmail target would drop it silently.
+pve_notifications_forward_system_mail: true

@@ -1,0 +1,31 @@
+matcher: default-matcher
+	comment Disabled, see the alertmanager matchers
+	disable true
+	mode all
+	target mail-to-root
+
+sendmail: mail-to-root
+	comment Disabled: no mail relay on the nodes
+	disable true
+	mailto-user root@pam
+
+webhook: alertmanager
+	body {{ lookup('ansible.builtin.file', 'alertmanager-body.json.hbs') | b64encode }}
+	comment Post to the Alertmanager v2 API
+	header name=Content-Type,value={{ 'application/json' | b64encode }}
+	method post
+	url {{ pve_notifications_alertmanager_url }}
+
+matcher: alertmanager-warnings
+	comment Warnings and errors only, so successful backups stay quiet
+	match-severity {{ pve_notifications_severities | join(',') }}
+	mode all
+	target alertmanager
+{% if pve_notifications_forward_system_mail %}
+
+matcher: alertmanager-system-mail
+	comment Mail for root from local daemons (smartd, zed, cron)
+	match-field exact:type=system-mail
+	mode all
+	target alertmanager
+{% endif %}
