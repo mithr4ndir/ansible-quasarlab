@@ -439,11 +439,13 @@ Managed via `roles/monitoring/node_exporter`. Deployed to all hosts in the `[lin
 - Configured via `host_vars/truenas/vars.yml`: `node_exporter_install_dir: /var/lib/node_exporter`
 - Filebeat is skipped on NAS hosts (`when: "'nas' not in group_names"`)
 
-### Idempotency
-The role skips download/extract/install if the binary already exists at the configured path. To force a reinstall (e.g., version upgrade):
-1. Update `node_exporter_version` in `roles/monitoring/node_exporter/defaults/main.yml`
-2. Remove the old binary on the target host
-3. Run the playbook
+### Idempotency and upgrades
+The role runs the installed binary's `--version` and reinstalls only when it differs from `node_exporter_version` (or the binary is missing or will not run). A new binary notifies the `Restart node_exporter` handler. Until 2026-10-15 the guard was only "binary exists", so version bumps silently upgraded nothing and the fleet sat on 1.7.0 (#225).
+
+To upgrade:
+1. In `roles/monitoring/node_exporter/defaults/main.yml`, set `node_exporter_version` and `node_exporter_tarball_sha256` (from the release's `sha256sums.txt`, cross-checked with `gh api repos/prometheus/node_exporter/releases/tags/v<version> --jq '.assets[].digest'`).
+2. Before merging, run the new binary on one host on a spare port with the role's exact flags and diff `node_scrape_collector_success` against the running one.
+3. Merge. `monitoring.yml` in the hourly `ansible-proxmox.timer` run rolls it out; confirm with `count by (version) (node_exporter_build_info)` in Prometheus.
 
 ---
 
