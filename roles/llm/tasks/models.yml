@@ -19,5 +19,8 @@
     mode: "0640"
     timeout: 60
   loop: "{{ llm_models }}"
+  # Replaced weights under the same file name must not keep serving the old
+  # ones from VRAM.
+  notify: Restart llama-server
   loop_control:
     label: "{{ item.file }}"

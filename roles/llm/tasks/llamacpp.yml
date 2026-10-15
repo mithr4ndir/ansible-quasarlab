@@ -82,7 +82,8 @@
   become_user: "{{ llm_user }}"
   async: "{{ llm_build_timeout_secs }}"
   poll: 30
-  when: llm_needs_build | bool
+  # ansible-core rejects async in check mode outright, so skip rather than fail.
+  when: llm_needs_build | bool and not ansible_check_mode
   changed_when: true
 
 - name: Install llama.cpp
@@ -92,11 +93,3 @@
   when: llm_needs_build | bool
   changed_when: true
   notify: Restart llama-server
-
-- name: Write the build stamp
-  ansible.builtin.copy:
-    dest: "{{ llm_llamacpp_prefix }}/BUILD_COMMIT"
-    content: "{{ llm_llamacpp_commit }}\n"
-    owner: root
-    group: root
-    mode: "0644"

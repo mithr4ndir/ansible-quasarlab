@@ -32,6 +32,28 @@
     comment: llama-server
   loop: "{{ llm_api_allowed_sources }}"
 
+# Adding rules is not enough: a source removed from llm_api_allowed_sources, or
+# a port change, would otherwise leave the old allow rule in place and the
+# unauthenticated API open to it. Reconcile against what ufw actually holds.
+- name: List existing llama-server API rules
+  ansible.builtin.command:
+    argv: [ufw, show, added]
+  register: llm_ufw_added
+  changed_when: false
+  check_mode: false
+
+- name: Revoke API rules that are no longer approved
+  community.general.ufw:
+    rule: allow
+    proto: tcp
+    port: "{{ item | regex_search('port (\\d+)', '\\1') | first }}"
+    src: "{{ item | regex_search('from (\\S+)', '\\1') | first }}"
+    delete: true
+  loop: "{{ llm_ufw_added.stdout_lines | select('search', \"comment 'llama-server'\") | list }}"
+  when: >-
+    (item | regex_search('from (\\S+)', '\\1') | first) not in llm_api_allowed_sources
+    or (item | regex_search('port (\\d+)', '\\1') | first) != (llm_server_port | string)
+
 - name: Deny inbound by default and enable
   community.general.ufw:
     state: enabled

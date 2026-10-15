@@ -19,9 +19,13 @@ ExecStart={{ llm_llamacpp_prefix }}/bin/llama-server \
     --ctx-size {{ llm_server_ctx }} \
     --n-gpu-layers {{ llm_server_gpu_layers }} \
     --metrics
+# Type=simple counts the unit as started the moment the process forks, long
+# before the weights are in VRAM. This post-start probe holds the start job
+# open until /health answers, so TimeoutStartSec really bounds the model load
+# and a load that hangs fails the unit instead of sitting there "active".
+ExecStartPost=/usr/bin/timeout 280 /bin/sh -c 'until /usr/bin/curl -sf http://127.0.0.1:{{ llm_server_port }}/health >/dev/null; do sleep 2; done'
 Restart=on-failure
 RestartSec=10
-# Loading weights into VRAM takes a while; never wait forever.
 TimeoutStartSec=300
 
 NoNewPrivileges=true
