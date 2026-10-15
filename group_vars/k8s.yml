@@ -13,7 +13,7 @@ node_exporter_systemd_units:
 # NVIDIA
 #
 # No k8s node has a GPU. pve2's RTX 2080 Ti is bound to vfio-pci and passed
-# through to the jellyfin VM, not to k8cluster2. Setting this at the group level
+# through to llm1 (roles/llm) since 2026-10-15, not to k8cluster2. Setting this at the group level
 # rather than per host matters: roles/k8s/common reads it as
 # `nvidia_gpu_node | default(true)`, so while it was set only in
 # host_vars/k8cluster2 it was undefined on k8cluster1 and k8cluster3 and every

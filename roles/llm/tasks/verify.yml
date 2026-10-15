@@ -1,0 +1,117 @@
+---
+# A green recap is not the outcome. The outcome is this unit, on this GPU,
+# serving this model, generating tokens, reachable from command-center1.
+- name: Query the GPU
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "20"
+      - nvidia-smi
+      - --query-gpu=name,memory.total,driver_version
+      - --format=csv,noheader
+  register: llm_gpu
+  changed_when: false
+  check_mode: false
+
+- name: Assert the 2080 Ti is visible to the driver
+  ansible.builtin.assert:
+    that: "'2080 Ti' in llm_gpu.stdout"
+    fail_msg: "nvidia-smi did not report the RTX 2080 Ti: {{ llm_gpu.stdout | default('') }} {{ llm_gpu.stderr | default('') }}"
+
+- name: Read the llama-server unit state
+  ansible.builtin.systemd_service:
+    name: llama-server
+  register: llm_unit
+  check_mode: false
+
+- name: Assert the unit is running
+  ansible.builtin.assert:
+    that:
+      - llm_unit.status.ActiveState == 'active'
+      - (llm_unit.status.MainPID | int) > 0
+    fail_msg: "llama-server is {{ llm_unit.status.ActiveState }} (MainPID {{ llm_unit.status.MainPID }})"
+
+# /props names the model file the server actually loaded, so a stranger on the
+# port, or a stale process still serving old weights, cannot pass for it.
+- name: Ask the server which model it loaded
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_server_port }}/props"
+    return_content: true
+  register: llm_props
+  retries: 30
+  delay: 10
+  until: llm_props.status == 200
+  check_mode: false
+
+- name: Assert it is serving the configured model
+  ansible.builtin.assert:
+    that: (llm_props.json.model_path | default('')) is search(llm_server_model ~ '$')
+    fail_msg: "Server reports model_path {{ llm_props.json.model_path | default('none') }}, expected {{ llm_server_model }}"
+
+- name: Generate a few tokens
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_server_port }}/v1/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      messages:
+        - role: user
+          content: "Reply with the single word: ready"
+      max_tokens: 16
+    timeout: 120
+  register: llm_completion
+  check_mode: false
+
+- name: Assert tokens came back
+  ansible.builtin.assert:
+    that: (llm_completion.json.usage.completion_tokens | default(0) | int) > 0
+    fail_msg: "No completion tokens: {{ llm_completion.json | default({}) }}"
+
+# Proof the inference ran on the GPU: the server's own PID holds VRAM.
+- name: List GPU compute processes
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "20"
+      - nvidia-smi
+      - --query-compute-apps=pid,used_memory
+      - --format=csv,noheader,nounits
+  register: llm_gpu_apps
+  changed_when: false
+  check_mode: false
+
+- name: Assert llama-server holds GPU memory
+  ansible.builtin.assert:
+    that: >-
+      llm_gpu_apps.stdout_lines
+      | select('match', '^' ~ llm_unit.status.MainPID ~ ', *[0-9]{4,}$')
+      | list | length == 1
+    fail_msg: "PID {{ llm_unit.status.MainPID }} does not hold >= 1000 MiB of VRAM: {{ llm_gpu_apps.stdout_lines }}"
+
+# The firewall has to let the agent host in, and only it. The control node is
+# command-center1, so this request comes from the approved source.
+- name: Reach the API from command-center1
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host }}:{{ llm_server_port }}/health"
+    timeout: 10
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+# Written last, after the server proved it runs this build. An interrupted run
+# leaves no stamp, so the next run rebuilds and restarts rather than trusting
+# an install that was never activated.
+- name: Write the build stamp
+  ansible.builtin.copy:
+    dest: "{{ llm_llamacpp_prefix }}/BUILD_COMMIT"
+    content: "{{ llm_llamacpp_commit }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ llm_gpu.stdout }} | {{ llm_server_model }} serving on :{{ llm_server_port }},
+      {{ llm_completion.json.usage.completion_tokens }} tokens generated,
+      VRAM {{ llm_gpu_apps.stdout_lines | join(' ') }}

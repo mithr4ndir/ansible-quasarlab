@@ -1,0 +1,95 @@
+---
+- name: Create the service user
+  ansible.builtin.user:
+    name: "{{ llm_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "/var/lib/{{ llm_user }}"
+    create_home: true
+
+- name: Install build dependencies
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - cmake
+      - git
+      - g++-12
+      - libcurl4-openssl-dev
+      - nvidia-cuda-toolkit
+    state: present
+
+- name: Create the source directory
+  ansible.builtin.file:
+    path: "{{ llm_llamacpp_src }}"
+    state: directory
+    owner: "{{ llm_user }}"
+    group: "{{ llm_user }}"
+    mode: "0755"
+
+# Built as the unprivileged service user so upstream's build scripts never run
+# as root. Only the install step below is root.
+- name: Check out llama.cpp at the pinned commit
+  ansible.builtin.git:
+    repo: "{{ llm_llamacpp_repo }}"
+    dest: "{{ llm_llamacpp_src }}"
+    version: "{{ llm_llamacpp_tag }}"
+    depth: 1
+    force: true
+  become: true
+  become_user: "{{ llm_user }}"
+  register: llm_llamacpp_checkout
+
+# Tags can be moved. The commit cannot, so the tag is only how it is fetched.
+- name: Assert the tag still points at the pinned commit
+  ansible.builtin.assert:
+    that: llm_llamacpp_checkout.after == llm_llamacpp_commit
+    fail_msg: "{{ llm_llamacpp_tag }} now resolves to {{ llm_llamacpp_checkout.after }}, not the pinned {{ llm_llamacpp_commit }}."
+    quiet: true
+
+- name: Read the installed build stamp
+  ansible.builtin.slurp:
+    src: "{{ llm_llamacpp_prefix }}/BUILD_COMMIT"
+  register: llm_build_stamp
+  failed_when: false
+
+- name: Decide whether to build
+  ansible.builtin.set_fact:
+    llm_needs_build: >-
+      {{ llm_build_stamp.content is not defined
+         or (llm_build_stamp.content | b64decode | trim) != llm_llamacpp_commit }}
+
+# No module builds CMake projects. Static libs so the installed binaries carry
+# no RPATH dependency on the build tree. 15 to 30 minutes on 8 cores, so async.
+- name: Configure and build llama.cpp with CUDA
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -euo
+      - pipefail
+      - -c
+      - >-
+        rm -rf build &&
+        cmake -S . -B build
+        -DGGML_CUDA=ON
+        -DCMAKE_CUDA_ARCHITECTURES={{ llm_cuda_architectures }}
+        -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12
+        -DBUILD_SHARED_LIBS=OFF
+        -DLLAMA_BUILD_TESTS=OFF
+        -DCMAKE_BUILD_TYPE=Release &&
+        cmake --build build -j {{ ansible_processor_vcpus }}
+    chdir: "{{ llm_llamacpp_src }}"
+  become: true
+  become_user: "{{ llm_user }}"
+  async: "{{ llm_build_timeout_secs }}"
+  poll: 30
+  # ansible-core rejects async in check mode outright, so skip rather than fail.
+  when: llm_needs_build | bool and not ansible_check_mode
+  changed_when: true
+
+- name: Install llama.cpp
+  ansible.builtin.command:
+    argv: [cmake, --install, build, --prefix, "{{ llm_llamacpp_prefix }}"]
+    chdir: "{{ llm_llamacpp_src }}"
+  when: llm_needs_build | bool
+  changed_when: true
+  notify: Restart llama-server
