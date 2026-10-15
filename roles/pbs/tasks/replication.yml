@@ -267,6 +267,8 @@
       - "{{ item.remove_vanished | default(pbs_sync_remove_vanished) | bool | lower }}"
       - --resync-corrupt
       - "{{ item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool | lower }}"
+      - --rate-in
+      - "{{ item.rate_in | default(pbs_sync_rate_in) }}"
       - --comment
       - "Managed by ansible role pbs"
   loop: "{{ pbs_sync_jobs }}"
@@ -306,6 +308,8 @@
       - "{{ item.item.remove_vanished | default(pbs_sync_remove_vanished) | bool | lower }}"
       - --resync-corrupt
       - "{{ item.item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool | lower }}"
+      - --rate-in
+      - "{{ item.item.rate_in | default(pbs_sync_rate_in) }}"
   vars:
     pbs_sync_job_live: "{{ item.stdout | default('{}') | from_json }}"
   loop: "{{ pbs_sync_job_show.results | default([]) }}"
@@ -320,6 +324,8 @@
       != (item.item.remove_vanished | default(pbs_sync_remove_vanished) | bool)
       or (pbs_sync_job_live['resync-corrupt'] | default(false) | bool)
       != (item.item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool)
+      or (pbs_sync_job_live['rate-in'] | default(0) | int)
+      != (item.item.rate_in | default(pbs_sync_rate_in) | int)
 
 # `sync-job update` cannot move a job between datastores or remotes, so a
 # mismatch here is not something this role can fix. Fail rather than report

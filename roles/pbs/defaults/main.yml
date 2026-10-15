@@ -165,6 +165,29 @@ pbs_sync_schedule: "*-*-* 04:00:00"
 # pbs1's retention happens to be.
 pbs_sync_remove_vanished: false
 
+# Ceiling on pull bandwidth, in BYTES PER SECOND. Expressed as an integer
+# rather than "40MiB" because PBS stores it as a byte count, so an integer is
+# what `sync-job show` returns and what the reconciliation below can compare
+# against without parsing units.
+#
+# EARNED, 2026-10-15. The first unthrottled seed of pbs2 ran at roughly
+# 80 MiB/s with ~841 requests in flight and saturated the SATA SSD that the
+# replica's datastore happened to share with k8cluster3's etcd disk. pve2's io
+# PSI hit 86% full, etcd fell ~700 raft indexes behind, kube-apiserver
+# restarted 36 times on "etcdserver: request timed out", and the node went
+# NotReady. The cluster kept quorum only through the two other members, one of
+# which is on the same host.
+#
+# Moving the datastore to a quieter device is the other half of the fix, but
+# relocation alone only moves the blast radius: a replica that CAN saturate a
+# shared spindle will eventually find one. This is the ceiling that holds
+# wherever the disk lives.
+#
+# 40 MiB/s is about 8% of this SSD's sequential figure and is generous for
+# steady state: the datastore grows roughly 0.9 GB/hour, so an hourly delta
+# moves in well under a minute. It only lengthens the one-off initial seed.
+pbs_sync_rate_in: 41943040
+
 # Re-pull a local snapshot whose verification failed. The replica runs its own
 # weekly verify job, so this turns detection of a corrupt local chunk into a
 # repair instead of a report.
