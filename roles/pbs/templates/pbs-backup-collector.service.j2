@@ -8,6 +8,12 @@ After=proxmox-backup-proxy.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/pbs-backup-collector.sh
+# Templated rather than copied, because the script falls back to its own
+# hard-coded defaults for both of these. A unit that passed neither would
+# keep working on pbs1 and silently write outside the textfile directory, or
+# read the wrong datastore root, the moment either variable was overridden.
+Environment=PBS_DATASTORE_ROOT={{ pbs_metrics_datastore_root }}
+Environment=PBS_COLLECTOR_PROM_FILE={{ pbs_metrics_prom_file }}
 # A hung oneshot stops systemd re-triggering its timer, which silently ends
 # every future run with no alert. Debian ships apt units with
 # TimeoutStartUSec=infinity and that pattern cost this lab 11 days of patching.

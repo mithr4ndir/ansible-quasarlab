@@ -106,13 +106,63 @@ def test_manifest_with_no_disks_reports_zero(store, tmp_path):
 
 
 def test_guest_with_only_an_owner_file(store, tmp_path):
-    """Exactly the state pbs1 itself was in: registered, never backed up."""
+    """Exactly the state pbs1 itself is in: registered, never backed up.
+
+    It is VISIBLE as dir_count 0 and deliberately not alertable. pbs1 is
+    excluded from the hourly job, and a backup that fails before PBS creates
+    a snapshot directory leaves nothing else behind, so an alert on
+    "registered but never completed" would be permanently red on this lab.
+    A permanently firing alert is worse than no alert.
+    """
     g = store / "103"
     g.mkdir()
     (g / "owner").write_text("root@pam\n")
     out = _run(tmp_path)
     assert out["pbs_backup_collector_guests_without_complete"] == 1
-    assert not [k for k in out if 'guest="103"' in k]
+    assert out['pbs_guest_snapshot_dir_count{datastore="lab",guest_type="vm",guest="103"}'] == 0
+    assert not [k for k in out if 'guest="103"' in k and "last_complete" in k]
+
+
+def test_a_guest_whose_every_attempt_failed_is_alertable(store, tmp_path):
+    """The case the aggregate gauge cannot separate from pbs1's.
+
+    Attempts happened, PBS created the directories, and not one carries a
+    manifest. dir_count > 0 with no last_complete series is unambiguous, and
+    it is what the PbsGuestBackupsAllFailing rule keys on.
+    """
+    _snapshot(store / "121", "2026-10-14T01:00:00Z", manifest=False)
+    _snapshot(store / "121", "2026-10-15T01:00:00Z", manifest=False)
+    out = _run(tmp_path)
+    assert out['pbs_guest_snapshot_dir_count{datastore="lab",guest_type="vm",guest="121"}'] == 2
+    assert not [k for k in out if 'guest="121"' in k and "last_complete" in k]
+
+
+def test_dir_count_covers_the_whole_retention_window(store, tmp_path):
+    """The walk stops caring about timestamps at the first manifest.
+
+    It must not stop WALKING there. The snapshots are listed newest first, so
+    an early `break` would count one directory for a guest holding a full
+    retention window of good backups and report the guest as nearly empty.
+    The fixture therefore puts the manifest on the NEWEST snapshot, which is
+    the normal case and the one an early exit gets wrong.
+    """
+    for day in ("13", "14", "15"):
+        _snapshot(store / "100", f"2026-10-{day}T01:00:00Z", manifest=True)
+    out = _run(tmp_path)
+    assert out['pbs_guest_snapshot_dir_count{datastore="lab",guest_type="vm",guest="100"}'] == 3
+    key = 'pbs_snapshot_last_complete_timestamp_seconds{datastore="lab",guest_type="vm",guest="100"}'
+    # Still the NEWEST, not the last one walked.
+    assert out[key] == 1792026000
+
+
+def test_dir_count_includes_failures_newer_than_the_newest_complete(store, tmp_path):
+    _snapshot(store / "100", "2026-10-13T01:00:00Z", manifest=True)
+    _snapshot(store / "100", "2026-10-14T01:00:00Z", manifest=False)
+    _snapshot(store / "100", "2026-10-15T01:00:00Z", manifest=False)
+    out = _run(tmp_path)
+    assert out['pbs_guest_snapshot_dir_count{datastore="lab",guest_type="vm",guest="100"}'] == 3
+    key = 'pbs_snapshot_last_complete_timestamp_seconds{datastore="lab",guest_type="vm",guest="100"}'
+    assert out[key] == 1791853200
 
 
 def test_label_injection_is_rejected(store, tmp_path):
@@ -164,6 +214,7 @@ def test_output_is_valid_exposition_format(store, tmp_path):
         "pbs_backup_collector_guests_total",
         "pbs_backup_collector_guests_without_complete",
         "pbs_backup_collector_timestamp_seconds",
+        "pbs_guest_snapshot_dir_count",
     ):
         assert f"# HELP {metric} " in text
         assert f"# TYPE {metric} " in text
@@ -208,3 +259,117 @@ def test_promtool_accepts_the_output(store, tmp_path):
         text=True,
     )
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+# ---------------------------------------------------------------------------
+# Refusing to publish an incomplete file.
+#
+# errexit is off on purpose, so every write into the temp file is checked by
+# hand. Without that, a filesystem that fills up mid-run leaves a TRUNCATED
+# file, renames it over the last good metrics and exits 0. The series that
+# failed to write then vanish, and a vanished snapshot timestamp reads as
+# "this guest has never been backed up" while a vanished heartbeat reads as a
+# collector that is still running fine. Stale metrics are recoverable;
+# confidently wrong ones are not.
+# ---------------------------------------------------------------------------
+
+REAL_DATE = shutil.which("date") or "/bin/date"
+
+
+def _shim(tmp_path: Path, name: str, body: str) -> str:
+    """Put an executable shim ahead of the real tool on PATH."""
+    d = tmp_path / "shim"
+    d.mkdir(exist_ok=True)
+    p = d / name
+    p.write_text(body)
+    p.chmod(0o755)
+    return f"{d}:/usr/bin:/bin"
+
+
+def _run_raw(tmp_path: Path, path: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(SCRIPT)],
+        env={
+            "PATH": path or "/usr/bin:/bin",
+            "PBS_DATASTORE_ROOT": str(tmp_path / "datastore"),
+            "PBS_COLLECTOR_PROM_FILE": str(tmp_path / "out.prom"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_missing_heartbeat_keeps_the_previous_file(store, tmp_path):
+    """The heartbeat is written last, so it is the proof the file is whole.
+
+    Driven by making `date +%s` fail, which leaves every guest series correct
+    and only the final heartbeat valueless. That is the narrowest possible
+    version of a truncated file: if the collector published it, node_exporter
+    would reject the whole file for malformed exposition and every PBS series
+    would disappear at once.
+    """
+    _snapshot(store / "100", "2026-10-15T01:00:00Z", manifest=True)
+    prom = tmp_path / "out.prom"
+    prom.write_text("pbs_backup_collector_timestamp_seconds 1792000000\n")
+    before = prom.read_bytes()
+
+    path = _shim(
+        tmp_path,
+        "date",
+        f'#!/bin/sh\nif [ "$1" = "+%s" ]; then exit 1; fi\nexec {REAL_DATE} "$@"\n',
+    )
+    res = _run_raw(tmp_path, path)
+
+    assert res.returncode != 0, "published a file with no valid heartbeat"
+    assert prom.read_bytes() == before, "overwrote good metrics with an incomplete file"
+    assert not list(tmp_path.glob("out.prom.*")), "left a temp file behind"
+
+
+def test_a_chmod_failure_keeps_the_previous_file(store, tmp_path):
+    """Published metrics node_exporter cannot read are worse than stale ones."""
+    _snapshot(store / "100", "2026-10-15T01:00:00Z", manifest=True)
+    prom = tmp_path / "out.prom"
+    prom.write_text("pbs_backup_collector_timestamp_seconds 1792000000\n")
+    before = prom.read_bytes()
+
+    path = _shim(tmp_path, "chmod", "#!/bin/sh\nexit 1\n")
+    res = _run_raw(tmp_path, path)
+
+    assert res.returncode != 0
+    assert prom.read_bytes() == before
+    assert not list(tmp_path.glob("out.prom.*"))
+
+
+def test_the_happy_path_still_publishes(store, tmp_path):
+    """Guard against a guard that rejects everything.
+
+    Both tests above would pass against a script whose publish step always
+    failed, so the same fixture has to succeed when nothing is broken.
+    """
+    _snapshot(store / "100", "2026-10-15T01:00:00Z", manifest=True)
+    prom = tmp_path / "out.prom"
+    prom.write_text("pbs_backup_collector_timestamp_seconds 1\n")
+    res = _run_raw(tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert "pbs_backup_collector_timestamp_seconds 1\n" != prom.read_text()
+    assert 'guest="100"' in prom.read_text()
+
+
+def test_every_write_into_the_temp_file_is_checked():
+    """Structural, so a future unguarded write is caught at review time.
+
+    The failure mode is invisible at runtime: an unchecked `>>` on a full
+    filesystem drops a line and reports success.
+    """
+    unguarded = []
+    for n, line in enumerate(SCRIPT.read_text().splitlines(), 1):
+        stripped = line.strip()
+        if '>"$tmp"' not in stripped and '>>"$tmp"' not in stripped:
+            continue
+        if "note_write_failure" in stripped:
+            continue
+        unguarded.append(f"{n}: {stripped}")
+    assert not unguarded, (
+        "these writes into the temp file are unchecked, so a short write would "
+        "publish a truncated file: " + "; ".join(unguarded)
+    )

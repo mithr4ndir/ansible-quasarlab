@@ -542,17 +542,31 @@
   tags:
     - pbs-metrics
 
-- name: Install the PBS backup metrics units
-  ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: "/etc/systemd/system/{{ item }}"
+# The service is a TEMPLATE, not a copy, because it carries
+# pbs_metrics_datastore_root and pbs_metrics_prom_file to the script as
+# environment. The script defaults to the same two paths on its own, so a
+# copied unit would keep working here and quietly ignore an override,
+# writing where node_exporter does not look.
+- name: Install the PBS backup metrics service unit
+  ansible.builtin.template:
+    src: pbs-backup-collector.service.j2
+    dest: /etc/systemd/system/pbs-backup-collector.service
     owner: root
     group: root
     mode: '0644'
-  loop:
-    - pbs-backup-collector.service
-    - pbs-backup-collector.timer
-  register: pbs_metrics_units
+  register: pbs_metrics_service_unit
+  when: pbs_metrics_enabled | bool
+  tags:
+    - pbs-metrics
+
+- name: Install the PBS backup metrics timer unit
+  ansible.builtin.copy:
+    src: pbs-backup-collector.timer
+    dest: /etc/systemd/system/pbs-backup-collector.timer
+    owner: root
+    group: root
+    mode: '0644'
+  register: pbs_metrics_timer_unit
   when: pbs_metrics_enabled | bool
   tags:
     - pbs-metrics
@@ -573,7 +587,11 @@
   ansible.builtin.systemd:
     name: pbs-backup-collector.timer
     enabled: true
-    state: "{{ 'restarted' if pbs_metrics_units is changed else 'started' }}"
+    state: >-
+      {{ 'restarted'
+         if (pbs_metrics_service_unit is changed
+             or pbs_metrics_timer_unit is changed)
+         else 'started' }}
     daemon_reload: true
   when: pbs_metrics_enabled | bool
   tags:
@@ -588,5 +606,50 @@
     state: started
   when: pbs_metrics_enabled | bool
   changed_when: false
+  tags:
+    - pbs-metrics
+
+# A declarative role has to be able to turn a feature OFF, not just skip
+# configuring it. Without this block, setting pbs_metrics_enabled to false on
+# a host the role has already converged leaves the timer enabled and running
+# and leaves the last .prom on disk, where node_exporter keeps serving
+# frozen snapshot timestamps. The staleness alert would then fire forever
+# against a feature the operator believes is disabled. Same lesson as the
+# vzdump job that kept its old --prune-backups because the role stopped
+# passing the flag instead of removing it.
+# Gated on the unit file existing rather than swallowing the error with
+# failed_when: false. The systemd module fails on an unknown unit, and a host
+# that never had the collector is the common case, but blanket-ignoring the
+# failure would also hide a real one.
+- name: Check whether the PBS backup metrics timer is installed
+  ansible.builtin.stat:
+    path: /etc/systemd/system/pbs-backup-collector.timer
+  register: pbs_metrics_timer_file
+  when: not (pbs_metrics_enabled | bool)
+  tags:
+    - pbs-metrics
+
+- name: Retire the PBS backup metrics timer when metrics are disabled
+  ansible.builtin.systemd:
+    name: pbs-backup-collector.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when:
+    - not (pbs_metrics_enabled | bool)
+    - pbs_metrics_timer_file.stat.exists | default(false)
+  tags:
+    - pbs-metrics
+
+- name: Remove the PBS backup metrics artefacts when metrics are disabled
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/pbs-backup-collector.timer
+    - /etc/systemd/system/pbs-backup-collector.service
+    - /usr/local/bin/pbs-backup-collector.sh
+    - "{{ pbs_metrics_prom_file }}"
+  when: not (pbs_metrics_enabled | bool)
   tags:
     - pbs-metrics

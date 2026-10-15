@@ -43,12 +43,26 @@ LOG_TAG="pbs-backup-collector"
 tmp="$(mktemp "${PROM_FILE}.XXXXXX")" || exit 1
 trap 'rm -f "$tmp"' EXIT
 
+# errexit is deliberately off, because an unreadable snapshot directory should
+# cost one guest's series rather than the whole file. That makes every write
+# into $tmp something we have to check by hand: a full filesystem would
+# otherwise leave a TRUNCATED file, rename it over the last good metrics, and
+# exit 0. Partial metrics are worse than stale ones, because the series that
+# failed to write simply vanish and read as "this guest has no backup" or, for
+# the heartbeat, as a collector that is still running fine.
+write_failed=0
+note_write_failure() {
+    write_failed=1
+}
+
 {
     echo "# HELP pbs_snapshot_last_complete_timestamp_seconds Unix time of the newest snapshot that has a manifest."
     echo "# TYPE pbs_snapshot_last_complete_timestamp_seconds gauge"
     echo "# HELP pbs_snapshot_disk_index_count Disk index files in that newest complete snapshot. Zero means it restores nothing."
     echo "# TYPE pbs_snapshot_disk_index_count gauge"
-} >"$tmp"
+    echo "# HELP pbs_guest_snapshot_dir_count Snapshot directories for this guest, complete or not."
+    echo "# TYPE pbs_guest_snapshot_dir_count gauge"
+} >"$tmp" || note_write_failure
 
 guests_total=0
 guests_without_complete=0
@@ -80,18 +94,37 @@ for store_path in "$DATASTORE_ROOT"/*; do
             # sort, and we can stop at the first one with a manifest.
             newest_epoch=""
             disk_count=0
+            snap_dirs=0
             while IFS= read -r snap; do
                 [ -n "$snap" ] || continue
+                snap_dirs=$((snap_dirs + 1))
                 [ -f "$guest_path/$snap/index.json.blob" ] || continue
                 # %Y-%m-%dT%H:%M:%SZ -> epoch. Reject anything date cannot parse.
                 if ! epoch="$(date -u -d "$snap" +%s 2>/dev/null)"; then
                     continue
                 fi
-                newest_epoch="$epoch"
-                disk_count="$(find "$guest_path/$snap" -maxdepth 1 -type f \
-                    \( -name '*.fidx' -o -name '*.didx' \) 2>/dev/null | wc -l)"
-                break
+                # Reverse lexical order is reverse time order, so the first
+                # snapshot with a manifest is the newest complete one. The
+                # walk continues anyway, because snap_dirs has to count every
+                # directory and not just the ones down to the newest good one.
+                if [ -z "$newest_epoch" ]; then
+                    newest_epoch="$epoch"
+                    disk_count="$(find "$guest_path/$snap" -maxdepth 1 -type f \
+                        \( -name '*.fidx' -o -name '*.didx' \) 2>/dev/null | wc -l)"
+                fi
             done < <(ls -1 "$guest_path" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' | sort -r)
+
+            # Emitted for every guest, including those with nothing at all, so
+            # a guest registered in the datastore with zero attempts recorded
+            # is VISIBLE (dir_count 0) without being alertable. pbs1 itself
+            # (vm103) is permanently in that state: the hourly job excludes
+            # it, and a guest whose backups fail before PBS creates a snapshot
+            # directory leaves no other trace here. An alert on "registered
+            # but never completed" would therefore be permanently red, which
+            # is worse than no alert. The alertable case is dir_count > 0 with
+            # no complete snapshot: attempts happened and every one failed.
+            printf 'pbs_guest_snapshot_dir_count{datastore="%s",guest_type="%s",guest="%s"} %s\n' \
+                "$store" "$gtype" "$guest" "$snap_dirs" >>"$tmp" || note_write_failure
 
             if [ -z "$newest_epoch" ]; then
                 guests_without_complete=$((guests_without_complete + 1))
@@ -99,9 +132,9 @@ for store_path in "$DATASTORE_ROOT"/*; do
             fi
 
             printf 'pbs_snapshot_last_complete_timestamp_seconds{datastore="%s",guest_type="%s",guest="%s"} %s\n' \
-                "$store" "$gtype" "$guest" "$newest_epoch" >>"$tmp"
+                "$store" "$gtype" "$guest" "$newest_epoch" >>"$tmp" || note_write_failure
             printf 'pbs_snapshot_disk_index_count{datastore="%s",guest_type="%s",guest="%s"} %s\n' \
-                "$store" "$gtype" "$guest" "$disk_count" >>"$tmp"
+                "$store" "$gtype" "$guest" "$disk_count" >>"$tmp" || note_write_failure
         done
     done
 done
@@ -116,11 +149,23 @@ done
     echo "# HELP pbs_backup_collector_timestamp_seconds Unix time this collector last completed."
     echo "# TYPE pbs_backup_collector_timestamp_seconds gauge"
     echo "pbs_backup_collector_timestamp_seconds $(date +%s)"
-} >>"$tmp"
+} >>"$tmp" || note_write_failure
+
+# PUBLISH, or refuse to. The heartbeat is the LAST line written, so its
+# presence is what proves the file is whole: the same trick PBS itself uses
+# with index.json.blob, and the reason this collector trusts a manifest over a
+# directory. Check it in addition to the write flag, because a short write can
+# return success on a buffered stream and only fail on close.
+if [ "$write_failed" -ne 0 ] \
+    || ! grep -qE '^pbs_backup_collector_timestamp_seconds [0-9]+$' "$tmp" \
+    || ! chmod 0644 "$tmp"; then
+    logger -t "$LOG_TAG" \
+        "reason=incomplete_metrics action=kept_previous path=$PROM_FILE"
+    exit 1
+fi
 
 # node_exporter reads this directory continuously, so swap it in atomically
 # rather than letting it observe a half-written file.
-chmod 0644 "$tmp"
 if ! mv -f "$tmp" "$PROM_FILE"; then
     logger -t "$LOG_TAG" "reason=write_failed path=$PROM_FILE"
     exit 1
