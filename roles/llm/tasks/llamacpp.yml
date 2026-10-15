@@ -10,6 +10,12 @@
 - name: Install build dependencies
   ansible.builtin.apt:
     name:
+      # setfacl, which Ansible needs to hand its temp files to the unprivileged
+      # llama user (become_user below) over a non-root connection. Without it
+      # the first run failed at the checkout with chmod: invalid mode
+      # 'A+user:llama:rx:allow'. Same reason roles/postgresql and roles/pbs
+      # install it.
+      - acl
       - build-essential
       - cmake
       - git
