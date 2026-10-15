@@ -83,3 +83,89 @@ pbs_metrics_enabled: true
 pbs_metrics_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}"
 pbs_metrics_prom_file: "{{ pbs_metrics_textfile_dir }}/pbs_backup.prom"
 pbs_metrics_datastore_root: /mnt/datastore
+
+# ---------------------------------------------------------------------------
+# PVE client identity: not every PBS host serves PVE
+# ---------------------------------------------------------------------------
+# pbs1 receives backups from PVE directly. pbs2 is a pull replica: nothing
+# backs up to it, so `pve@pbs!pve` does not exist there and the end-state
+# assertion above would fail against an empty permission set. That assertion is
+# worth keeping exactly as strict as it is, so the block is skipped on hosts
+# that have no PVE client rather than weakened for all of them.
+#
+# A failover to pbs2 is therefore NOT just repointing PVE at it: the token is
+# per-host and its secret cannot be chosen, so failover means generating a
+# token on pbs2 and updating the PVE storage. See README.
+pbs_configure_pve_client: true
+
+# ---------------------------------------------------------------------------
+# Pull replication
+# ---------------------------------------------------------------------------
+# Until this exists every backup in the lab sits on pbs1, and the vzdump job
+# excludes 103 and 120, so the backup servers do not back each other up. One
+# host loss takes every restore point with it.
+#
+# Replication is a PULL: pbs2 reaches out to pbs1 and fetches. That direction
+# is deliberate. A push would need credentials on pbs1 that can WRITE to pbs2,
+# so anything that compromises or corrupts the primary reaches the copy. Pull
+# means pbs1 holds no credential for pbs2 at all, and the reader identity below
+# is read-only even in the direction that does exist.
+
+# SOURCE SIDE (pbs1). The reader identities replicas authenticate as.
+# The token itself is NOT created here: `user generate-token` reveals its
+# secret exactly once and so cannot be idempotent, the same reason
+# `pve@pbs!pve` is an operator step. The role creates the user, grants the
+# ACLs, and asserts the END STATE, so a missing token fails loudly with the
+# command to fix it rather than silently leaving replication unauthenticated.
+pbs_sync_readers: []
+#   - user: "sync@pbs"
+#     token_authid: "sync@pbs!pbs2"
+
+# DatastoreReader, never DatastoreBackup. The replica only ever reads the
+# source, so a leaked replica credential cannot write to, prune, or delete
+# anything on the primary.
+pbs_sync_reader_roles:
+  - DatastoreReader
+
+# REPLICA SIDE (pbs2). Remotes to pull from.
+# `token_env` names an environment variable holding that remote's token
+# secret, the same pattern as roles/pve/pbs_storage (PBS_TOKEN_SECRET). The
+# secret is never written to the repo, and the task that consumes it is
+# no_log.
+pbs_sync_remotes: []
+#   - name: pbs1
+#     host: 192.168.1.61
+#     auth_id: "sync@pbs!pbs2"
+#     fingerprint: "c5:91:..."
+#     token_env: PBS_SYNC_TOKEN_SECRET
+
+# Default environment variable holding a remote's token secret, overridable
+# per remote with `token_env` when a replica pulls from more than one source.
+pbs_sync_remote_token_env: PBS_SYNC_TOKEN_SECRET
+
+pbs_sync_jobs: []
+#   - id: sync-from-pbs1
+#     remote: pbs1
+#     remote_store: lab
+#     store: lab
+
+pbs_sync_schedule: "*-*-* 04:00:00"
+
+# FALSE, and this is the whole point of the replica.
+#
+# With remove-vanished true the replica is a MIRROR: anything deleted on pbs1
+# is deleted here on the next sync. That propagates the failure it exists to
+# survive. A wiped, ransomed or mis-pruned primary would be faithfully
+# replicated into the only remaining copy, and the lab would still have exactly
+# one set of backups, just in two places.
+#
+# False means the replica only ever gains snapshots from the source. Its own
+# prune job (same keep-* policy, created by this role for its own datastore)
+# is what bounds its growth, so retention here is independent of whatever
+# pbs1's retention happens to be.
+pbs_sync_remove_vanished: false
+
+# Re-pull a local snapshot whose verification failed. The replica runs its own
+# weekly verify job, so this turns detection of a corrupt local chunk into a
+# repair instead of a report.
+pbs_sync_resync_corrupt: true
