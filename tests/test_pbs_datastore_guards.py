@@ -38,8 +38,31 @@ DEFAULTS = REPO / "roles" / "pbs" / "defaults" / "main.yml"
 BARE_SD_DEVICE = re.compile(r"/dev/sd[a-z]")
 
 
+def _flatten(tasks: list[dict]) -> list[dict]:
+    """Splice block/rescue/always contents in place, recursively.
+
+    A task nested in a `block:` still runs, so a traversal that only walks the
+    top level reports "no acl update task" for a task that is right there.
+    Wrapping the PVE client tasks in a conditional block did exactly that and
+    turned two real guards into silent passes. Splicing in place rather than
+    appending keeps relative order meaningful, which the ordering tests below
+    depend on.
+    """
+    out: list[dict] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        nested = [k for k in ("block", "rescue", "always") if k in task]
+        if nested:
+            for key in nested:
+                out.extend(_flatten(task[key] or []))
+        else:
+            out.append(task)
+    return out
+
+
 def _tasks() -> list[dict]:
-    return yaml.safe_load(TASKS.read_text())
+    return _flatten(yaml.safe_load(TASKS.read_text()))
 
 
 def _index_of(tasks: list[dict], predicate) -> int:
