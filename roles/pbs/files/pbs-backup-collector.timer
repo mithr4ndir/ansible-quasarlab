@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh PBS backup freshness metrics
+
+[Timer]
+# Backups run hourly, and the staleness alert trips at 90 minutes, so a
+# 10 minute refresh gives the metric far more resolution than the threshold
+# needs without walking the datastore constantly.
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

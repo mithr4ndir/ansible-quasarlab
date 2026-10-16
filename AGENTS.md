@@ -39,6 +39,7 @@ pytest roles/common/apps/kubectl/tests
 pytest roles/common/vm_baseline/tests
 pytest roles/k8s/common/tests
 pytest roles/op_ratelimit_collector/tests
+pytest roles/pbs/tests                      # backup freshness collector
 pytest roles/pve/gpu_passthrough/tests
 pytest roles/unattended_upgrades/tests
 pytest roles/uptime_kuma/tests

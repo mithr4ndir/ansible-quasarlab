@@ -72,3 +72,14 @@ pbs_pve_token_authid: "pve@pbs!pve"
 pbs_pve_roles:
   - DatastoreBackup
   - DatastoreAudit
+
+# Backup freshness metrics for node_exporter's textfile collector.
+#
+# Prometheus carried 295 alert rules and none of them mentioned backups, so a
+# silent backup failure would only have surfaced during a restore. The
+# collector reads the datastore from disk rather than the PBS API, which keeps
+# it free of a token to provision, rotate and have expire quietly.
+pbs_metrics_enabled: true
+pbs_metrics_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfiles') }}"
+pbs_metrics_prom_file: "{{ pbs_metrics_textfile_dir }}/pbs_backup.prom"
+pbs_metrics_datastore_root: /mnt/datastore
