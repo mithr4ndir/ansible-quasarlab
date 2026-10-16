@@ -123,3 +123,61 @@ boot environment**. A TrueNAS version upgrade creates a new BE and they will not
 carry over. `node_exporter` itself already has exactly this exposure, which is
 why this role sits alongside it: one `monitoring.yml` run after an upgrade
 restores both. The syslog setting is in the config DB and is not affected.
+
+## The UGREEN IT8613 watchdog
+
+The DXP8800 Plus arms a 180s hardware watchdog that its stock UGOS services and
+TrueNAS does not, so the board hard-resets roughly every three minutes. That is
+the 15 hour full-lab outage of 2026-09-20: the NAS rebooted about sixty times,
+and the QDevice VM took a fresh random MAC each boot, which exhausted DHCP
+leases and silently moved seven VMs off their addresses, including both k8s
+control-plane nodes and the reverse proxy. Nothing alerted.
+
+It is not the Intel TCO watchdog. Unloading `iTCO_wdt` still reset, and holding
+`/dev/watchdog` open and feeding it every 5s still reset at ~161s. Time to
+death was identical idle, with 12 CPUs pegged, and with both 10G NICs unbound,
+which rules out power, thermal, VRM, RAM and the NICs together and rules in a
+firmware timer. Super I/O LDN 0x07 register `0x73` read `0xb4`, which is 180,
+exactly the observed cadence. `it87_wdt` sees the chip (`Chip 8613 Revision
+000c`) but will not bind: IT8613 support landed in kernel 6.7 and TrueNAS runs
+6.6.44.
+
+### Two persistence layers, neither redundant
+
+Super I/O registers are volatile and BIOS re-arms 180 on every boot, so the
+disable must run every boot.
+
+| layer | why it alone is not enough |
+|---|---|
+| `ugreen-wdt-disable.service` | runs early enough to beat the ~161s deadline, but lives in `/etc`, which a TrueNAS version upgrade wipes |
+| TrueNAS POSTINIT entry | lives in the config database and survives upgrades, but is not what makes the early deadline |
+
+The role installs boot-time mechanisms rather than performing the register
+write itself. If Ansible never runs again the NAS still has to disarm its own
+watchdog on boot.
+
+### initshutdownscript.create is not idempotent
+
+It appends without checking, so an unguarded task adds one POSTINIT entry per
+run and the hourly timer would accumulate them forever, each executing at boot.
+The role queries first and creates only when absent, asserts loudly if
+duplicates already exist, and re-enables an entry that was switched off (which
+is the state that is otherwise invisible: present in the query, so no duplicate
+is created, and inert at boot).
+
+### What is asserted
+
+The exit status of the service, not whether it is `active`. The script refuses
+to write unless the chip identifies as `0x8613`, and exits non-zero if register
+`0x73` does not read back `0`, so the exit status is the only thing that says
+the timer is actually disarmed. A unit that ran and cleared nothing is `active`
+too.
+
+`roles/truenas/tests/test_ugreen_watchdog.py` executes the real script against
+a stub Super I/O rather than adding a test hook to it, because it is the most
+dangerous file here to get wrong. It covers the unlock sequence, the logical
+device select, the chip guard refusing an IT8728, and the read-back failing
+when a register will not clear.
+
+The proper fix remains disabling Watchdog Timer in BIOS, which needs physical
+access.

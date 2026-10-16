@@ -30,3 +30,39 @@ truenas_enable_smart: true
 truenas_bay_leds_enabled: true
 truenas_ugreen_leds_cli_url: "https://github.com/miskcoo/ugreen_leds_controller/releases/download/v0.3/ugreen_leds_cli"
 truenas_ugreen_leds_cli_sha256: "d0a8cbaa2ba7a6b5433d83fec44655799e7d1063307a719c29e0d9dd3afc1c0c"
+
+# ---------------------------------------------------------------------------
+# UGREEN IT8613 Super I/O watchdog
+# ---------------------------------------------------------------------------
+# The DXP8800 Plus arms a 180s hardware watchdog that its stock UGOS services
+# and TrueNAS does not, so the board hard-resets roughly every three minutes.
+# That caused a 15 hour full-lab outage on 2026-09-20: the NAS rebooted about
+# sixty times, and the QDevice VM took a fresh random MAC on each boot, which
+# exhausted DHCP leases and silently moved seven VMs off their addresses,
+# including both k8s control-plane nodes and the reverse proxy.
+#
+# It is NOT the Intel TCO watchdog. Unloading iTCO_wdt still reset, and
+# holding /dev/watchdog open and feeding it every 5s still reset at ~161s.
+# Time to death was identical idle, with 12 CPUs pegged, and with both 10G
+# NICs unbound, which rules out power, thermal, VRM, RAM and the NICs
+# together and rules in a firmware timer. Super I/O LDN 0x07 register 0x73
+# read 0xb4, which is 180, exactly the observed cadence.
+#
+# The proper fix is disabling Watchdog Timer in BIOS, which needs physical
+# access. This is the remote workaround.
+truenas_wdt_disable_enabled: true
+truenas_wdt_dir: /var/lib/ugreen-wdt
+truenas_wdt_script: /var/lib/ugreen-wdt/disable-wdt.py
+truenas_wdt_service: ugreen-wdt-disable.service
+
+# Super I/O registers are volatile and BIOS re-arms 180 on every boot, so the
+# disable must run every boot. BOTH persistence layers are deliberate and
+# neither is redundant: the systemd unit runs early enough to beat the 161s
+# deadline, and the TrueNAS POSTINIT entry lives in the config database, which
+# is what survives the version upgrade that wipes /etc.
+#
+# The runtime must stay Ansible-independent. If Ansible never runs again, the
+# NAS still has to disarm its own watchdog on boot, which is why this role
+# installs boot-time mechanisms rather than doing the write itself.
+truenas_wdt_postinit_comment: "Disable UGREEN IT8613 watchdog (box runs TrueNAS not UGOS)"
+truenas_wdt_postinit_timeout: 30
