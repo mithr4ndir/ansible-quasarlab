@@ -1,19 +1,4 @@
 ---
-- name: Assert the PBS token secret is present in the environment
-  delegate_to: localhost
-  become: false
-  run_once: true
-  ansible.builtin.assert:
-    that:
-      - lookup('env', pbs_storage_token_env) | length > 0
-    fail_msg: >-
-      {{ pbs_storage_token_env }} is empty or unset. It holds the
-      `{{ pbs_storage_tokenid }}` secret from the 1Password item
-      "PBS pve@pbs!pve token" (Infrastructure vault). Export it, or run via a
-      wrapper that does. A `| mandatory` lookup would pass an empty string
-      through silently, which is why this is an explicit assert.
-    quiet: true
-
 # `pvesm status` has no --output-format; pvesh does, and /storage lists the
 # cluster-wide configured storages rather than per-node availability, which is
 # what "is this storage already registered" actually means.
@@ -23,6 +8,30 @@
   check_mode: false
   run_once: true
   register: pbs_pvesm
+
+# The secret is spent by exactly two tasks, both conditional: `pvesm add` when
+# the storage is absent, and `pvesm set` when the credentials or endpoint have
+# drifted. Asserting it up front made EVERY run require it, including a run
+# whose only change is the backup job's schedule, and the only place to get it
+# is a 1Password read against a quota this lab has exhausted four times. So the
+# guard moved to the tasks that spend it. It is still an explicit assert rather
+# than a `| mandatory` lookup, which would pass an empty string through
+# silently.
+- name: Assert the PBS token secret is present before registering the storage
+  delegate_to: localhost
+  become: false
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - lookup('env', pbs_storage_token_env) | length > 0
+    fail_msg: &pbs_token_missing >-
+      {{ pbs_storage_token_env }} is empty or unset. It holds the
+      `{{ pbs_storage_tokenid }}` secret from the 1Password item
+      "PBS pve@pbs!pve token" (Infrastructure vault). Export it, or run via a
+      wrapper that does.
+    quiet: true
+  when: pbs_storage_id not in
+        ((pbs_pvesm.stdout | from_json) | map(attribute='storage') | list)
 
 - name: Register the PBS datastore as a PVE storage
   ansible.builtin.command:
@@ -86,6 +95,26 @@
       can be changed in place; remove and re-add it deliberately.
     quiet: true
 
+- name: Decide whether the storage credentials have to be pushed again
+  ansible.builtin.set_fact:
+    pbs_storage_needs_secret: >-
+      {{ pbs_storage_refresh_credentials | bool
+         or pbs_storage_live.username | default('') != pbs_storage_tokenid
+         or pbs_storage_live.fingerprint | default('') != (pbs_storage_fingerprint | trim)
+         or pbs_storage_live.content | default('') != 'backup' }}
+  run_once: true
+
+- name: Assert the PBS token secret is present before reconciling credentials
+  delegate_to: localhost
+  become: false
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - lookup('env', pbs_storage_token_env) | length > 0
+    fail_msg: *pbs_token_missing
+    quiet: true
+  when: pbs_storage_needs_secret | bool
+
 - name: Reconcile the PBS storage endpoint and credentials
   ansible.builtin.command:
     argv:
@@ -108,11 +137,7 @@
       - backup
   no_log: true
   run_once: true
-  when: >-
-    pbs_storage_refresh_credentials | bool
-    or pbs_storage_live.username | default('') != pbs_storage_tokenid
-    or pbs_storage_live.fingerprint | default('') != (pbs_storage_fingerprint | trim)
-    or pbs_storage_live.content | default('') != 'backup'
+  when: pbs_storage_needs_secret | bool
 
 - name: Re-read the storage config after reconciliation
   ansible.builtin.command: pvesh get /storage/{{ pbs_storage_id }} --output-format json

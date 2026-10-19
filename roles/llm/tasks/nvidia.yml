@@ -1,0 +1,35 @@
+---
+- name: Disable GSP firmware for the proprietary modules
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/nvidia-gsp.conf
+    content: |
+      # Managed by Ansible (roles/llm). GSP off under VFIO passthrough.
+      options nvidia NVreg_EnableGpuFirmware=0
+    owner: root
+    group: root
+    mode: "0644"
+  when: llm_nvidia_disable_gsp
+  notify: Reboot for NVIDIA driver
+
+- name: Install the NVIDIA driver (prebuilt modules, no DKMS)
+  ansible.builtin.apt:
+    name:
+      - "nvidia-headless-no-dkms-{{ llm_nvidia_driver_branch }}-server"
+      - "linux-modules-nvidia-{{ llm_nvidia_driver_branch }}-server-generic"
+      - "nvidia-utils-{{ llm_nvidia_driver_branch }}-server"
+      - "nvidia-compute-utils-{{ llm_nvidia_driver_branch }}-server"
+      - nvidia-modprobe
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  notify: Reboot for NVIDIA driver
+
+- name: Enable persistence mode daemon
+  ansible.builtin.systemd_service:
+    name: nvidia-persistenced
+    enabled: true
+
+# A fresh driver is not usable until the reboot, and the build and verify
+# steps below need it.
+- name: Reboot now if the driver changed
+  ansible.builtin.meta: flush_handlers
