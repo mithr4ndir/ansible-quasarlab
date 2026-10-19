@@ -28,12 +28,13 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Nine separate pytest surfaces exist. Running one proves nothing about the others, and
+Ten separate pytest surfaces exist. Running one proves nothing about the others, and
 this list is the whole set on `main`, taken from `git ls-tree` rather than from memory:
 
 ```
 pytest tests/                                # 1P quota gate, cache, killswitch, wrappers,
-                                             # requirements drift, playbook syntax
+                                             # requirements drift, playbook syntax,
+                                             # this list itself
 pytest roles/cmd_center/tests                # apt, helm, herdr, changelog, systemd scope, task limits
 pytest roles/common/apps/kubectl/tests
 pytest roles/common/vm_baseline/tests
@@ -48,9 +49,16 @@ pytest roles/uptime_kuma/tests
 Or all of them at once, which is what to run before merging anything:
 
 ```
-uv run --with pytest --with pyyaml --with jinja2 --with requests \
-  --with "ansible-core==2.16.3" pytest -rs roles/ tests/
+uv run --with pytest --with pytest-subtests --with pyyaml --with jinja2 \
+  --with requests --with "ansible-core==2.16.3" pytest -rs roles/ tests/
 ```
+
+`pytest-subtests` is load-bearing for the same reason the `ansible-core` pin is.
+pytest grew a built-in `subtests` fixture in 9.0, but pinning `ansible-core==2.16.3`
+resolves pytest back to 8.4.1, which has not got it. Without the plugin
+`tests/test_pbs_backup_excludes.py` raises `fixture 'subtests' not found` and two
+of its four tests never execute: an ERROR rather than a FAILURE, two lines deep in
+a 900-line run.
 
 `requests` is there for `tests/test_proxmox_inventory_agent.py`, which drives the
 real community.proxmox inventory plugin against a stub API; without it that file
@@ -63,6 +71,8 @@ version of this list. Find them with
 
 Adding a `tests/` directory to a role adds a surface nobody runs by habit. Either add it
 to this list in the same commit, or put the test in `tests/` at the repo root.
+`tests/test_validation_docs.py` fails when the list and the directories on disk drift
+apart, including the count in the sentence above it.
 
 Use the pinned runner, documented at `roles/cmd_center/README.md:151`:
 
