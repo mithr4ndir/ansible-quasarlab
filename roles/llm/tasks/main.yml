@@ -1,0 +1,29 @@
+---
+- name: Validate configuration
+  ansible.builtin.assert:
+    that:
+      - llm_server_model in (llm_models | map(attribute='file') | list)
+      - llm_llamacpp_commit is match('^[0-9a-f]{40}$')
+    fail_msg: "llm_server_model must be one of llm_models, and the llama.cpp pin must be a full commit sha."
+    quiet: true
+
+- name: Firewall
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Models disk
+  ansible.builtin.import_tasks: storage.yml
+
+- name: NVIDIA driver
+  ansible.builtin.import_tasks: nvidia.yml
+
+- name: Build llama.cpp
+  ansible.builtin.import_tasks: llamacpp.yml
+
+- name: Models
+  ansible.builtin.import_tasks: models.yml
+
+- name: Run the llama-server service
+  ansible.builtin.import_tasks: service.yml
+
+- name: Verify
+  ansible.builtin.import_tasks: verify.yml

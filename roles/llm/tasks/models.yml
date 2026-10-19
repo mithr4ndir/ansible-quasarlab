@@ -1,0 +1,26 @@
+---
+- name: Models directory
+  ansible.builtin.file:
+    path: "{{ llm_models_dir }}"
+    state: directory
+    owner: root
+    group: "{{ llm_user }}"
+    mode: "0750"
+
+# get_url verifies the sha256 and skips the download when the file already
+# matches it.
+- name: Download pinned models
+  ansible.builtin.get_url:
+    url: "{{ llm_hf_base }}/{{ item.repo }}/resolve/{{ item.revision }}/{{ item.file }}"
+    dest: "{{ llm_models_dir }}/{{ item.file }}"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: root
+    group: "{{ llm_user }}"
+    mode: "0640"
+    timeout: 60
+  loop: "{{ llm_models }}"
+  # Replaced weights under the same file name must not keep serving the old
+  # ones from VRAM.
+  notify: Restart llama-server
+  loop_control:
+    label: "{{ item.file }}"

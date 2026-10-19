@@ -1,0 +1,10 @@
+---
+# Local LLM host (llm1). Operator-run, not on a timer: the first run builds
+# llama.cpp (15 to 30 minutes) and downloads about 14 GB of weights.
+#
+#   ansible-playbook playbooks/llm.yml
+- name: Configure the local LLM host
+  hosts: llm
+  become: true
+  roles:
+    - llm
