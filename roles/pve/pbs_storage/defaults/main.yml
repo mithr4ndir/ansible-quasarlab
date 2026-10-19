@@ -32,8 +32,10 @@ pbs_backup_mode: snapshot
 #          command error: http upgrade request timed out
 # pbs1 is saturated hashing chunks at the moment it is also asked to be the
 # destination. A job that is red every hour trains you to ignore it, which is
-# worse than no job. Both PBS guests are rebuildable from roles/pbs plus
-# terraform, and the datastore itself is the thing with the value.
+# worse than no job. vm120 (pbs2) is the replica, and holds a second copy of
+# the same chunks, so backing it up would store the backups inside the backups.
+# Both PBS guests are rebuildable from roles/pbs plus terraform, and the
+# datastore itself is the thing with the value.
 pbs_backup_exclude_pbs_vmids: [103, 120]
 
 # Templates are static and reproducible from scripts/build-cloud-template.sh,
@@ -46,7 +48,26 @@ pbs_backup_exclude_templates: true
 # vzdump report success while producing a useless archive, so it must never be
 # relied on. It is also a template, so it is covered twice on purpose.
 # See feedback_pve_disk_backup_flag_vacuous.
-pbs_backup_exclude_vmids: [9000]
+#
+# vm122 (win-gputest) cannot be backed up at all while vm121 (llm1) is running.
+# Both are configured with `hostpci0: 0000:0a:00`, the RTX 2080 Ti. vzdump has
+# to start a STOPPED guest (paused) to attach its disks to a backup block job,
+# and that start claims the passthrough device, so it fails against whichever
+# of the two is already holding the card:
+#   ERROR: PCI device '0000:0a:00.0' already in use by VMID '121'
+#   ERROR: Backup of VM 122 failed - PCI device '0000:0a:00.0' already in use
+# One guest failing makes the whole cluster job exit `job errors`, which PVE
+# raises as a severity-error notification. That reached Discord once a day
+# 2026-10-16 through 2026-10-19, every run since vm122 was created. Under the
+# old hourly schedule it would have been 24 a day.
+#
+# This is an exclusion rather than a fix because the failure is structural: two
+# guests cannot share one PCI device, and win-gputest is a scratch Windows VM
+# built to prove the 2080 Ti faulty, which it did. Delete the guest and this
+# entry goes with it. If it is ever kept and wanted in the backup set, drop
+# `hostpci0` from its config while it is idle; do NOT set backup=0 on its
+# disks, which reports success and writes a useless archive.
+pbs_backup_exclude_vmids: [9000, 122]
 # Retention is deliberately NOT set on the PVE job. PBS owns it via its own
 # hourly prune job (roles/pbs: keep 24/7/4/3), so setting it here too would
 # mean two policies pruning the same datastore, and would additionally require
