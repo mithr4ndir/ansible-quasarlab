@@ -52,8 +52,10 @@ pbs_backup_mode: snapshot
 #          command error: http upgrade request timed out
 # pbs1 is saturated hashing chunks at the moment it is also asked to be the
 # destination. A job that is red every hour trains you to ignore it, which is
-# worse than no job. Both PBS guests are rebuildable from roles/pbs plus
-# terraform, and the datastore itself is the thing with the value.
+# worse than no job. vm120 (pbs2) is the replica, and holds a second copy of
+# the same chunks, so backing it up would store the backups inside the backups.
+# Both PBS guests are rebuildable from roles/pbs plus terraform, and the
+# datastore itself is the thing with the value.
 pbs_backup_exclude_pbs_vmids: [103, 120]
 
 # Templates are static and reproducible from scripts/build-cloud-template.sh,
@@ -66,6 +68,20 @@ pbs_backup_exclude_templates: true
 # vzdump report success while producing a useless archive, so it must never be
 # relied on. It is also a template, so it is covered twice on purpose.
 # See feedback_pve_disk_backup_flag_vacuous.
+#
+# A hazard to recognise before adding to this list: a STOPPED guest that shares
+# a `hostpci` address with a RUNNING guest can never be backed up. vzdump has
+# to start a stopped guest paused to attach its disks to a backup block job,
+# and that start claims the passthrough device:
+#   ERROR: PCI device '0000:0a:00.0' already in use by VMID '121'
+#   ERROR: Backup of VM 122 failed - PCI device '0000:0a:00.0' already in use
+# One guest failing takes the whole cluster job to `job errors`, which PVE
+# raises as a severity-error notification, so it alerts once per run forever
+# rather than intermittently. That happened 2026-10-16 to 2026-10-19 with
+# vm122 (win-gputest) against vm121 (llm1), and ended when vm122 was deleted;
+# no exclusion was needed in the end. If it recurs, prefer dropping `hostpci`
+# from the idle guest's config over excluding it, and never reach for
+# backup=0 on its disks, which reports success and writes a useless archive.
 pbs_backup_exclude_vmids: [9000]
 # Retention is deliberately NOT set on the PVE job. PBS owns it via its own
 # prune job (roles/pbs: keep 1/7/4/3), so setting it here too would
