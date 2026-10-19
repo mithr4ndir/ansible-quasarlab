@@ -2,15 +2,20 @@
 
 Three things are pinned here, in increasing order of how quietly they break.
 
-1. vm122 is excluded. It cannot be backed up while vm121 holds the GPU, and the
-   failure takes the whole cluster job down to `job errors`, which PVE raises
-   as an error notification once per run.
+1. The exclusions that exist stay: both PBS guests, the one guest whose disk
+   carries a vacuous `backup=0`, and template discovery.
 2. Every excluded vmid is explained in a comment. An exclusion is a decision
    not to hold a copy of a guest, and an unexplained one cannot be reviewed or
    safely removed later.
 3. Both lists are actually consumed by the task that computes the job's
-   `--exclude`. A list nobody reads is the `host_vars/cmd_center1` failure
-   mode: editing it looks like a change and does nothing.
+   `--exclude`, and the result is sorted and deduplicated. A list nobody reads
+   is the `host_vars/cmd_center1` failure mode: editing it looks like a change
+   and does nothing. An unstable order makes the task report changed forever.
+
+Written while chasing a daily backup alert that turned out to be vm122 sharing
+a GPU with vm121 (see the hazard note in the role defaults). vm122 was deleted
+instead of excluded, so no exclusion came of it, but the role had no test over
+its exclusion policy at all and now does.
 """
 
 import pathlib
@@ -50,11 +55,6 @@ def _comment_lines():
     return [ln for ln in DEFAULTS_TEXT.splitlines() if ln.lstrip().startswith("#")]
 
 
-def test_gpu_contended_guest_is_excluded():
-    # vm122 (win-gputest) shares `hostpci0: 0000:0a:00` with vm121 (llm1).
-    assert 122 in DEFAULTS["pbs_backup_exclude_vmids"]
-
-
 def test_pbs_guests_and_vacuous_backup_flag_guest_stay_excluded():
     # Regression guard on the three exclusions that predate vm122, so a later
     # edit to this list cannot drop one while adding another.
@@ -76,15 +76,6 @@ def test_every_exclusion_is_explained_in_a_comment(subtests):
                 f"{DEFAULTS_PATH.name}. Say why, and under what condition it "
                 f"should be included again."
             )
-
-
-def test_exclusion_reason_names_the_contending_pci_device():
-    # The whole reason vm122 is unbackupable is the shared passthrough device.
-    # Without the address in the comment, the next person cannot tell that
-    # deleting vm121 or the GPU changes the answer.
-    comments = "\n".join(_comment_lines())
-    assert "0000:0a:00" in comments
-    assert "vm121" in comments
 
 
 def test_both_static_lists_feed_the_computed_exclusion():
@@ -129,10 +120,11 @@ def test_computed_exclusion_renders_from_the_roles_own_expression(subtests):
     )
     rendered = env.from_string(expr).render(**context).strip()
 
-    assert rendered == "102,103,120,122,9000,9001,9002"
+    assert rendered == "102,103,120,9000,9001,9002"
 
-    with subtests.test("the contended guest is in the string PVE receives"):
-        assert "122" in rendered.split(",")
+    with subtests.test("every statically excluded vmid reaches the string"):
+        for vmid in _excluded_vmids():
+            assert str(vmid) in rendered.split(",")
     with subtests.test("a running non-template guest is not excluded"):
         assert "113" not in rendered.split(",")
     with subtests.test("9000 appears once despite being listed twice"):
