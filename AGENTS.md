@@ -50,16 +50,16 @@ pytest roles/uptime_kuma/tests
 Or all of them at once, which is what to run before merging anything:
 
 ```
-uv run --with pytest --with pytest-subtests --with pyyaml --with jinja2 \
-  --with requests --with "ansible-core==2.16.3" pytest -rs roles/ tests/
+uv run --with pytest --with pyyaml --with jinja2 --with requests \
+  --with "ansible-core==2.16.3" pytest -rs roles/ tests/
 ```
 
-`pytest-subtests` is load-bearing for the same reason the `ansible-core` pin is.
-pytest grew a built-in `subtests` fixture in 9.0, but pinning `ansible-core==2.16.3`
-resolves pytest back to 8.4.1, which has not got it. Without the plugin
-`tests/test_pbs_backup_excludes.py` raises `fixture 'subtests' not found` and two
-of its four tests never execute: an ERROR rather than a FAILURE, two lines deep in
-a 900-line run.
+The `ansible-core` pin also pins pytest: it resolves 8.4.1, where an unpinned `uv`
+picks 9.x. So this command has strictly fewer pytest features than whatever a
+contributor runs locally, and a test can pass for its author and not here. It has
+happened once already, with the `subtests` fixture that pytest added in 9.0.0.
+Write tests against 8.4.1, and treat ERROR in the summary line as seriously as
+FAILURE, because that is the shape this takes.
 
 `requests` is there for `tests/test_proxmox_inventory_agent.py`, which drives the
 real community.proxmox inventory plugin against a stub API; without it that file
