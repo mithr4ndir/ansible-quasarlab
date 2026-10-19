@@ -28,8 +28,9 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Ten separate pytest surfaces exist. Running one proves nothing about the others, and
-this list is the whole set on `main`, taken from `git ls-tree` rather than from memory:
+The pytest surfaces below are separate, and running one proves nothing about the others.
+The list is the whole set on `main`, taken from `git ls-tree` rather than from memory, and
+`tests/test_validation_docs.py` fails if it stops being:
 
 ```
 pytest tests/                                # 1P quota gate, cache, killswitch, wrappers,
@@ -72,7 +73,9 @@ version of this list. Find them with
 Adding a `tests/` directory to a role adds a surface nobody runs by habit. Either add it
 to this list in the same commit, or put the test in `tests/` at the repo root.
 `tests/test_validation_docs.py` fails when the list and the directories on disk drift
-apart, including the count in the sentence above it.
+apart. The sentence above the block deliberately states no number: a count in prose next
+to the thing it counts is a conflict waiting for two branches that both add a test
+directory, and it was already wrong once.
 
 Use the pinned runner, documented at `roles/cmd_center/README.md:151`:
 

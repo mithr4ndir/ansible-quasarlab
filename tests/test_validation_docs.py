@@ -4,12 +4,17 @@ Two different ways that list has already gone wrong, both silent:
 
 1. `roles/common/apps/kubectl/tests` is four levels down and was missing from an
    earlier version of the list. AGENTS.md says so itself.
-2. #230 added `roles/pbs/tests` to the list and left the prose count at nine, so
-   the sentence and the block under it disagreed.
+2. #230 added `roles/pbs/tests` to the list and left the sentence above it saying
+   nine, so the prose and the block under it disagreed.
 
 Neither breaks a test run, which is the problem: the list is how a human decides
-what to run, and a surface nobody runs is a surface that can rot green. This
-test is the only thing that fails when the two drift apart.
+what to run, and a surface nobody runs is a surface that can rot green. This test
+is the only thing that fails when the two drift apart.
+
+The second failure is now designed out rather than asserted against: the sentence
+no longer states a number, so adding a surface needs one new line in the block and
+nothing else. A count in prose next to the thing it counts is a conflict waiting
+for two branches that both add a test directory.
 """
 
 from __future__ import annotations
@@ -21,16 +26,10 @@ REPO = Path(__file__).resolve().parents[1]
 AGENTS = REPO / "AGENTS.md"
 TEXT = AGENTS.read_text()
 
-WORDS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
-    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-}
-
 
 def documented_surfaces() -> list[str]:
     """The `pytest <path>` lines in the first fenced block after the claim."""
-    anchor = TEXT.index("separate pytest surfaces exist")
+    anchor = TEXT.index("pytest surfaces below are separate")
     block = TEXT.index("```", anchor)
     end = TEXT.index("```", block + 3)
     return re.findall(r"^pytest (\S+)", TEXT[block:end], re.MULTILINE)
@@ -58,11 +57,10 @@ def test_every_documented_surface_exists():
     assert not stale, f"AGENTS.md lists test paths that are gone: {stale}"
 
 
-def test_the_prose_count_matches_the_block():
-    match = re.search(r"\b(\w+) separate pytest surfaces exist", TEXT)
-    assert match, "the sentence introducing the surface list has changed shape"
-    word = match.group(1).lower()
-    assert word in WORDS, f"unexpected count word {match.group(1)!r} in AGENTS.md"
-    assert WORDS[word] == len(documented_surfaces()), (
-        f"AGENTS.md says {word} surfaces but lists {len(documented_surfaces())}"
+def test_the_list_is_not_empty():
+    # The two tests above both pass vacuously against a block that parsed as
+    # nothing, which is exactly what a reworded heading would produce.
+    assert len(documented_surfaces()) >= 9, (
+        "parsed no surface list out of AGENTS.md, so the two tests above are "
+        "asserting over an empty set"
     )
