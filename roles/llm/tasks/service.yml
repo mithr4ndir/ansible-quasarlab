@@ -1,0 +1,20 @@
+---
+- name: Install the llama-server unit
+  ansible.builtin.template:
+    src: llama-server.service.j2
+    dest: /etc/systemd/system/llama-server.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart llama-server
+
+- name: Apply unit changes before starting
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start llama-server
+  ansible.builtin.systemd_service:
+    name: llama-server
+    enabled: true
+    state: started

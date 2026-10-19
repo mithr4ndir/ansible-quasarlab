@@ -1,0 +1,15 @@
+---
+- name: Create ext4 on the models disk
+  community.general.filesystem:
+    dev: "{{ llm_models_device }}"
+    fstype: ext4
+    opts: -L models
+
+- name: Mount the models disk
+  ansible.posix.mount:
+    path: "{{ llm_models_dir }}"
+    src: LABEL=models
+    fstype: ext4
+    # nofail: a missing data disk should cost the models, not the boot.
+    opts: defaults,noatime,nofail
+    state: mounted
