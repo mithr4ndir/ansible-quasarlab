@@ -28,7 +28,7 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Nine separate pytest surfaces exist. Running one proves nothing about the others, and
+Eleven separate pytest surfaces exist. Running one proves nothing about the others, and
 this list is the whole set on `main`, taken from `git ls-tree` rather than from memory:
 
 ```
@@ -41,6 +41,7 @@ pytest roles/k8s/common/tests
 pytest roles/op_ratelimit_collector/tests
 pytest roles/pbs/tests                      # backup freshness collector
 pytest roles/pve/gpu_passthrough/tests
+pytest roles/truenas/tests                  # UGREEN IT8613 watchdog disable
 pytest roles/unattended_upgrades/tests
 pytest roles/uptime_kuma/tests
 ```

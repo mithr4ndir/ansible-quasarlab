@@ -1,0 +1,23 @@
+# Managed by ansible role `truenas`.
+#
+# Must run before the ~161s hardware deadline, so it hangs off sysinit.target
+# with DefaultDependencies=no rather than waiting for multi-user.target.
+[Unit]
+Description=Disable UGREEN IT8613 Super I/O watchdog (box runs TrueNAS, not UGOS)
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target multi-user.target
+ConditionPathExists={{ truenas_wdt_script }}
+
+[Service]
+Type=oneshot
+ExecStart={{ truenas_wdt_script }}
+RemainAfterExit=yes
+# A timer-driven or boot-critical oneshot without this can hang forever and
+# block everything ordered after it. Debian's apt units ship
+# TimeoutStartUSec=infinity and one hung run ended all future runs.
+TimeoutStartSec=20
+StandardOutput=journal
+
+[Install]
+WantedBy=sysinit.target
