@@ -21,6 +21,7 @@ its exclusion policy at all and now does.
 import pathlib
 import re
 
+import pytest
 import yaml
 
 ROLE = pathlib.Path(__file__).resolve().parents[1] / "roles" / "pve" / "pbs_storage"
@@ -63,23 +64,28 @@ def test_pbs_guests_and_vacuous_backup_flag_guest_stay_excluded():
     assert DEFAULTS["pbs_backup_exclude_templates"] is True
 
 
-def test_every_exclusion_is_explained_in_a_comment(subtests):
+@pytest.mark.parametrize("vmid", _excluded_vmids())
+def test_every_exclusion_is_explained_in_a_comment(vmid):
     # Not a style check. Each of these is a guest we have decided not to keep a
     # copy of, and the reason is what tells a future reader whether the
-    # exclusion is still true. vm122's reason also carries the condition under
-    # which it should be removed again.
+    # exclusion is still true.
+    #
+    # Parametrized rather than looped, so one undocumented vmid is reported by
+    # name instead of the whole set failing on the first one. Deliberately NOT
+    # the `subtests` fixture: that needs pytest 9 or pytest-subtests, and the
+    # runner documented in AGENTS.md resolves pytest 8.4.1, where the fixture
+    # is missing and the test ERRORS rather than running. Which is how this
+    # file shipped in #244 with its two best assertions never executing.
     comments = "\n".join(_comment_lines())
-    for vmid in _excluded_vmids():
-        with subtests.test(vmid=vmid):
-            assert re.search(rf"\bvm{vmid}\b", comments), (
-                f"vmid {vmid} is excluded from backups with no explanation in "
-                f"{DEFAULTS_PATH.name}. Say why, and under what condition it "
-                f"should be included again."
-            )
+    assert re.search(rf"\bvm{vmid}\b", comments), (
+        f"vmid {vmid} is excluded from backups with no explanation in "
+        f"{DEFAULTS_PATH.name}. Say why, and under what condition it "
+        f"should be included again."
+    )
 
 
 def test_both_static_lists_feed_the_computed_exclusion():
-    # The guard that makes the three tests above mean anything. If the set_fact
+    # The guard that makes the tests above mean anything. If the set_fact
     # that builds `--exclude` stops reading one of these lists, editing it is
     # inert and the job silently backs the guest up again.
     expr = _computed_exclusion_expression()
@@ -89,7 +95,7 @@ def test_both_static_lists_feed_the_computed_exclusion():
     assert "sort" in expr and "join(',')" in expr
 
 
-def test_computed_exclusion_renders_from_the_roles_own_expression(subtests):
+def test_computed_exclusion_renders_from_the_roles_own_expression():
     """Render the real set_fact expression, not a reimplementation of it.
 
     PVE stores `exclude` as a string and the role diffs that string to decide
@@ -122,10 +128,8 @@ def test_computed_exclusion_renders_from_the_roles_own_expression(subtests):
 
     assert rendered == "102,103,120,9000,9001,9002"
 
-    with subtests.test("every statically excluded vmid reaches the string"):
-        for vmid in _excluded_vmids():
-            assert str(vmid) in rendered.split(",")
-    with subtests.test("a running non-template guest is not excluded"):
-        assert "113" not in rendered.split(",")
-    with subtests.test("9000 appears once despite being listed twice"):
-        assert rendered.split(",").count("9000") == 1
+    fields = rendered.split(",")
+    for vmid in _excluded_vmids():
+        assert str(vmid) in fields, f"{vmid} never reaches the job's --exclude"
+    assert "113" not in fields, "a running non-template guest was excluded"
+    assert fields.count("9000") == 1, "9000 is listed twice and was not deduped"

@@ -1,0 +1,20 @@
+---
+# pbs1 (vmid 103 on pve, 192.168.1.61) is the PRIMARY Proxmox Backup Server.
+# The hourly vzdump job on both PVE nodes writes here, and pbs2 pulls from it.
+#
+# Directory name must match the inventory hostname exactly. `cmd_center1` and
+# `timescaleDB` were both silently inert for this reason.
+
+# PVE backs up here, so the pve@pbs client identity belongs on this host.
+pbs_configure_pve_client: true
+
+# The read-only identity pbs2 authenticates as when it pulls. DatastoreReader
+# only, so this credential cannot write to or delete anything on the primary
+# even if the replica is compromised.
+#
+# The token SECRET is not here and never will be: `user generate-token` reveals
+# it once, so it is an operator step. It lives in 1Password as
+# "PBS sync@pbs!pbs2 token" (Infrastructure vault).
+pbs_sync_readers:
+  - user: "sync@pbs"
+    token_authid: "sync@pbs!pbs2"

@@ -179,3 +179,154 @@
     or truenas_advanced.syslog_transport | default('') != truenas_syslog_transport
     or truenas_advanced.sysloglevel | default('') != truenas_syslog_level
   changed_when: true
+
+# ---------------------------------------------------------------------------
+# UGREEN IT8613 Super I/O watchdog
+#
+# See defaults/main.yml for why this exists and how it was identified. Two
+# persistence layers, neither redundant: the systemd unit runs early enough to
+# beat the ~161s deadline, and the POSTINIT entry lives in the TrueNAS config
+# database, which survives the version upgrade that wipes /etc.
+#
+# This role installs boot-time mechanisms rather than performing the register
+# write itself, deliberately. If Ansible never runs again the NAS must still
+# disarm its own watchdog on boot.
+# ---------------------------------------------------------------------------
+
+- name: Create the UGREEN watchdog directory
+  ansible.builtin.file:
+    path: "{{ truenas_wdt_dir }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  when: truenas_wdt_disable_enabled | bool
+
+# Writes to /dev/port, so root-only. 0700 matches what was hand-deployed and
+# verified across a real reboot on 2026-09-20.
+- name: Deploy the UGREEN watchdog disable script
+  ansible.builtin.copy:
+    src: ugreen-wdt-disable.py
+    dest: "{{ truenas_wdt_script }}"
+    mode: "0700"
+    owner: root
+    group: root
+  become: true
+  when: truenas_wdt_disable_enabled | bool
+
+- name: Deploy the UGREEN watchdog systemd unit
+  ansible.builtin.template:
+    src: ugreen-wdt-disable.service.j2
+    dest: "/etc/systemd/system/{{ truenas_wdt_service }}"
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  when: truenas_wdt_disable_enabled | bool
+  notify: Reload systemd on truenas
+
+- name: Enable and start the UGREEN watchdog disable service
+  ansible.builtin.systemd:
+    name: "{{ truenas_wdt_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  when: truenas_wdt_disable_enabled | bool
+
+# The outcome, not the process state. The script exits non-zero if register
+# 0x73 did not read back 0, and it refuses to write at all unless the chip
+# identifies as 0x8613, so a zero exit status is the one thing that actually
+# says the timer is disarmed. `active` alone would be satisfied by a unit that
+# ran and failed to clear anything, which is precisely the shape of the Wazuh
+# outage: every service reported healthy for four months while blind.
+- name: Read the result of the watchdog disable
+  ansible.builtin.command:
+    cmd: "systemctl show -p ExecMainStatus --value {{ truenas_wdt_service }}"
+  become: true
+  changed_when: false
+  check_mode: false
+  register: truenas_wdt_exec_status
+  when: truenas_wdt_disable_enabled | bool
+
+- name: Assert the watchdog timer was actually cleared
+  ansible.builtin.assert:
+    that:
+      - truenas_wdt_exec_status.stdout | trim == '0'
+    fail_msg: >-
+      {{ truenas_wdt_service }} exited
+      {{ truenas_wdt_exec_status.stdout | default('(unknown)') | trim }}.
+      The script exits non-zero when Super I/O register 0x73 does not read
+      back 0, or when the chip does not identify as 0x8613. The watchdog is
+      therefore still armed and this NAS will hard-reset in about three
+      minutes. Check `journalctl -u {{ truenas_wdt_service }}`.
+    quiet: true
+  when: truenas_wdt_disable_enabled | bool
+
+- name: Read the TrueNAS init and shutdown scripts
+  ansible.builtin.command:
+    cmd: midclt call initshutdownscript.query
+  become: true
+  register: truenas_initscripts_raw
+  changed_when: false
+  check_mode: false
+  when: truenas_wdt_disable_enabled | bool
+
+- name: Identify the POSTINIT entries that run the watchdog script
+  ansible.builtin.set_fact:
+    truenas_wdt_postinit: >-
+      {{ (truenas_initscripts_raw.stdout | from_json)
+         | selectattr('when', 'equalto', 'POSTINIT')
+         | selectattr('command', 'equalto', truenas_wdt_script)
+         | list }}
+  when: truenas_wdt_disable_enabled | bool
+
+# initshutdownscript.create is NOT idempotent: it appends unconditionally, so
+# an unguarded task would add one entry per run and the hourly timer would
+# accumulate them forever, each one executing on every boot. Duplicates are
+# also the reason this asserts rather than silently using the first match.
+- name: Assert at most one POSTINIT entry runs the watchdog script
+  ansible.builtin.assert:
+    that:
+      - truenas_wdt_postinit | length <= 1
+    fail_msg: >-
+      {{ truenas_wdt_postinit | length }} POSTINIT entries already run
+      {{ truenas_wdt_script }} (ids
+      {{ truenas_wdt_postinit | map(attribute='id') | list | join(', ') }}).
+      initshutdownscript.create appends without checking, so duplicates
+      accumulate silently and every one of them runs at boot. Remove the
+      extras with `midclt call initshutdownscript.delete <id>` and re-run.
+    quiet: true
+  when: truenas_wdt_disable_enabled | bool
+
+- name: Register the watchdog disable as a TrueNAS POSTINIT command
+  ansible.builtin.command:
+    cmd: >-
+      midclt call initshutdownscript.create
+      {{ {'type': 'COMMAND',
+          'command': truenas_wdt_script,
+          'when': 'POSTINIT',
+          'enabled': true,
+          'timeout': truenas_wdt_postinit_timeout,
+          'comment': truenas_wdt_postinit_comment} | to_json }}
+  become: true
+  when:
+    - truenas_wdt_disable_enabled | bool
+    - truenas_wdt_postinit | length == 0
+  changed_when: true
+
+# An entry that exists but is disabled is the failure this would otherwise
+# miss: present in the query, so no duplicate is created, and inert at boot.
+- name: Re-enable the watchdog POSTINIT entry if it was switched off
+  ansible.builtin.command:
+    cmd: >-
+      midclt call initshutdownscript.update
+      {{ truenas_wdt_postinit[0].id }}
+      {{ {'enabled': true} | to_json }}
+  become: true
+  when:
+    - truenas_wdt_disable_enabled | bool
+    - truenas_wdt_postinit | length == 1
+    - not (truenas_wdt_postinit[0].enabled | default(false) | bool)
+  changed_when: true

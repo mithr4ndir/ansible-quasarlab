@@ -1,0 +1,361 @@
+---
+# Pull replication between PBS hosts.
+#
+# See defaults/main.yml for the reasoning that shapes this file: why the
+# direction is pull rather than push, why remove-vanished stays false, and why
+# the token secret is an operator step rather than something the role creates.
+#
+# Both halves live here because one role configures both ends. A host is a
+# source if pbs_sync_readers is set, a replica if pbs_sync_remotes is set, and
+# nothing at all by default.
+
+# ---------------------------------------------------------------------------
+# SOURCE SIDE: the read-only identity a replica authenticates as
+# ---------------------------------------------------------------------------
+
+- name: Read existing PBS users for replication
+  ansible.builtin.command: proxmox-backup-manager user list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_user_list
+  when: pbs_sync_readers | length > 0
+
+- name: Create the replication reader users
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - user
+      - create
+      - "{{ item.user }}"
+      - --comment
+      - "Replication reader (ansible role pbs)"
+  loop: "{{ pbs_sync_readers }}"
+  loop_control:
+    label: "{{ item.user }}"
+  when:
+    - pbs_sync_readers | length > 0
+    - item.user not in
+      ((pbs_sync_user_list.stdout | from_json) | map(attribute='userid') | list)
+
+# PBS refuses `acl update --auth-id <token>` outright when the token does not
+# exist: `Error: no such API token`, rc 255, verified on pbs1 2026-10-15. So
+# the ACL task below dies on that terse message and the end-state assertion
+# further down, which is the one that names the command to fix it, never gets
+# the chance to run. Check it here instead, where the failure can explain
+# itself.
+- name: Read the API tokens of each reader user
+  ansible.builtin.command: >-
+    proxmox-backup-manager user list-tokens {{ item.user }} --output-format json
+  loop: "{{ pbs_sync_readers }}"
+  loop_control:
+    label: "{{ item.user }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_user_tokens
+  when: pbs_sync_readers | length > 0
+
+- name: Assert each reader token exists before granting it anything
+  ansible.builtin.assert:
+    that:
+      - item.item.token_authid in
+        ((item.stdout | from_json) | map(attribute='tokenid') | list)
+    fail_msg: >-
+      API token {{ item.item.token_authid }} does not exist on this host.
+      Creating it cannot be a task, because `user generate-token` reveals the
+      secret exactly once, so it is a deliberate operator step:
+      `proxmox-backup-manager user generate-token {{ item.item.user }}
+      {{ item.item.token_authid.split('!')[1] }}`
+      Store the secret in 1Password as
+      "PBS {{ item.item.token_authid }} token" (Infrastructure vault), then
+      re-run this play. See roles/pbs/README.md.
+    quiet: true
+  loop: "{{ pbs_sync_user_tokens.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.token_authid }}"
+  when:
+    - pbs_sync_readers | length > 0
+    - not (item.skipped | default(false))
+
+# Granted to the user AND its token. A PBS token's effective privileges are the
+# intersection of its own ACL and its owning user's, so granting only one of
+# the two yields an empty permission set that still authenticates with HTTP
+# 200. That cost a day when `pvesm add pbs` failed against a token that looked
+# fine. Same trap, same shape, so the same remedy.
+- name: Grant the reader roles to the reader users and their tokens
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - acl
+      - update
+      - "/datastore/{{ pbs_datastore_name }}"
+      - "{{ item.1 }}"
+      - --auth-id
+      - "{{ item.0 }}"
+  vars:
+    pbs_sync_reader_authids: >-
+      {{ (pbs_sync_readers | map(attribute='user') | list)
+         + (pbs_sync_readers | map(attribute='token_authid') | list) }}
+  loop: "{{ pbs_sync_reader_authids | product(pbs_sync_reader_roles) | list }}"
+  loop_control:
+    label: "{{ item.0 }} {{ item.1 }}"
+  changed_when: false
+  when: pbs_sync_readers | length > 0
+
+- name: Read the effective privileges of each replication token
+  ansible.builtin.command: >-
+    proxmox-backup-manager user permissions {{ item.token_authid }}
+    --path /datastore/{{ pbs_datastore_name }}
+  loop: "{{ pbs_sync_readers }}"
+  loop_control:
+    label: "{{ item.token_authid }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_token_privs
+  when: pbs_sync_readers | length > 0
+
+# The END STATE, not the exit code of the acl calls. `user permissions` on a
+# token that does not exist returns rc 0 and an empty privilege list, verified
+# on pbs1 2026-10-15, so only the resolved privileges distinguish "granted"
+# from "there is no such token". This is the task that catches the operator
+# step below having been skipped.
+- name: Assert each replication token resolves the privileges it needs
+  ansible.builtin.assert:
+    that:
+      - "'Datastore.Read' in item.stdout"
+    fail_msg: >-
+      {{ item.item.token_authid }} resolves no usable privileges on
+      /datastore/{{ pbs_datastore_name }}:
+      {{ item.stdout | default('(none)') | trim }}
+      Either the token does not exist yet, or only one side of the
+      user/token ACL pair was granted. Token creation cannot be idempotent
+      because `user generate-token` reveals the secret exactly once, so it is
+      a deliberate operator step:
+      `proxmox-backup-manager user generate-token {{ item.item.user }}
+      {{ item.item.token_authid.split('!')[1] }}`
+      then store the secret in 1Password and re-run. See roles/pbs/README.md.
+    quiet: true
+  loop: "{{ pbs_sync_token_privs.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.token_authid }}"
+  when:
+    - pbs_sync_readers | length > 0
+    - not (item.skipped | default(false))
+
+# ---------------------------------------------------------------------------
+# REPLICA SIDE: remotes and the sync jobs that pull from them
+# ---------------------------------------------------------------------------
+
+# Checked before anything is created, so a missing secret fails on the first
+# remote rather than halfway through configuring several.
+- name: Assert every remote has its token secret in the environment
+  ansible.builtin.assert:
+    that:
+      - lookup('env', item.token_env | default(pbs_sync_remote_token_env)) | length > 0
+    fail_msg: >-
+      {{ item.token_env | default(pbs_sync_remote_token_env) }} is empty or
+      unset. It holds the `{{ item.auth_id }}` secret for remote
+      '{{ item.name }}', stored in 1Password. Export it before running this
+      play. The secret is never committed and never logged.
+    quiet: true
+  loop: "{{ pbs_sync_remotes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: pbs_sync_remotes | length > 0
+
+- name: Read existing remotes
+  ansible.builtin.command: proxmox-backup-manager remote list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_remote_list
+  when: pbs_sync_remotes | length > 0
+
+# no_log, because the token secret is an argv element. Without it the secret
+# lands in the play output, in the ara database, and in the run log that the
+# timers write to /var/log/ansible-quasarlab.
+- name: Create the replication remotes
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - remote
+      - create
+      - "{{ item.name }}"
+      - --host
+      - "{{ item.host }}"
+      - --auth-id
+      - "{{ item.auth_id }}"
+      - --password
+      - "{{ lookup('env', item.token_env | default(pbs_sync_remote_token_env)) }}"
+      - --fingerprint
+      - "{{ item.fingerprint }}"
+      - --comment
+      - "Managed by ansible role pbs"
+  loop: "{{ pbs_sync_remotes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  when:
+    - pbs_sync_remotes | length > 0
+    - item.name not in
+      ((pbs_remote_list.stdout | from_json) | map(attribute='name') | list)
+
+- name: Read the live remote configuration
+  ansible.builtin.command: >-
+    proxmox-backup-manager remote show {{ item.name }} --output-format json
+  loop: "{{ pbs_sync_remotes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_remote_show
+  when: pbs_sync_remotes | length > 0
+
+# Converge host, auth-id and fingerprint. A remote whose NAME exists is not a
+# remote that is configured: pbs1 keeping its name while its address or
+# certificate changed is exactly the drift this lab produced on 2026-09-20,
+# when sixty reboots moved seven VMs off their addresses.
+#
+# The PASSWORD is deliberately not reconciled. PBS does not return it, so there
+# is nothing to compare against and a blind update would rewrite it on every
+# run. Rotating the token is therefore a manual
+# `proxmox-backup-manager remote update <name> --password <secret>`.
+- name: Converge the remote connection details
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - remote
+      - update
+      - "{{ item.item.name }}"
+      - --host
+      - "{{ item.item.host }}"
+      - --auth-id
+      - "{{ item.item.auth_id }}"
+      - --fingerprint
+      - "{{ item.item.fingerprint }}"
+  loop: "{{ pbs_remote_show.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - pbs_sync_remotes | length > 0
+    - not (item.skipped | default(false))
+    - (item.stdout | from_json).host | default('') != item.item.host
+      or (item.stdout | from_json)['auth-id'] | default('') != item.item.auth_id
+      or (item.stdout | from_json).fingerprint | default('') != item.item.fingerprint
+
+- name: Read existing sync jobs
+  ansible.builtin.command: proxmox-backup-manager sync-job list --output-format json
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_job_list
+  when: pbs_sync_jobs | length > 0
+
+- name: Create the sync jobs
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - sync-job
+      - create
+      - "{{ item.id }}"
+      - --remote
+      - "{{ item.remote }}"
+      - --remote-store
+      - "{{ item.remote_store }}"
+      - --store
+      - "{{ item.store }}"
+      - --schedule
+      - "{{ item.schedule | default(pbs_sync_schedule) }}"
+      - --remove-vanished
+      - "{{ item.remove_vanished | default(pbs_sync_remove_vanished) | bool | lower }}"
+      - --resync-corrupt
+      - "{{ item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool | lower }}"
+      - --rate-in
+      - "{{ item.rate_in | default(pbs_sync_rate_in) }}"
+      - --comment
+      - "Managed by ansible role pbs"
+  loop: "{{ pbs_sync_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when:
+    - pbs_sync_jobs | length > 0
+    - item.id not in
+      ((pbs_sync_job_list.stdout | from_json) | map(attribute='id') | list)
+
+- name: Read the live sync job configuration
+  ansible.builtin.command: >-
+    proxmox-backup-manager sync-job show {{ item.id }} --output-format json
+  loop: "{{ pbs_sync_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
+  check_mode: false
+  register: pbs_sync_job_show
+  when: pbs_sync_jobs | length > 0
+
+# `rate-in` comes back from PBS as the STRING "41943040 B", not a number, so
+# a bare `| int` on it yields 0 and the comparison is permanently unequal. That
+# made this task report changed on every single run, which is how a converge
+# task quietly becomes a no-op that nobody trusts. Verified against pbs2 on
+# 2026-10-15 by running the play twice and watching changed=1 both times.
+# Strip to digits before comparing.
+#
+# remove-vanished is the one that matters. If it ever flips to true the replica
+# silently stops being a second copy and becomes a mirror that propagates
+# deletions, which is the failure this whole file exists to prevent. PBS omits
+# the key entirely when it is false, so the comparison defaults to false rather
+# than treating "absent" as a mismatch and updating on every run.
+- name: Converge the sync job settings
+  ansible.builtin.command:
+    argv:
+      - proxmox-backup-manager
+      - sync-job
+      - update
+      - "{{ item.item.id }}"
+      - --schedule
+      - "{{ item.item.schedule | default(pbs_sync_schedule) }}"
+      - --remove-vanished
+      - "{{ item.item.remove_vanished | default(pbs_sync_remove_vanished) | bool | lower }}"
+      - --resync-corrupt
+      - "{{ item.item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool | lower }}"
+      - --rate-in
+      - "{{ item.item.rate_in | default(pbs_sync_rate_in) }}"
+  vars:
+    pbs_sync_job_live: "{{ item.stdout | default('{}') | from_json }}"
+  loop: "{{ pbs_sync_job_show.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.id }}"
+  when:
+    - pbs_sync_jobs | length > 0
+    - not (item.skipped | default(false))
+    - pbs_sync_job_live.schedule | default('')
+      != (item.item.schedule | default(pbs_sync_schedule))
+      or (pbs_sync_job_live['remove-vanished'] | default(false) | bool)
+      != (item.item.remove_vanished | default(pbs_sync_remove_vanished) | bool)
+      or (pbs_sync_job_live['resync-corrupt'] | default(false) | bool)
+      != (item.item.resync_corrupt | default(pbs_sync_resync_corrupt) | bool)
+      or (pbs_sync_job_live['rate-in'] | default('') | string
+          | regex_replace('[^0-9]', '') | default('0', true) | int)
+      != (item.item.rate_in | default(pbs_sync_rate_in) | int)
+
+# `sync-job update` cannot move a job between datastores or remotes, so a
+# mismatch here is not something this role can fix. Fail rather than report
+# success over a job that pulls the wrong store into the wrong place.
+- name: Assert each sync job points at the intended remote and datastore
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json).remote | default('') == item.item.remote
+      - (item.stdout | from_json)['remote-store'] | default('') == item.item.remote_store
+      - (item.stdout | from_json).store | default('') == item.item.store
+    fail_msg: >-
+      Sync job '{{ item.item.id }}' pulls
+      {{ (item.stdout | from_json).remote | default('?') }}:{{
+         (item.stdout | from_json)['remote-store'] | default('?') }}
+      into {{ (item.stdout | from_json).store | default('?') }}, not
+      {{ item.item.remote }}:{{ item.item.remote_store }} into
+      {{ item.item.store }}. PBS cannot repoint a sync job in place, so this
+      needs a human: remove the job and let the role recreate it.
+    quiet: true
+  loop: "{{ pbs_sync_job_show.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.id }}"
+  when:
+    - pbs_sync_jobs | length > 0
+    - not (item.skipped | default(false))
