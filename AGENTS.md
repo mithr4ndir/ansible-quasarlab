@@ -28,12 +28,14 @@ command-center1 itself. Changes here reach real machines on a timer, so treat a 
 There is no CI in this repo. No `.github/workflows` exists, so every check below is one a
 human or agent has to run deliberately.
 
-Eleven separate pytest surfaces exist. Running one proves nothing about the others, and
-this list is the whole set on `main`, taken from `git ls-tree` rather than from memory:
+The pytest surfaces below are separate, and running one proves nothing about the others.
+The list is the whole set on `main`, taken from `git ls-tree` rather than from memory, and
+`tests/test_validation_docs.py` fails if it stops being:
 
 ```
 pytest tests/                                # 1P quota gate, cache, killswitch, wrappers,
-                                             # requirements drift, playbook syntax
+                                             # requirements drift, playbook syntax,
+                                             # this list itself
 pytest roles/cmd_center/tests                # apt, helm, herdr, changelog, systemd scope, task limits
 pytest roles/common/apps/kubectl/tests
 pytest roles/common/vm_baseline/tests
@@ -53,6 +55,13 @@ uv run --with pytest --with pyyaml --with jinja2 --with requests \
   --with "ansible-core==2.16.3" pytest -rs roles/ tests/
 ```
 
+The `ansible-core` pin also pins pytest: it resolves 8.4.1, where an unpinned `uv`
+picks 9.x. So this command has strictly fewer pytest features than whatever a
+contributor runs locally, and a test can pass for its author and not here. It has
+happened once already, with the `subtests` fixture that pytest added in 9.0.0.
+Write tests against 8.4.1, and treat ERROR in the summary line as seriously as
+FAILURE, because that is the shape this takes.
+
 `requests` is there for `tests/test_proxmox_inventory_agent.py`, which drives the
 real community.proxmox inventory plugin against a stub API; without it that file
 skips, and `-rs` is what makes the skip visible.
@@ -64,6 +73,10 @@ version of this list. Find them with
 
 Adding a `tests/` directory to a role adds a surface nobody runs by habit. Either add it
 to this list in the same commit, or put the test in `tests/` at the repo root.
+`tests/test_validation_docs.py` fails when the list and the directories on disk drift
+apart. The sentence above the block deliberately states no number: a count in prose next
+to the thing it counts is a conflict waiting for two branches that both add a test
+directory, and it was already wrong once.
 
 Use the pinned runner, documented at `roles/cmd_center/README.md:151`:
 
