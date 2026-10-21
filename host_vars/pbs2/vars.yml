@@ -1,0 +1,49 @@
+---
+# pbs2 (vmid 120 on pve2, 192.168.1.62) is a PULL REPLICA of pbs1.
+#
+# Why this host exists: the hourly vzdump job excludes 102,103,120,9000,9001,
+# 9002, so neither backup server is backed up and, until pbs2 held a copy,
+# every restore point in the lab sat on pbs1 alone. Losing one VM lost all of
+# them. pbs1 and pbs2 deliberately sit on different Proxmox nodes (pve and
+# pve2) so a single host failure cannot take both.
+#
+# Directory name must match the inventory hostname exactly.
+
+# Nothing backs up to pbs2 directly, so `pve@pbs!pve` does not exist here and
+# the role's end-state assertion on it would fail against an empty permission
+# set. Skipping the block keeps that assertion strict on pbs1 instead of
+# weakening it everywhere.
+#
+# FAILOVER IS NOT AUTOMATIC. Promoting pbs2 means generating a pve@pbs token
+# here (its secret cannot be chosen, so it will differ from pbs1's) and
+# repointing the PVE storage at it. See roles/pbs/README.md.
+pbs_configure_pve_client: false
+
+# Fingerprint is pbs1's TLS certificate, read with
+# `proxmox-backup-manager cert info` on pbs1, verified 2026-10-15. Pinning it
+# is what makes the pull resistant to being answered by something else at that
+# address, which matters in a lab that has already had seven VMs change IP in
+# one night. Regenerating pbs1's certificate breaks the sync until this is
+# updated, by design.
+pbs_sync_remotes:
+  - name: pbs1
+    host: 192.168.1.61
+    auth_id: "sync@pbs!pbs2"
+    fingerprint: "c5:91:53:91:3f:fc:06:10:af:b8:a7:12:f1:0a:41:a1:a7:7c:b6:75:1b:4e:99:4b:46:33:d7:3d:4f:d6:8e:0a"
+    token_env: PBS_SYNC_TOKEN_SECRET
+
+# Hourly at :30, which is also the role default, so this is here to be
+# explicit rather than to override anything.
+#
+# Deliberately NOT tied to the backup window. vzdump is moving from `hourly`
+# to once a day at 10:00 UTC (ansible-quasarlab#241), and a sync pinned to a
+# time after that window would have to be moved again the next time it
+# changes. Hourly keeps the replica about an hour behind the primary whatever
+# the backup schedule is, and a run that finds nothing new costs almost
+# nothing. The :30 offset keeps it clear of the top of the hour.
+pbs_sync_jobs:
+  - id: sync-from-pbs1
+    remote: pbs1
+    remote_store: lab
+    store: lab
+    schedule: "*-*-* *:30:00"

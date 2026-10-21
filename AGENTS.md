@@ -39,7 +39,7 @@ pytest roles/common/apps/kubectl/tests
 pytest roles/common/vm_baseline/tests
 pytest roles/k8s/common/tests
 pytest roles/op_ratelimit_collector/tests
-pytest roles/pbs/tests                      # backup freshness collector
+pytest roles/pbs/tests                      # backup freshness collector, pull replication
 pytest roles/pve/gpu_passthrough/tests
 pytest roles/truenas/tests                  # UGREEN IT8613 watchdog disable
 pytest roles/unattended_upgrades/tests

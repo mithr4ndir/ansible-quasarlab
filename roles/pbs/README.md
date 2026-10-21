@@ -189,13 +189,94 @@ Scratch VM destroyed afterwards, no stray volumes.
 Incidentally: nginx2 runs no nginx. It is the kube-apiserver LB, listening on
 6443. The name is historical, and the restore did not lose anything.
 
+## Replication: pbs2 pulls from pbs1
+
+Until this existed every restore point in the lab sat on pbs1. The hourly
+vzdump job excludes `102,103,120,9000,9001,9002`, so the two backup servers
+back up neither themselves nor each other, and losing one VM lost every
+backup. pbs1 (vmid 103) runs on `pve` and pbs2 (vmid 120) on `pve2`, so one
+Proxmox host failure cannot take both.
+
+The direction is a **pull**, and that is the security argument for the whole
+design. A push would require a credential on pbs1 that can WRITE to pbs2, so
+whatever compromises or corrupts the primary reaches the copy. With a pull,
+pbs1 holds no credential for pbs2 at all, and the one credential that does
+exist (`sync@pbs!pbs2`, held by the replica) is `DatastoreReader`: it cannot
+write to, prune, or delete anything on the primary.
+
+### remove-vanished is false, on purpose
+
+A sync with `remove-vanished` true is a mirror, not a backup. Anything deleted
+on pbs1 is deleted here on the next run, so a wiped, ransomed or mis-pruned
+primary replicates faithfully into the only remaining copy and the lab is back
+to one set of backups in two places. False means the replica only ever gains
+snapshots. Its own prune job, created by this role for its own datastore with
+the same `keep-*` policy, is what bounds growth, which also means retention
+here does not depend on pbs1's retention being right.
+
+`roles/pbs/tests/test_pbs_replication.py` fails if this flips, on both the
+create and the update path.
+
+### Bootstrap, which is not fully idempotent
+
+`proxmox-backup-manager user generate-token` reveals the secret exactly once,
+so it cannot be a task, the same reason `pve@pbs!pve` is an operator step. The
+role creates the user, grants the ACLs to both the user and the token, and
+then asserts the END STATE, because `user permissions` on a token that does
+not exist returns rc 0 and an empty list. The sequence is:
+
+```
+# 1. pbs1: create the reader user and its ACLs. This FAILS at the final
+#    assertion, by design, because the token does not exist yet.
+ansible-playbook playbooks/pbs.yml --limit pbs1
+
+# 2. pbs1: mint the token. Record the secret in 1Password as
+#    "PBS sync@pbs!pbs2 token" (Infrastructure vault). It is shown once.
+proxmox-backup-manager user generate-token sync@pbs pbs2
+
+# 3. pbs1: re-run. The assertion now passes.
+ansible-playbook playbooks/pbs.yml --limit pbs1
+
+# 4. pbs2: configure the remote and the sync job.
+export PBS_SYNC_TOKEN_SECRET='...'   # from 1Password, never committed
+ansible-playbook playbooks/pbs.yml --limit pbs2
+```
+
+The task that consumes the secret is `no_log: true`, because it passes it as an
+argv element and the run output goes to the ara database and
+`/var/log/ansible-quasarlab`. A test asserts that too.
+
+### What the role will not reconcile
+
+- **The remote's password.** PBS never returns it, so there is nothing to
+  compare and a blind update would rewrite it every run. Rotating the token is
+  a manual `proxmox-backup-manager remote update pbs1 --password <secret>`.
+- **A sync job's remote or datastore.** PBS cannot repoint a job in place, so a
+  mismatch fails loudly instead of being silently tolerated. Remove the job and
+  let the role recreate it.
+
+### The fingerprint is pinned
+
+`pbs_sync_remotes[].fingerprint` is pbs1's TLS certificate, from
+`proxmox-backup-manager cert info`. Pinning it is what stops the pull being
+answered by something else at that address, which is not hypothetical in a lab
+where sixty QDevice reboots once moved seven VMs onto each other's leases.
+Regenerating pbs1's certificate breaks replication until this value is
+updated. That is the intended behaviour, not a bug.
+
+### Failover is manual
+
+pbs2 sets `pbs_configure_pve_client: false`, so it has no `pve@pbs!pve`
+identity. Promoting it means generating a token there (the secret cannot be
+chosen, so it will differ from pbs1's) and repointing the PVE storage. The
+replica was deliberately not given a standing write credential just to make
+failover one step shorter.
+
 ## Still to do, deliberately not in this role
 
 - **PVE-side registration.** A `pbs:` storage entry plus the backup job. Needs a
   PBS API token, which is a secret and belongs in the vault, so it is a separate
   change with its own review.
-- **Replication.** `sync-job create` on pbs2 pulling from pbs1, so a full set
-  exists on both physical hosts. This is the design in `terraform-quasarlab#26`.
 - **Restore drill.** Until one VM has actually been restored from this datastore,
   the backup posture is unproven. The drill is the acceptance test for #173, not
   an optional extra.
