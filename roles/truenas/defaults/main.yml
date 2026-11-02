@@ -32,6 +32,37 @@ truenas_ugreen_leds_cli_url: "https://github.com/miskcoo/ugreen_leds_controller/
 truenas_ugreen_leds_cli_sha256: "d0a8cbaa2ba7a6b5433d83fec44655799e7d1063307a719c29e0d9dd3afc1c0c"
 
 # ---------------------------------------------------------------------------
+# SSD TRIM
+# ---------------------------------------------------------------------------
+# tank is eight consumer SATA SSDs. `autotrim` was at its `off` default and no
+# manual trim had ever run, so after 15,663 power-on hours ZFS had never told
+# any of them which blocks were free. A drive's FTL then has to assume the
+# whole span is live, and garbage collection stalls under write pressure.
+#
+# Measured on 2026-11-02: p99 service time on 6ac2c0dd (sda, mirror-2) was
+# 4.0s read and at or above 5s write, while its own mirror partner sat at
+# 0.87s and the other six drives at 0.05s to 0.70s. SMART was spotless on
+# both (0 reallocated, 0 pending, 0 uncorrectable, 0 UDMA CRC, PASSED),
+# `zpool status` showed zero read/write/cksum errors, and 42 days of uptime
+# held no ATA reset or timeout. Every explanation that looks at the media
+# therefore comes back clean, which is why issue #218 could not close.
+#
+# That is also what ZfsVdevLatencyOutlier fires on: 59 firing episodes in 14
+# days, every one of them tank/mirror-2, spread across the clock rather than
+# tracking any single job.
+#
+# Set through the middleware, not `zpool set`. TrueNAS keeps pool properties
+# in its own config database and re-asserts them, the same reason the syslog
+# target above goes through midclt.
+#
+# autotrim only reclaims what is freed from now on. Clearing the accumulated
+# backlog needs one `zpool trim tank`, which is an operation rather than
+# configuration and is deliberately NOT automated here: it drives every drive
+# in the pool at once, and this pool is the lab's NFS and iSCSI backing store.
+truenas_autotrim_pools:
+  - tank
+
+# ---------------------------------------------------------------------------
 # UGREEN IT8613 Super I/O watchdog
 # ---------------------------------------------------------------------------
 # The DXP8800 Plus arms a 180s hardware watchdog that its stock UGOS services
