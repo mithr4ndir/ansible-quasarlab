@@ -115,6 +115,45 @@ middleware errors and drops that. This was checked by emitting one line at each
 severity and querying Loki for each: `info` filtered, `notice`, `warning`,
 `err` and `crit` all delivered.
 
+### SSD autotrim
+
+`tank` is eight consumer SATA SSDs. `autotrim` sat at its `off` default and no
+manual trim had ever run, so across 15,663 power-on hours ZFS never told any
+drive which blocks were free. A controller with no free-block map has to treat
+the whole span as live, and its garbage collection then stalls under write
+pressure.
+
+What that looked like on 2026-11-02, measured from the per-vdev histograms this
+role exports:
+
+| leaf | vdev | p99 read |
+|---|---|---|
+| `6ac2c0dd` (sda) | mirror-2 | **4.02 s** |
+| `1683d319` (sde) | mirror-2 | 0.87 s |
+| the other six | mirror-0/1/3 | 0.05 s to 0.70 s |
+
+Write p99 on `6ac2c0dd` reached the top finite bucket, at or above 5 s. Every
+media-level signal was clean at the same time: SMART `PASSED` on both members
+with 0 reallocated, 0 pending, 0 uncorrectable and 0 UDMA CRC, `zpool status`
+at zero read/write/cksum errors, and no ATA reset or timeout in 42 days of
+uptime. That combination is why issue #218 described the symptom in 2026-10 and
+could not name a cause: nothing that inspects the media is wrong.
+
+It is also what `ZfsVdevLatencyOutlier` had been firing on, 59 firing episodes
+in 14 days, every one of them `tank/mirror-2`, spread across the clock rather
+than following any one workload.
+
+The property goes through `pool.update`, not `zpool set`, for the same reason
+the syslog target does: TrueNAS holds pool properties in its config database
+and re-asserts them.
+
+`autotrim` only reclaims what is freed from here on, so it stops the problem
+growing but does not undo it. Clearing the accumulated backlog takes one
+`zpool trim tank`. That is an operation rather than configuration and this role
+deliberately does not run it: it drives every drive in the pool at once, and
+this pool backs the lab's NFS and iSCSI. Progress is visible in
+`zpool status -t tank`, and it can be paused with `zpool trim -s tank`.
+
 ## Known limitation
 
 The script and the systemd units live under `/var/lib/node_exporter` and

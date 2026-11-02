@@ -168,16 +168,67 @@
 
 - name: Point syslog at the vector aggregator
   ansible.builtin.command:
-    cmd: >-
-      midclt call system.advanced.update
-      {{ {'syslogserver': truenas_syslog_server,
-          'syslog_transport': truenas_syslog_transport,
-          'sysloglevel': truenas_syslog_level} | to_json }}
+    # argv for the same reason as the autotrim task below: a `cmd` string is
+    # shlex-split, which would strip the quotes out of this payload and break
+    # it on its spaces. This task has always been skipped because the live
+    # values already match, so the shape was never exercised.
+    argv:
+      - midclt
+      - call
+      - system.advanced.update
+      - "{{ {'syslogserver': truenas_syslog_server,
+             'syslog_transport': truenas_syslog_transport,
+             'sysloglevel': truenas_syslog_level} | to_json }}"
   become: true
   when: >-
     truenas_advanced.syslogserver | default('') != truenas_syslog_server
     or truenas_advanced.syslog_transport | default('') != truenas_syslog_transport
     or truenas_advanced.sysloglevel | default('') != truenas_syslog_level
+  changed_when: true
+
+# ---------------------------------------------------------------------------
+# SSD TRIM
+#
+# See the long note in defaults/main.yml for the measurement this comes from.
+# Short version: these are consumer SATA SSDs that had never been trimmed, so
+# their controllers had no free-block map and stalled for seconds at a time
+# with every media-level signal reading clean.
+# ---------------------------------------------------------------------------
+
+- name: Read pool autotrim state from the TrueNAS middleware
+  ansible.builtin.command:
+    cmd: midclt call pool.query
+  become: true
+  register: truenas_pool_query_raw
+  changed_when: false
+  check_mode: false
+
+- name: Enable autotrim on the pools that want it
+  # No module manages pool properties: community.general.zfs covers datasets
+  # only, and community.general.zpool does not exist. The middleware exposes
+  # it as pool.update(autotrim), which is also the form that persists.
+  # Idempotence comes from the rejectattr below rather than from the module,
+  # so a run with nothing to do reports no change.
+  ansible.builtin.command:
+    # argv, not cmd. The command module runs shlex.split on a `cmd` string,
+    # which strips the quotes out of a JSON payload and splits it on its
+    # spaces, so `{"autotrim": "ON"}` reaches midclt as two broken arguments
+    # and it answers `Too many arguments (expected 2, found 3)`. Verified
+    # against the real middleware before writing it this way.
+    argv:
+      - midclt
+      - call
+      - pool.update
+      - "{{ item.id | string }}"
+      - "{{ {'autotrim': 'ON'} | to_json }}"
+  become: true
+  loop: >-
+    {{ truenas_pool_query_raw.stdout | from_json
+       | selectattr('name', 'in', truenas_autotrim_pools)
+       | rejectattr('autotrim.parsed', 'equalto', 'on')
+       | list }}
+  loop_control:
+    label: "{{ item.name }}"
   changed_when: true
 
 # ---------------------------------------------------------------------------
@@ -302,14 +353,20 @@
 
 - name: Register the watchdog disable as a TrueNAS POSTINIT command
   ansible.builtin.command:
-    cmd: >-
-      midclt call initshutdownscript.create
-      {{ {'type': 'COMMAND',
-          'command': truenas_wdt_script,
-          'when': 'POSTINIT',
-          'enabled': true,
-          'timeout': truenas_wdt_postinit_timeout,
-          'comment': truenas_wdt_postinit_comment} | to_json }}
+    # argv, not cmd: see the note on the syslog task. This one had never run,
+    # because the POSTINIT entry it creates already existed, so a shlex-split
+    # payload would only have surfaced on the day the entry was missing, which
+    # is the one day it is needed.
+    argv:
+      - midclt
+      - call
+      - initshutdownscript.create
+      - "{{ {'type': 'COMMAND',
+             'command': truenas_wdt_script,
+             'when': 'POSTINIT',
+             'enabled': true,
+             'timeout': truenas_wdt_postinit_timeout,
+             'comment': truenas_wdt_postinit_comment} | to_json }}"
   become: true
   when:
     - truenas_wdt_disable_enabled | bool
@@ -320,10 +377,12 @@
 # miss: present in the query, so no duplicate is created, and inert at boot.
 - name: Re-enable the watchdog POSTINIT entry if it was switched off
   ansible.builtin.command:
-    cmd: >-
-      midclt call initshutdownscript.update
-      {{ truenas_wdt_postinit[0].id }}
-      {{ {'enabled': true} | to_json }}
+    argv:
+      - midclt
+      - call
+      - initshutdownscript.update
+      - "{{ truenas_wdt_postinit[0].id | string }}"
+      - "{{ {'enabled': true} | to_json }}"
   become: true
   when:
     - truenas_wdt_disable_enabled | bool
