@@ -145,3 +145,26 @@ def test_the_update_passes_json_as_one_argument():
     # And the reason argv is required: the equivalent cmd string does not.
     as_cmd = " ".join(rendered)
     assert shlex.split(as_cmd) != rendered
+
+
+def test_no_midclt_task_passes_a_json_payload_as_a_cmd_string():
+    """Generalise the argv bug across the whole role.
+
+    Both midclt write tasks in this role originally used `cmd` with a
+    `to_json` payload, and both were broken the same way: the command module
+    shlex-splits the string, the quotes vanish, and the JSON arrives as several
+    arguments. The syslog one hid for as long as it did because its `when`
+    guard is false whenever the live config already matches, which is almost
+    always. So this asserts the shape for every such task rather than for the
+    two that exist today.
+    """
+    offenders = []
+    for task in TASKS:
+        spec = task.get("ansible.builtin.command") or {}
+        cmd = spec.get("cmd")
+        if isinstance(cmd, str) and "to_json" in cmd:
+            offenders.append(task.get("name"))
+    assert offenders == [], (
+        "these tasks pass a JSON payload through a shlex-split cmd string and "
+        f"will reach midclt as separate arguments: {offenders}. Use argv."
+    )
