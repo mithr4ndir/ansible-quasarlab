@@ -106,18 +106,85 @@
       SystemMaxFileSize={{ vm_baseline_journald_max_file_size }}
   notify: Restart journald
 
-# journald enforces SystemMaxUse on rotation and on restart, so the handler
-# above usually brings an oversized journal down on its own. This vacuum covers
-# the case where the drop-in is already in place (handler does not fire) but the
-# journal is somehow over the cap, and makes enforcement immediate either way.
+# journald enforces SystemMaxUse when it rotates, which means at SystemMaxFileSize
+# granularity, so a journal sitting up to one file over the cap is the designed
+# steady state and not a fault. This vacuum used to run unconditionally, and it
+# therefore reclaimed that routine overshoot on whichever hosts had crossed it in
+# the last hour: 33.7M on uptime-kuma at 2026-11-03 03:17Z, and one or two
+# different hosts every hour before that (wazuh, llm1, postgresql, timescaleDB,
+# jellyfin, command-center1). Each of those is an honest `changed`, which is the
+# problem: `AnsiblePlaybookMadeChanges{playbook="vm_baseline.yml"}` was lit
+# permanently, so the one alert that says "a converged host just changed" meant
+# nothing. An alert that is always on is the same as no alert.
 #
+# So it now runs only when the journal is further over the cap than journald's
+# own rotation granularity can explain, which is the "somehow over the cap" case
+# this task was actually written for. Within that slack there is nothing to fix
+# and journald will collect it at the next rotation. The handler above still
+# restarts journald when the cap itself changes, and a restart enforces
+# immediately, so lowering SystemMaxUse still takes effect at once.
+- name: Measure how much space the journal is using
+  ansible.builtin.command: journalctl --disk-usage
+  register: vm_baseline_journal_usage
+  changed_when: false
+  check_mode: false
+
+# journalctl and journald.conf both use 1024-based suffixes, and journalctl picks
+# the suffix from the size: a small journal reports "8.0K" and a large one "1.2G".
+# Parsed rather than assumed, because reading either as megabytes would make the
+# comparison below silently wrong in one direction and this task would go back to
+# running every hour, or stop running at all.
+# Jinja's float filter turns an unparsed value into 0.0 rather than erroring, so
+# an output format this regex does not match would make the guard below
+# permanently false and silently stop enforcing the cap, with a green recap
+# every run. Fail on the shape instead. A genuinely empty journal still reports
+# a number ("0B"), so this does not trip on one.
+- name: Fail if the journal usage line cannot be parsed
+  ansible.builtin.assert:
+    that:
+      - vm_baseline_journal_usage.stdout is search('take up [0-9.]+')
+    fail_msg: >-
+      Could not read a size out of `journalctl --disk-usage`:
+      {{ vm_baseline_journal_usage.stdout | default('') | trim | quote }}.
+      Treating that as 0 would disable the journal cap enforcement below
+      without failing a run, so this stops here instead.
+    quiet: true
+
+- name: Work out the journal size budget in bytes
+  ansible.builtin.set_fact:
+    vm_baseline_journal_used_bytes: "{{ (_used_num | float * _mult[_used_suffix]) | int }}"
+    vm_baseline_journal_cap_bytes: "{{ (_cap_num | float * _mult[_cap_suffix]) | int }}"
+    vm_baseline_journal_slack_bytes: "{{ (_slack_num | float * _mult[_slack_suffix]) | int }}"
+  vars:
+    _mult:
+      "": 1
+      K: 1024
+      M: 1048576
+      G: 1073741824
+      T: 1099511627776
+    # Lookaheads rather than capture groups on purpose. regex_search backrefs
+    # are written '\\1', and in a double-quoted YAML scalar YAML turns that into
+    # '\1', which Jinja then reads as a string literal and resolves to the
+    # control character 0x01. The filter answers "Unknown argument" and every
+    # size parses as nothing. See the note in AGENTS.md about Jinja string
+    # literals processing their own escapes.
+    _used_num: "{{ vm_baseline_journal_usage.stdout | regex_search('[0-9.]+(?=[KMGT]?B? in the file system)') }}"
+    _used_suffix: "{{ vm_baseline_journal_usage.stdout | regex_search('[KMGT](?=B? in the file system)') | default('', true) }}"
+    _cap_num: "{{ vm_baseline_journald_max_use | regex_search('[0-9.]+') }}"
+    _cap_suffix: "{{ vm_baseline_journald_max_use | regex_search('[KMGT]') | default('', true) }}"
+    _slack_num: "{{ vm_baseline_journald_max_file_size | regex_search('[0-9.]+') }}"
+    _slack_suffix: "{{ vm_baseline_journald_max_file_size | regex_search('[KMGT]') | default('', true) }}"
+
 # journalctl vacuums each journal path separately and prints one line per path,
 # and /run/log/journal essentially always reports "freed 0B" -- so a plain
 # substring test for "freed 0B" would report unchanged even after freeing GBs.
 # The negative lookahead matches only a line that actually freed something.
-- name: Vacuum the journal down to the cap
+- name: Vacuum the journal when it is further over the cap than one journal file
   ansible.builtin.command: "journalctl --vacuum-size={{ vm_baseline_journald_max_use }}"
   register: vm_baseline_journal_vacuum
+  when: >-
+    vm_baseline_journal_used_bytes | int
+    > (vm_baseline_journal_cap_bytes | int + vm_baseline_journal_slack_bytes | int)
   changed_when: vm_baseline_journal_vacuum.stderr is search('freed (?!0B)')
 
 - name: Authorize the operator SSH keys for the ansible user

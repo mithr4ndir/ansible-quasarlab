@@ -179,6 +179,14 @@ Rules, each one earned:
   play; raise `SystemExit`.
 - Play-level `become` makes `ansible_user_uid` 0, so `/run/user/{{ uid }}` becomes
   `/run/user/0`. Use `become: false` for `scope: user` systemd tasks.
+- Jinja string literals process their own backslash escapes, and a double-quoted
+  YAML scalar has already processed one layer before Jinja sees it. A
+  `regex_search` backref written `'\\1'` in a double-quoted scalar reaches Jinja as
+  `'\1'`, which Jinja resolves to the control character `0x01`, and the filter
+  answers `Unknown argument`. Write the regex with a lookahead instead of a
+  capture group, or put the expression in a single-quoted scalar where YAML does
+  no escape processing. Same root cause as needing a double-quoted scalar for
+  `join("\n")`.
 
 ## Forbidden
 
